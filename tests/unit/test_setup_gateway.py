@@ -2,9 +2,11 @@
 
 import io
 import json
+import os
 import sys
 import threading
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,7 +22,11 @@ from modeio_middleware.cli.setup_lib.claude import (  # noqa: E402
     derive_claude_hook_url,
     uninstall_claude_settings_file,
 )
-from modeio_middleware.cli.setup_lib.common import SetupError, derive_health_url, normalize_gateway_base_url  # noqa: E402
+from modeio_middleware.cli.setup_lib.common import (
+    SetupError,
+    derive_health_url,
+    normalize_gateway_base_url,
+)  # noqa: E402
 from modeio_middleware.cli.setup_lib.opencode import (  # noqa: E402
     apply_opencode_base_url,
     apply_opencode_config_file,
@@ -121,7 +127,9 @@ class TestSetupGateway(unittest.TestCase):
         )
 
     def test_codex_unset_command_variants(self):
-        self.assertEqual(setup_gateway._codex_unset_env_command("bash"), "unset OPENAI_BASE_URL")
+        self.assertEqual(
+            setup_gateway._codex_unset_env_command("bash"), "unset OPENAI_BASE_URL"
+        )
         self.assertEqual(
             setup_gateway._codex_unset_env_command("powershell"),
             "Remove-Item Env:OPENAI_BASE_URL",
@@ -144,7 +152,10 @@ class TestSetupGateway(unittest.TestCase):
         }
         updated, changed = apply_opencode_base_url(source, "http://127.0.0.1:8787/v1")
         self.assertTrue(changed)
-        self.assertEqual(updated["provider"]["openai"]["options"]["baseURL"], "http://127.0.0.1:8787/v1")
+        self.assertEqual(
+            updated["provider"]["openai"]["options"]["baseURL"],
+            "http://127.0.0.1:8787/v1",
+        )
 
     def test_apply_and_uninstall_opencode_config_file(self):
         with TemporaryDirectory() as temp_dir:
@@ -172,7 +183,9 @@ class TestSetupGateway(unittest.TestCase):
             env={"APPDATA": "C:/Users/test/AppData/Roaming"},
             home=Path("C:/Users/test"),
         )
-        self.assertEqual(path, Path("C:/Users/test/AppData/Roaming") / "opencode" / "opencode.json")
+        self.assertEqual(
+            path, Path("C:/Users/test/AppData/Roaming") / "opencode" / "opencode.json"
+        )
 
     def test_default_openclaw_config_path_honors_env_override(self):
         path = default_openclaw_config_path(
@@ -282,7 +295,9 @@ class TestSetupGateway(unittest.TestCase):
         server = HealthServer()
         server.start()
         try:
-            health = setup_gateway._check_gateway_health(server.health_url, timeout_seconds=2)
+            health = setup_gateway._check_gateway_health(
+                server.health_url, timeout_seconds=2
+            )
             self.assertTrue(health.checked)
             self.assertTrue(health.ok)
             self.assertEqual(health.status_code, 200)
@@ -329,6 +344,79 @@ class TestSetupGateway(unittest.TestCase):
             self.assertIsNotNone(payload["openclaw"])
             self.assertTrue(openclaw_path.exists())
             self.assertIsNotNone(payload["openclaw"].get("modelsCache"))
+
+    def test_main_json_doctor_reports_required_checks(self):
+        with TemporaryDirectory() as temp_dir:
+            auth_dir = Path(temp_dir) / ".codex"
+            auth_dir.mkdir(parents=True)
+            (auth_dir / "auth.json").write_text(
+                '{"access_token":"test"}', encoding="utf-8"
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HOME": temp_dir,
+                    "MODEIO_GATEWAY_UPSTREAM_API_KEY": "sk-test",
+                },
+                clear=False,
+            ):
+                code, payload = self._run_main_json(
+                    [
+                        "--doctor",
+                        "--require-upstream-api-key",
+                        "--require-codex-auth",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["mode"], "doctor")
+        self.assertTrue(payload["upstreamApiKey"]["present"])
+        self.assertTrue(payload["codex"]["authPresent"])
+        self.assertGreaterEqual(len(payload["checks"]), 2)
+
+    def test_main_json_doctor_fails_when_required_command_missing(self):
+        code, payload = self._run_main_json(
+            [
+                "--doctor",
+                "--require-commands",
+                "definitely-not-a-real-modeio-command",
+            ]
+        )
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["checks"][0]["name"], "required-commands")
+        self.assertIn(
+            "definitely-not-a-real-modeio-command",
+            payload["checks"][0]["missing"],
+        )
+
+    def test_main_json_doctor_accepts_zenmux_key_fallback(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ZENMUX_API_KEY": "sk-zenmux-test",
+            },
+            clear=False,
+        ):
+            code, payload = self._run_main_json(
+                [
+                    "--doctor",
+                    "--require-upstream-api-key",
+                    "--upstream-api-key-env",
+                    "MODEIO_GATEWAY_UPSTREAM_API_KEY",
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["upstreamApiKey"]["env"], "ZENMUX_API_KEY")
+
+    def test_main_json_doctor_validation_error_for_mutating_flags(self):
+        code, payload = self._run_main_json(["--doctor", "--apply-opencode"])
+        self.assertEqual(code, 2)
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error"]["type"], "validation_error")
 
 
 if __name__ == "__main__":

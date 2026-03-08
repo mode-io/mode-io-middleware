@@ -38,10 +38,24 @@ export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 ```
 
+Check whether the current machine is ready for live acceptance smoke:
+
+```bash
+modeio-middleware-setup --doctor --json \
+  --require-commands codex,opencode,openclaw,claude \
+  --require-upstream-api-key
+```
+
 Run the full agent matrix only in environments where all client CLIs are installed and authenticated:
 
 ```bash
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
+```
+
+Run the fresh-install acceptance variant to exercise packaged middleware entrypoints from a temp virtualenv. This assumes the host already has `codex`, `opencode`, `openclaw`, and `claude` installed and authenticated:
+
+```bash
+./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
 ```
 
 ## Notes

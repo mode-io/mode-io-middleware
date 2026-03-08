@@ -22,6 +22,8 @@ except Exception:  # pragma: no cover
 from smoke_matrix.agents import build_agent_command as _build_agent_command
 from smoke_matrix.common import (
     check_required_commands as _check_required_commands,
+    default_upstream_base_url,
+    default_upstream_model,
     default_artifacts_root,
     default_repo_root,
     free_port as _free_port,
@@ -45,15 +47,16 @@ from smoke_matrix.sandbox import (
     seed_codex_credentials as _seed_codex_credentials,
     upsert_openclaw_provider_model as _upsert_openclaw_provider_model,
 )
+from smoke_matrix.runtime import prepare_runtime as _prepare_runtime
 
 
 DEFAULT_UPSTREAM_BASE_URL = os.environ.get(
     "MODEIO_GATEWAY_UPSTREAM_BASE_URL",
-    "https://api.openai.com/v1",
+    default_upstream_base_url(dict(os.environ)),
 )
 DEFAULT_UPSTREAM_MODEL = os.environ.get(
     "MODEIO_GATEWAY_UPSTREAM_MODEL",
-    "gpt-4o-mini",
+    default_upstream_model(dict(os.environ)),
 )
 
 
@@ -65,8 +68,81 @@ def _default_artifacts_root() -> Path:
     return default_artifacts_root(Path(__file__))
 
 
+def _run_json_cli_command(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    env: Dict[str, str],
+    timeout_seconds: int,
+) -> Tuple[Dict[str, object], Dict[str, object]]:
+    result = _run_command_capture(
+        command=command,
+        cwd=cwd,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    stdout = str(result["stdout"])
+    try:
+        payload = json.loads(stdout)
+    except ValueError as error:
+        raise RuntimeError(
+            f"command returned non-JSON output: {stdout[:400]}"
+        ) from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("JSON command did not return an object payload")
+    return payload, result
+
+
+def _run_doctor(
+    *,
+    setup_command: Sequence[str],
+    repo_root: Path,
+    env: Dict[str, str],
+    agents: Sequence[str],
+    gateway_base_url: str,
+    opencode_config_path: Path,
+    openclaw_config_path: Path,
+    openclaw_models_cache_path: Path,
+    claude_settings_path: Path,
+    timeout_seconds: int,
+) -> Dict[str, object]:
+    command = [
+        *setup_command,
+        "--json",
+        "--doctor",
+        "--gateway-base-url",
+        gateway_base_url,
+        "--opencode-config-path",
+        str(opencode_config_path),
+        "--openclaw-config-path",
+        str(openclaw_config_path),
+        "--openclaw-models-cache-path",
+        str(openclaw_models_cache_path),
+        "--claude-settings-path",
+        str(claude_settings_path),
+        "--require-commands",
+        ",".join(agents),
+        "--require-upstream-api-key",
+    ]
+    if "codex" in agents:
+        command.append("--require-codex-auth")
+
+    payload, result = _run_json_cli_command(
+        command=command,
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(result["exitCode"]) != 0 or not payload.get("success"):
+        raise RuntimeError(
+            f"doctor failed: exit={result['exitCode']} payload={payload}"
+        )
+    return payload
+
+
 def _run_setup(
     *,
+    setup_command: Sequence[str],
     repo_root: Path,
     env: Dict[str, str],
     gateway_base_url: str,
@@ -77,32 +153,9 @@ def _run_setup(
     claude_settings_path: Path,
     timeout_seconds: int,
 ) -> Dict[str, object]:
-    setup_script = repo_root / "scripts" / "setup_middleware_gateway.py"
-
-    def _run_setup_command(command: Sequence[str]) -> Dict[str, object]:
-        result = _run_command_capture(
-            command=command,
-            cwd=repo_root,
-            env=env,
-            timeout_seconds=timeout_seconds,
-        )
-        stdout = str(result["stdout"])
-        try:
-            payload = json.loads(stdout)
-        except ValueError as error:
-            raise RuntimeError(
-                f"setup script returned non-JSON output: {stdout[:400]}"
-            ) from error
-
-        if result["exitCode"] != 0 or not payload.get("success"):
-            raise RuntimeError(
-                f"setup script failed: exit={result['exitCode']} payload={payload}"
-            )
-        return payload
 
     routing_command = [
-        sys.executable,
-        str(setup_script),
+        *setup_command,
         "--json",
         "--apply-opencode",
         "--create-opencode-config",
@@ -117,11 +170,19 @@ def _run_setup(
         "--gateway-base-url",
         gateway_base_url,
     ]
-    routing_payload = _run_setup_command(routing_command)
+    routing_payload, routing_result = _run_json_cli_command(
+        command=routing_command,
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(routing_result["exitCode"]) != 0 or not routing_payload.get("success"):
+        raise RuntimeError(
+            f"setup command failed: exit={routing_result['exitCode']} payload={routing_payload}"
+        )
 
     claude_command = [
-        sys.executable,
-        str(setup_script),
+        *setup_command,
         "--json",
         "--apply-claude",
         "--create-claude-settings",
@@ -130,7 +191,16 @@ def _run_setup(
         "--gateway-base-url",
         claude_gateway_base_url,
     ]
-    claude_payload = _run_setup_command(claude_command)
+    claude_payload, claude_result = _run_json_cli_command(
+        command=claude_command,
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(claude_result["exitCode"]) != 0 or not claude_payload.get("success"):
+        raise RuntimeError(
+            f"setup command failed: exit={claude_result['exitCode']} payload={claude_payload}"
+        )
 
     routing_payload["claude"] = claude_payload.get("claude")
     commands = routing_payload.get("commands")
@@ -528,7 +598,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-root",
         default=str(_default_repo_root()),
-        help="Repository root containing this checkout",
+        help="Repository root containing the smoke harness checkout",
+    )
+    parser.add_argument(
+        "--install-mode",
+        choices=("repo", "wheel", "path", "git"),
+        default="repo",
+        help=(
+            "How the middleware runtime under test is launched: repo uses the current checkout, "
+            "wheel installs a built wheel into a fresh temp venv, path installs from a local path, "
+            "and git installs from a git URL"
+        ),
+    )
+    parser.add_argument(
+        "--install-target",
+        default="",
+        help="Optional path, wheel, or git URL used when --install-mode is wheel/path/git",
     )
     parser.add_argument(
         "--gateway-host", default="127.0.0.1", help="Gateway listen host"
@@ -560,7 +645,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--keep-sandbox",
         action="store_true",
-        help="Do not delete temporary sandbox directory after run",
+        help="Do not delete temporary sandbox directory after run (runtime install artifacts stay under the run artifacts dir)",
     )
     return parser.parse_args(argv)
 
@@ -598,6 +683,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "openaiCompatible": args.model,
             "claude": args.claude_model,
         },
+        "runtime": {
+            "mode": args.install_mode,
+            "installTarget": args.install_target or None,
+        },
         "sandbox": {},
         "gateway": {},
         "tap": {
@@ -605,6 +694,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "stdoutPath": str(tap_stdout_path),
         },
         "claudeHookTap": None,
+        "doctor": None,
         "setup": None,
         "gatewayChecks": [],
         "agents": [],
@@ -645,6 +735,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         report["upstream"]["apiKeyEnv"] = upstream_api_key_env
 
+        runtime = _prepare_runtime(
+            repo_root=repo_root,
+            run_dir=run_dir,
+            timeout_seconds=args.command_timeout_seconds,
+            install_mode=args.install_mode,
+            install_target=args.install_target,
+        )
+        report["runtime"] = runtime.report
+
         for key in ("home", "xdg_config", "xdg_state", "xdg_cache", "openclaw_state"):
             paths[key].mkdir(parents=True, exist_ok=True)
         paths["claude_settings"].parent.mkdir(parents=True, exist_ok=True)
@@ -663,10 +762,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         gateway_root_url = gateway_base_url.rsplit("/v1", 1)[0]
 
         env = _build_sandbox_env(
-            dict(os.environ),
+            runtime.env,
             paths,
             gateway_base_url=gateway_base_url,
             upstream_api_key=upstream_api_key,
+        )
+
+        report["doctor"] = _run_doctor(
+            setup_command=runtime.setup_command,
+            repo_root=repo_root,
+            env=env,
+            agents=agents,
+            gateway_base_url=gateway_base_url,
+            opencode_config_path=paths["opencode_config"],
+            openclaw_config_path=paths["openclaw_config"],
+            openclaw_models_cache_path=paths["openclaw_models_cache"],
+            claude_settings_path=paths["claude_settings"],
+            timeout_seconds=args.command_timeout_seconds,
         )
 
         tap_command = [
@@ -695,8 +807,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("tap proxy failed to become healthy")
 
         gateway_command = [
-            sys.executable,
-            str(repo_root / "scripts" / "middleware_gateway.py"),
+            *runtime.gateway_command,
             "--host",
             args.gateway_host,
             "--port",
@@ -768,6 +879,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
 
         setup_payload = _run_setup(
+            setup_command=runtime.setup_command,
             repo_root=repo_root,
             env=env,
             gateway_base_url=gateway_base_url,

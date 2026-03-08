@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -153,9 +154,195 @@ def _build_start_command(gateway_base_url: str) -> str:
     return (
         "modeio-middleware-gateway "
         f"--host {host} --port {port} "
-        f"--upstream-chat-url \"{DEFAULT_UPSTREAM_CHAT_URL}\" "
-        f"--upstream-responses-url \"{DEFAULT_UPSTREAM_RESPONSES_URL}\""
+        f'--upstream-chat-url "{DEFAULT_UPSTREAM_CHAT_URL}" '
+        f'--upstream-responses-url "{DEFAULT_UPSTREAM_RESPONSES_URL}"'
     )
+
+
+def _split_csv_values(raw: str) -> Sequence[str]:
+    values = [part.strip() for part in raw.split(",") if part.strip()]
+    deduped = []
+    for value in values:
+        if value not in deduped:
+            deduped.append(value)
+    return deduped
+
+
+def _nearest_existing_parent(path: Path) -> Path:
+    current = path.expanduser()
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
+def _path_parent_writable(path: Path) -> bool:
+    candidate = _nearest_existing_parent(path.parent)
+    return os.access(candidate, os.W_OK)
+
+
+def _resolve_upstream_api_key_presence(
+    preferred_env: str, env: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    resolved_env = env or os.environ
+    candidates = []
+    for value in (preferred_env.strip(), "ZENMUX_API_KEY", "OPENAI_API_KEY"):
+        if value and value not in candidates:
+            candidates.append(value)
+
+    found_env = None
+    for candidate in candidates:
+        if resolved_env.get(candidate, "").strip():
+            found_env = candidate
+            break
+
+    return {
+        "searched": candidates,
+        "present": found_env is not None,
+        "env": found_env,
+    }
+
+
+def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
+    gateway_base_url = normalize_gateway_base_url(args.gateway_base_url)
+    os_name = detect_os_name(args.os_name)
+    shell = args.shell if args.shell != "auto" else _detect_shell(os_name)
+    health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
+    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    required_commands = list(_split_csv_values(args.require_commands))
+    upstream_api_key = _resolve_upstream_api_key_presence(args.upstream_api_key_env)
+
+    opencode_path = (
+        Path(args.opencode_config_path).expanduser()
+        if args.opencode_config_path
+        else default_opencode_config_path(os_name=os_name)
+    )
+    openclaw_path = (
+        Path(args.openclaw_config_path).expanduser()
+        if args.openclaw_config_path
+        else default_openclaw_config_path(os_name=os_name)
+    )
+    openclaw_models_cache_path = (
+        Path(args.openclaw_models_cache_path).expanduser()
+        if args.openclaw_models_cache_path
+        else default_openclaw_models_cache_path(config_path=openclaw_path)
+    )
+    claude_path = (
+        Path(args.claude_settings_path).expanduser()
+        if args.claude_settings_path
+        else default_claude_settings_path()
+    )
+    codex_auth_path = home / ".codex" / "auth.json"
+
+    binaries = {
+        name: shutil.which(name) for name in ("codex", "opencode", "openclaw", "claude")
+    }
+    missing_required = [
+        name for name in required_commands if binaries.get(name) is None
+    ]
+
+    report: Dict[str, Any] = {
+        "success": True,
+        "tool": "modeio-middleware-setup",
+        "mode": "doctor",
+        "gateway": {
+            "baseUrl": gateway_base_url,
+            "health": {
+                "checked": False,
+                "ok": False,
+                "statusCode": None,
+                "message": "skipped",
+            },
+        },
+        "upstreamApiKey": upstream_api_key,
+        "codex": {
+            "shell": shell,
+            "setCommand": _codex_env_command(shell, gateway_base_url),
+            "unsetCommand": _codex_unset_env_command(shell),
+            "binaryFound": binaries["codex"] is not None,
+            "binaryPath": binaries["codex"],
+            "authPath": str(codex_auth_path),
+            "authPresent": codex_auth_path.exists(),
+        },
+        "opencode": {
+            "binaryFound": binaries["opencode"] is not None,
+            "binaryPath": binaries["opencode"],
+            "path": str(opencode_path),
+            "configParentWritable": _path_parent_writable(opencode_path),
+        },
+        "openclaw": {
+            "binaryFound": binaries["openclaw"] is not None,
+            "binaryPath": binaries["openclaw"],
+            "path": str(openclaw_path),
+            "configParentWritable": _path_parent_writable(openclaw_path),
+            "modelsCachePath": str(openclaw_models_cache_path),
+            "modelsCacheParentWritable": _path_parent_writable(
+                openclaw_models_cache_path
+            ),
+        },
+        "claude": {
+            "binaryFound": binaries["claude"] is not None,
+            "binaryPath": binaries["claude"],
+            "path": str(claude_path),
+            "configParentWritable": _path_parent_writable(claude_path),
+            "authCheck": {
+                "supported": False,
+                "message": "Claude auth is verified by the live smoke command itself; the doctor only checks binary/config readiness.",
+            },
+        },
+        "requiredCommands": required_commands,
+        "checks": [],
+    }
+
+    if args.health_check:
+        health = _check_gateway_health(health_url, args.timeout_seconds)
+        report["gateway"]["health"] = {
+            "checked": health.checked,
+            "ok": health.ok,
+            "statusCode": health.status_code,
+            "message": health.message,
+        }
+        report["checks"].append(
+            {
+                "name": "gateway-health",
+                "ok": health.ok,
+                "statusCode": health.status_code,
+                "message": health.message,
+            }
+        )
+
+    if required_commands:
+        report["checks"].append(
+            {
+                "name": "required-commands",
+                "ok": not missing_required,
+                "missing": missing_required,
+            }
+        )
+
+    if args.require_upstream_api_key:
+        report["checks"].append(
+            {
+                "name": "upstream-api-key",
+                "ok": bool(upstream_api_key["present"]),
+                "env": upstream_api_key["env"],
+                "searched": upstream_api_key["searched"],
+            }
+        )
+
+    if args.require_codex_auth:
+        report["checks"].append(
+            {
+                "name": "codex-auth",
+                "ok": bool(report["codex"]["authPresent"]),
+                "path": report["codex"]["authPath"],
+            }
+        )
+
+    checks = report["checks"]
+    report["success"] = (
+        all(bool(check.get("ok")) for check in checks) if checks else True
+    )
+    return report
 
 
 def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
@@ -282,6 +469,44 @@ def _print_human_report(report: Dict[str, Any]) -> None:
     print(f"- Mode: {mode}")
     print(f"- Gateway base URL: {report['gateway']['baseUrl']}")
 
+    if mode == "doctor":
+        health = report["gateway"]["health"]
+        if health.get("checked"):
+            print(
+                "- Health check: "
+                f"ok={health.get('ok')} status={health.get('statusCode')} message={health.get('message')}"
+            )
+        else:
+            print("- Health check: skipped")
+
+        upstream = report.get("upstreamApiKey") or {}
+        print(
+            "- Upstream API key: "
+            f"present={upstream.get('present')} env={upstream.get('env')}"
+        )
+        print("- Client readiness:")
+        print(
+            f"  codex: binary={report['codex'].get('binaryFound')} auth={report['codex'].get('authPresent')}"
+        )
+        print(
+            f"  opencode: binary={report['opencode'].get('binaryFound')} writable={report['opencode'].get('configParentWritable')}"
+        )
+        print(
+            f"  openclaw: binary={report['openclaw'].get('binaryFound')} writable={report['openclaw'].get('configParentWritable')}"
+        )
+        print(
+            f"  claude: binary={report['claude'].get('binaryFound')} writable={report['claude'].get('configParentWritable')}"
+        )
+
+        checks = report.get("checks") or []
+        if checks:
+            print("- Checks:")
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                print(f"  {check.get('name')}: ok={check.get('ok')}")
+        return
+
     health = report["gateway"]["health"]
     if health.get("checked"):
         print(
@@ -353,11 +578,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=f"Gateway base URL (default: {DEFAULT_GATEWAY_BASE_URL})",
     )
     parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run a read-only readiness check for local middleware usage and live smoke prerequisites",
+    )
+    parser.add_argument(
         "--health-url",
         default="",
         help="Gateway health URL override (default derived from --gateway-base-url)",
     )
-    parser.add_argument("--health-check", action="store_true", help="Run gateway /healthz connectivity check")
+    parser.add_argument(
+        "--health-check",
+        action="store_true",
+        help="Run gateway /healthz connectivity check",
+    )
     parser.add_argument(
         "--timeout-seconds",
         type=int,
@@ -420,22 +654,52 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "differs from --gateway-base-url"
         ),
     )
-    parser.add_argument("--opencode-config-path", default="", help="OpenCode config path override")
-    parser.add_argument("--openclaw-config-path", default="", help="OpenClaw config path override")
+    parser.add_argument(
+        "--opencode-config-path", default="", help="OpenCode config path override"
+    )
+    parser.add_argument(
+        "--openclaw-config-path", default="", help="OpenClaw config path override"
+    )
     parser.add_argument(
         "--openclaw-models-cache-path",
         default="",
         help="OpenClaw generated models cache path override (default: infer from OpenClaw state/config)",
     )
-    parser.add_argument("--claude-settings-path", default="", help="Claude settings path override")
+    parser.add_argument(
+        "--claude-settings-path", default="", help="Claude settings path override"
+    )
     parser.add_argument(
         "--shell",
         choices=("auto", "bash", "zsh", "fish", "powershell", "cmd"),
         default="auto",
         help="Shell used to print Codex OPENAI_BASE_URL command",
     )
-    parser.add_argument("--os-name", default="", help="Override OS detection for testing/debugging")
-    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON report")
+    parser.add_argument(
+        "--require-commands",
+        default="",
+        help="Comma-separated commands that must exist for a successful doctor run",
+    )
+    parser.add_argument(
+        "--upstream-api-key-env",
+        default="MODEIO_GATEWAY_UPSTREAM_API_KEY",
+        help="Preferred env var checked by doctor for upstream key readiness",
+    )
+    parser.add_argument(
+        "--require-upstream-api-key",
+        action="store_true",
+        help="Fail doctor when no upstream API key is present in the preferred env or OPENAI_API_KEY",
+    )
+    parser.add_argument(
+        "--require-codex-auth",
+        action="store_true",
+        help="Fail doctor when ~/.codex/auth.json is missing for the current HOME",
+    )
+    parser.add_argument(
+        "--os-name", default="", help="Override OS detection for testing/debugging"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON report"
+    )
     return parser.parse_args(argv)
 
 
@@ -461,6 +725,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         validation_message = "--force-remove-claude-hook-url requires --uninstall"
     elif args.force_remove_openclaw_provider and not args.uninstall:
         validation_message = "--force-remove-openclaw-provider requires --uninstall"
+    elif args.doctor and (
+        args.apply_opencode
+        or args.apply_claude
+        or args.apply_openclaw
+        or args.uninstall
+        or args.create_opencode_config
+        or args.create_claude_settings
+        or args.create_openclaw_config
+        or args.force_remove_opencode_base_url
+        or args.force_remove_claude_hook_url
+        or args.force_remove_openclaw_provider
+    ):
+        validation_message = (
+            "--doctor cannot be combined with mutating setup/uninstall flags"
+        )
 
     if validation_message:
         if args.json:
@@ -475,12 +754,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     try:
-        report = _build_report(args)
+        report = _build_doctor_report(args) if args.doctor else _build_report(args)
         if args.json:
             print(json.dumps(report, ensure_ascii=False))
         else:
             _print_human_report(report)
-        return 0
+        return 0 if report.get("success") else 1
     except SetupError as error:
         if args.json:
             payload = {
