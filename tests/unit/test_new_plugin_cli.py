@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
 import json
+import io
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PACKAGE_ROOT = REPO_ROOT / "modeio-middleware"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = REPO_ROOT
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
@@ -19,7 +21,9 @@ class TestNewPluginCli(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
 
-            exit_code = new_plugin.main(["demo-policy", "--output-dir", str(output_dir)])
+            exit_code = new_plugin.main(
+                ["demo-policy", "--output-dir", str(output_dir)]
+            )
 
             self.assertEqual(exit_code, 0)
             plugin_dir = output_dir / "plugins_external" / "demo_policy"
@@ -35,6 +39,11 @@ class TestNewPluginCli(unittest.TestCase):
             self.assertEqual(manifest["name"], "demo_policy")
             self.assertEqual(manifest["transport"], "stdio-jsonrpc")
             self.assertIn("pre.request", manifest["hooks"])
+
+    def test_runtime_flag_is_not_part_of_public_cli(self):
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                new_plugin.parse_args(["demo-policy", "--runtime", "legacy_inprocess"])
 
 
 if __name__ == "__main__":

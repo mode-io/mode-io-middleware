@@ -6,6 +6,11 @@ This suite is physically split by confidence layer:
 - `tests/integration/`
 - `tests/smoke/`
 
+Additional validation layers live outside `unittest discover` entrypoints:
+
+- `./scripts/release_check.sh` for built-artifact and packaged-resource validation
+- `./scripts/smoke_e2e.sh --live` / `--live-agents` for manual or nightly live-routing validation
+
 ## Support Layer
 
 - `helpers/gateway_harness.py`
@@ -50,6 +55,24 @@ These tests validate operator flows and repo tooling:
 - `smoke/test_protocol_example_plugin.py`
 - `smoke/test_smoke_agent_matrix_support.py`
 - `smoke/test_smoke_opencode_flow.py`
+
+The shell smoke entrypoint can also persist logs and JSON outputs with `--artifacts-dir`.
+
+## Release Coverage
+
+These checks validate the built wheel/sdist instead of only the repo checkout:
+
+- build artifacts from `pyproject.toml`
+- install into a fresh virtualenv
+- verify bundled config, schemas, and example plugin resources
+- run installed console entrypoints and plugin conformance against the bundled example
+
+## Live Coverage
+
+These checks are not required on every PR because they depend on external CLIs, local auth state, and a real upstream:
+
+- `./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke`
+- `./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke`
 
 ## Rules
 

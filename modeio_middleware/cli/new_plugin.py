@@ -7,48 +7,6 @@ import json
 import re
 from pathlib import Path
 
-LEGACY_PLUGIN_TEMPLATE = """#!/usr/bin/env python3
-
-from __future__ import annotations
-
-from typing import Any, Dict
-
-from modeio_middleware.core.decision import HookDecision
-from modeio_middleware.plugins.base import MiddlewarePlugin
-
-
-class Plugin(MiddlewarePlugin):
-    name = "{plugin_name}"
-    version = "0.1.0"
-
-    def pre_request(self, hook_input: Dict[str, Any]) -> HookDecision:
-        _ = hook_input
-        return HookDecision(action="allow")
-"""
-
-LEGACY_TEST_TEMPLATE = """#!/usr/bin/env python3
-
-import sys
-import unittest
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from modeio_middleware.plugins.{module_name} import Plugin  # noqa: E402
-
-
-class Test{class_name}Plugin(unittest.TestCase):
-    def test_pre_request_default_allow(self):
-        result = Plugin().pre_request({{}})
-        action = result.get("action") if isinstance(result, dict) else result.action
-        self.assertEqual(action, "allow")
-
-
-if __name__ == "__main__":
-    unittest.main()
-"""
-
 STDIO_PLUGIN_TEMPLATE = """#!/usr/bin/env python3
 
 from __future__ import annotations
@@ -144,31 +102,9 @@ def _to_class_name(module_name: str) -> str:
     return "".join(part.capitalize() for part in module_name.split("_"))
 
 
-def _write_legacy_plugin(repo_root: Path, module_name: str, class_name: str, force: bool) -> None:
-    plugin_path = repo_root / "modeio_middleware" / "plugins" / f"{module_name}.py"
-    test_path = repo_root / "tests" / f"test_plugin_{module_name}.py"
-
-    for path in (plugin_path, test_path):
-        if path.exists() and not force:
-            raise SystemExit(f"Refusing to overwrite existing file: {path}")
-
-    plugin_path.parent.mkdir(parents=True, exist_ok=True)
-    test_path.parent.mkdir(parents=True, exist_ok=True)
-
-    plugin_path.write_text(LEGACY_PLUGIN_TEMPLATE.format(plugin_name=module_name), encoding="utf-8")
-    test_path.write_text(
-        LEGACY_TEST_TEMPLATE.format(
-            module_name=module_name,
-            class_name=class_name,
-        ),
-        encoding="utf-8",
-    )
-
-    print(f"Created plugin: {plugin_path}")
-    print(f"Created test: {test_path}")
-
-
-def _write_stdio_plugin(repo_root: Path, module_name: str, class_name: str, force: bool) -> None:
+def _write_stdio_plugin(
+    repo_root: Path, module_name: str, class_name: str, force: bool
+) -> None:
     plugin_dir = repo_root / "plugins_external" / module_name
     plugin_path = plugin_dir / "plugin.py"
     manifest_path = plugin_dir / "manifest.json"
@@ -181,7 +117,9 @@ def _write_stdio_plugin(repo_root: Path, module_name: str, class_name: str, forc
     plugin_dir.mkdir(parents=True, exist_ok=True)
     test_path.parent.mkdir(parents=True, exist_ok=True)
 
-    plugin_path.write_text(STDIO_PLUGIN_TEMPLATE.format(plugin_name=module_name), encoding="utf-8")
+    plugin_path.write_text(
+        STDIO_PLUGIN_TEMPLATE.format(plugin_name=module_name), encoding="utf-8"
+    )
 
     manifest_payload = {
         "name": module_name,
@@ -202,7 +140,10 @@ def _write_stdio_plugin(repo_root: Path, module_name: str, class_name: str, forc
             "needs_raw_body": False,
         },
     }
-    manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     test_path.write_text(
         STDIO_TEST_TEMPLATE.format(
@@ -218,14 +159,10 @@ def _write_stdio_plugin(repo_root: Path, module_name: str, class_name: str, forc
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scaffold a new modeio-middleware plugin")
-    parser.add_argument("name", help="Plugin name (kebab-case or snake_case)")
-    parser.add_argument(
-        "--runtime",
-        choices=["legacy_inprocess", "stdio_jsonrpc"],
-        default="stdio_jsonrpc",
-        help="Plugin runtime scaffold type (`legacy_inprocess` is internal-only for bundled plugins)",
+    parser = argparse.ArgumentParser(
+        description="Scaffold a new external stdio-jsonrpc plugin for modeio-middleware"
     )
+    parser.add_argument("name", help="Plugin name (kebab-case or snake_case)")
     parser.add_argument(
         "--output-dir",
         default=".",
@@ -241,10 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     class_name = _to_class_name(module_name)
     output_dir = Path(args.output_dir).expanduser().resolve()
 
-    if args.runtime == "legacy_inprocess":
-        _write_legacy_plugin(output_dir, module_name, class_name, args.force)
-    else:
-        _write_stdio_plugin(output_dir, module_name, class_name, args.force)
+    _write_stdio_plugin(output_dir, module_name, class_name, args.force)
 
     return 0
 

@@ -1,17 +1,37 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "modeio-middleware"
 version = "0.1.0"
 description = "Policy gateway middleware for OpenAI-shaped HTTP traffic and connector hooks."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+keywords = ["llm", "middleware", "gateway", "proxy", "plugins"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Internet :: Proxy Servers",
+]
 dependencies = [
   "httpx>=0.27,<1",
   "starlette>=0.37,<1",
   "uvicorn>=0.30,<1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mode-io/mode-io-middleware"
+Repository = "https://github.com/mode-io/mode-io-middleware"
+Issues = "https://github.com/mode-io/mode-io-middleware/issues"
+Documentation = "https://github.com/mode-io/mode-io-middleware/blob/main/QUICKSTART.md"
 
 [project.scripts]
 modeio-middleware-gateway = "modeio_middleware.cli.gateway:main"

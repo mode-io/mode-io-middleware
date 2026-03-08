@@ -4,11 +4,11 @@ import sys
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PACKAGE_ROOT = REPO_ROOT / "modeio-middleware"
-SCRIPTS_DIR = REPO_ROOT / "modeio-middleware" / "scripts"
-HELPERS_DIR = REPO_ROOT / "modeio-middleware" / "tests" / "helpers"
-FIXTURES_DIR = REPO_ROOT / "modeio-middleware" / "tests" / "fixtures"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = REPO_ROOT
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+HELPERS_DIR = REPO_ROOT / "tests" / "helpers"
+FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
 sys.path.insert(0, str(PACKAGE_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))

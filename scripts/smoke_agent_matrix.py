@@ -47,6 +47,16 @@ from smoke_matrix.sandbox import (
 )
 
 
+DEFAULT_UPSTREAM_BASE_URL = os.environ.get(
+    "MODEIO_GATEWAY_UPSTREAM_BASE_URL",
+    "https://api.openai.com/v1",
+)
+DEFAULT_UPSTREAM_MODEL = os.environ.get(
+    "MODEIO_GATEWAY_UPSTREAM_MODEL",
+    "gpt-4o-mini",
+)
+
+
 def _default_repo_root() -> Path:
     return default_repo_root(Path(__file__))
 
@@ -67,7 +77,7 @@ def _run_setup(
     claude_settings_path: Path,
     timeout_seconds: int,
 ) -> Dict[str, object]:
-    setup_script = repo_root / "modeio-middleware" / "scripts" / "setup_middleware_gateway.py"
+    setup_script = repo_root / "scripts" / "setup_middleware_gateway.py"
 
     def _run_setup_command(command: Sequence[str]) -> Dict[str, object]:
         result = _run_command_capture(
@@ -80,10 +90,14 @@ def _run_setup(
         try:
             payload = json.loads(stdout)
         except ValueError as error:
-            raise RuntimeError(f"setup script returned non-JSON output: {stdout[:400]}") from error
+            raise RuntimeError(
+                f"setup script returned non-JSON output: {stdout[:400]}"
+            ) from error
 
         if result["exitCode"] != 0 or not payload.get("success"):
-            raise RuntimeError(f"setup script failed: exit={result['exitCode']} payload={payload}")
+            raise RuntimeError(
+                f"setup script failed: exit={result['exitCode']} payload={payload}"
+            )
         return payload
 
     routing_command = [
@@ -488,7 +502,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="openai/gpt-5.3-codex",
+        default=DEFAULT_UPSTREAM_MODEL,
         help="OpenAI-compatible model name used for codex/opencode/openclaw smoke prompts",
     )
     parser.add_argument(
@@ -498,7 +512,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--upstream-base-url",
-        default="https://zenmux.ai/api/v1",
+        default=DEFAULT_UPSTREAM_BASE_URL,
         help="Real upstream OpenAI-compatible base URL",
     )
     parser.add_argument(
@@ -514,11 +528,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-root",
         default=str(_default_repo_root()),
-        help="Repository root containing modeio-middleware/",
+        help="Repository root containing this checkout",
     )
-    parser.add_argument("--gateway-host", default="127.0.0.1", help="Gateway listen host")
-    parser.add_argument("--gateway-port", type=int, default=0, help="Gateway listen port (0 = auto)")
-    parser.add_argument("--tap-port", type=int, default=0, help="Tap proxy listen port (0 = auto)")
+    parser.add_argument(
+        "--gateway-host", default="127.0.0.1", help="Gateway listen host"
+    )
+    parser.add_argument(
+        "--gateway-port", type=int, default=0, help="Gateway listen port (0 = auto)"
+    )
+    parser.add_argument(
+        "--tap-port", type=int, default=0, help="Tap proxy listen port (0 = auto)"
+    )
     parser.add_argument(
         "--claude-tap-port",
         type=int,
@@ -615,7 +635,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         needs_claude = "claude" in agents
         missing_commands = _check_required_commands(agents)
         if missing_commands:
-            raise RuntimeError("missing required commands: " + ", ".join(missing_commands))
+            raise RuntimeError(
+                "missing required commands: " + ", ".join(missing_commands)
+            )
 
         upstream_api_key, upstream_api_key_env = _resolve_upstream_api_key(
             dict(os.environ),
@@ -649,7 +671,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         tap_command = [
             sys.executable,
-            str(repo_root / "modeio-middleware" / "scripts" / "upstream_tap_proxy.py"),
+            str(repo_root / "scripts" / "upstream_tap_proxy.py"),
             "--host",
             args.gateway_host,
             "--port",
@@ -667,12 +689,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             env=env,
             log_path=tap_stdout_path,
         )
-        if not _wait_for_url(f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds):
+        if not _wait_for_url(
+            f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
+        ):
             raise RuntimeError("tap proxy failed to become healthy")
 
         gateway_command = [
             sys.executable,
-            str(repo_root / "modeio-middleware" / "scripts" / "middleware_gateway.py"),
+            str(repo_root / "scripts" / "middleware_gateway.py"),
             "--host",
             args.gateway_host,
             "--port",
@@ -688,7 +712,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             env=env,
             log_path=gateway_log_path,
         )
-        if not _wait_for_url(gateway_health_url, timeout_seconds=args.startup_timeout_seconds):
+        if not _wait_for_url(
+            gateway_health_url, timeout_seconds=args.startup_timeout_seconds
+        ):
             raise RuntimeError("middleware gateway failed to become healthy")
 
         report["gateway"] = {
@@ -703,11 +729,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         claude_gateway_base_url = gateway_base_url
         if needs_claude:
-            claude_tap_port = args.claude_tap_port if args.claude_tap_port > 0 else _free_port()
+            claude_tap_port = (
+                args.claude_tap_port if args.claude_tap_port > 0 else _free_port()
+            )
             claude_tap_base_url = f"http://{args.gateway_host}:{claude_tap_port}"
             claude_tap_command = [
                 sys.executable,
-                str(repo_root / "modeio-middleware" / "scripts" / "upstream_tap_proxy.py"),
+                str(repo_root / "scripts" / "upstream_tap_proxy.py"),
                 "--host",
                 args.gateway_host,
                 "--port",
@@ -781,13 +809,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_dir=run_dir,
                     env=env,
                     timeout_seconds=args.command_timeout_seconds,
-                    claude_settings_path=paths["claude_settings"] if agent == "claude" else None,
-                    tap_jsonl_path=claude_tap_jsonl_path if agent == "claude" else tap_jsonl_path,
+                    claude_settings_path=paths["claude_settings"]
+                    if agent == "claude"
+                    else None,
+                    tap_jsonl_path=claude_tap_jsonl_path
+                    if agent == "claude"
+                    else tap_jsonl_path,
                 )
             )
 
-        gateway_checks_ok = all(bool(item.get("ok")) for item in report.get("gatewayChecks", []))
-        report["success"] = gateway_checks_ok and all(bool(agent.get("ok")) for agent in report["agents"])
+        gateway_checks_ok = all(
+            bool(item.get("ok")) for item in report.get("gatewayChecks", [])
+        )
+        report["success"] = gateway_checks_ok and all(
+            bool(agent.get("ok")) for agent in report["agents"]
+        )
     except Exception as error:
         report["success"] = False
         report["error"] = str(error)

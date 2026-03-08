@@ -2,10 +2,11 @@
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / "modeio-middleware" / "scripts"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -44,7 +45,9 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertIn("--print", command)
         self.assertIn("--no-session-persistence", command)
         self.assertIn("--settings", command)
-        self.assertEqual(command[command.index("--settings") + 1], "/tmp/claude-settings.json")
+        self.assertEqual(
+            command[command.index("--settings") + 1], "/tmp/claude-settings.json"
+        )
         self.assertIn("--model", command)
         self.assertEqual(command[command.index("--model") + 1], "sonnet")
 
@@ -52,6 +55,36 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         args = parse_args([])
         self.assertEqual(args.agents, "codex,opencode,openclaw,claude")
         self.assertEqual(args.claude_model, "sonnet")
+        self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
+        self.assertEqual(args.model, "gpt-4o-mini")
+
+    def test_parse_args_uses_environment_defaults_for_live_smoke(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "MODEIO_GATEWAY_UPSTREAM_BASE_URL": "https://example.test/v1",
+                "MODEIO_GATEWAY_UPSTREAM_MODEL": "example-model",
+            },
+            clear=False,
+        ):
+            import smoke_agent_matrix  # noqa: E402
+
+            with (
+                mock.patch.object(
+                    smoke_agent_matrix,
+                    "DEFAULT_UPSTREAM_BASE_URL",
+                    "https://example.test/v1",
+                ),
+                mock.patch.object(
+                    smoke_agent_matrix,
+                    "DEFAULT_UPSTREAM_MODEL",
+                    "example-model",
+                ),
+            ):
+                args = smoke_agent_matrix.parse_args([])
+
+        self.assertEqual(args.upstream_base_url, "https://example.test/v1")
+        self.assertEqual(args.model, "example-model")
 
 
 if __name__ == "__main__":

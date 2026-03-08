@@ -10,8 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PACKAGE_DIR = REPO_ROOT / "modeio-middleware"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_DIR = REPO_ROOT
 sys.path.insert(0, str(PACKAGE_DIR))
 
 from modeio_middleware.cli import setup as setup_gateway  # noqa: E402

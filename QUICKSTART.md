@@ -1,31 +1,33 @@
 # modeio-middleware Quickstart
 
-`modeio-middleware` now supports two distinct workflows:
+This guide covers the normal operator workflow first, then source-checkout contributor notes at the end.
 
-1. Installed operator workflow: use the packaged console scripts.
-2. Repo maintainer workflow: use the repo wrappers, smoke scripts, and local test tooling.
+## 1) Install
 
-This file treats the installed workflow as the public default and calls out repo-only tooling explicitly.
-
-## 1) Install the package
-
-Until it is published, install from the local checkout:
+From GitHub:
 
 ```bash
-python -m pip install /path/to/modeio-middleware
+python -m pip install git+https://github.com/mode-io/mode-io-middleware
 ```
 
-Repo maintainers can still use the repo-local environment:
+From a local checkout:
 
 ```bash
-python scripts/bootstrap_env.py
+python -m pip install .
+```
+
+Optional source-checkout environment:
+
+```bash
+python -m venv .venv
 source .venv/bin/activate
-python scripts/doctor_env.py
+python -m pip install --upgrade pip
+python -m pip install -e . build
 ```
 
 ## 2) Start the gateway
 
-The installed entry point now ships with a bundled default config that starts with no active plugins.
+The bundled default config starts with no active plugins enabled.
 
 ```bash
 export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
@@ -37,13 +39,7 @@ modeio-middleware-gateway \
   --upstream-responses-url "https://api.openai.com/v1/responses"
 ```
 
-Repo wrapper equivalent:
-
-```bash
-python modeio-middleware/scripts/middleware_gateway.py
-```
-
-## 3) Configure client routing
+## 3) Configure local client routing
 
 ### Codex CLI
 
@@ -68,7 +64,7 @@ modeio-middleware-setup \
   --create-openclaw-config
 ```
 
-### Claude Code hooks
+### Claude Code
 
 ```bash
 modeio-middleware-setup \
@@ -79,7 +75,7 @@ modeio-middleware-setup \
 This writes `~/.claude/settings.json` hook entries for `UserPromptSubmit` and `Stop`
 to `POST http://127.0.0.1:8787/connectors/claude/hooks`.
 
-## 4) Health check
+## 4) Verify the gateway
 
 ```bash
 curl -s http://127.0.0.1:8787/healthz
@@ -123,15 +119,13 @@ Check these middleware headers in the response:
 
 Public external plugins use `stdio-jsonrpc`.
 
-Scaffold a new plugin into the current directory:
-
 ```bash
 mkdir my-plugin-work
 cd my-plugin-work
 modeio-middleware-new-plugin my-policy
 ```
 
-This creates:
+Generated files:
 
 - `./plugins_external/my_policy/plugin.py`
 - `./plugins_external/my_policy/manifest.json`
@@ -146,22 +140,20 @@ modeio-middleware-plugin-conformance \
   python3 ./plugins_external/my_policy/plugin.py
 ```
 
-The bundled default config also ships with a disabled external example plugin. Its manifest and script paths are resolved relative to the config file, so if you copy the config elsewhere you should update those relative paths.
+The bundled default config also ships with a disabled external example plugin. If you copy the config file elsewhere, update any relative `manifest` and local-file `command` paths.
 
-## 7) Custom config
-
-Use `--config` to point at your own JSON config:
+## 7) Use a custom config
 
 ```bash
 modeio-middleware-gateway --config /path/to/middleware.json
 ```
 
-Important path rule:
+Path resolution rules:
 
 - `manifest` paths are resolved relative to the config file.
 - `command` arguments that point at existing local files are also resolved relative to the config file.
 
-## 8) Uninstall / rollback
+## 8) Uninstall or roll back local routing
 
 ```bash
 modeio-middleware-setup \
@@ -171,17 +163,31 @@ modeio-middleware-setup \
   --apply-claude
 ```
 
-## 9) Repo-only maintainer validation
-
-These helpers are intentionally repo-only and are not part of the installed package surface:
+## 9) Contributor validation
 
 ```bash
-# Offline matrix
-modeio-middleware/scripts/smoke_e2e.sh
+# Full Python test suite
+python -m unittest discover tests -p 'test_*.py'
 
-# Live gateway check
-modeio-middleware/scripts/smoke_e2e.sh --live
+# Offline smoke + saved artifacts
+./scripts/smoke_e2e.sh
 
-# Live Codex/OpenCode/OpenClaw/Claude matrix via middleware
-modeio-middleware/scripts/smoke_e2e.sh --live-agents
+# Offline smoke with a fixed artifact directory
+./scripts/smoke_e2e.sh --artifacts-dir ./.artifacts/manual-smoke
+
+# Live upstream traversal check
+./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
+
+# Full Codex/OpenCode/OpenClaw/Claude matrix (local or self-hosted only)
+./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
+
+# Build artifact validation
+./scripts/release_check.sh
+```
+
+If you are working from a source checkout and want the repo-local helper equivalents, use:
+
+```bash
+python scripts/middleware_gateway.py
+python scripts/setup_middleware_gateway.py --health-check
 ```

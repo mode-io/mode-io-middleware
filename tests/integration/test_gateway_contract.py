@@ -10,9 +10,9 @@ try:
 except Exception:  # pragma: no cover
     zstd_codec = None
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = REPO_ROOT / "modeio-middleware" / "scripts"
-TESTS_DIR = REPO_ROOT / "modeio-middleware" / "tests"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+TESTS_DIR = REPO_ROOT / "tests"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(TESTS_DIR))

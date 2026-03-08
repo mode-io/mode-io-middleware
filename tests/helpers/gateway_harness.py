@@ -11,8 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PACKAGE_DIR = REPO_ROOT / "modeio-middleware"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_DIR = REPO_ROOT
 if str(PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGE_DIR))
 
@@ -221,7 +221,7 @@ class GatewayStub:
             upstream_timeout_seconds=5,
             upstream_api_key_env="MODEIO_GATEWAY_UPSTREAM_API_KEY",
             default_profile="dev",
-            config_base_dir=str(REPO_ROOT / "modeio-middleware"),
+            config_base_dir=str(REPO_ROOT),
             profiles=profiles
             or {
                 "dev": {

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 SUPPORTED_AGENTS = ("codex", "opencode", "openclaw", "claude")
-UPSTREAM_KEY_FALLBACK_ENVS = ("ZENMUX_API_KEY", "OPENAI_API_KEY")
+UPSTREAM_KEY_FALLBACK_ENVS = ("OPENAI_API_KEY",)
 
 
 def utc_stamp() -> str:
@@ -42,7 +42,9 @@ def parse_agents(raw: str) -> Tuple[str, ...]:
     return tuple(deduped)
 
 
-def resolve_upstream_api_key(env: Dict[str, str], preferred_env: str) -> Tuple[str, str]:
+def resolve_upstream_api_key(
+    env: Dict[str, str], preferred_env: str
+) -> Tuple[str, str]:
     preferred_value = env.get(preferred_env, "").strip()
     if preferred_value:
         return preferred_value, preferred_env
@@ -139,7 +141,9 @@ def load_tap_events(path: Path) -> List[Dict[str, object]]:
     return rows
 
 
-def tap_token_metrics(events: Iterable[Dict[str, object]], token: str) -> Dict[str, object]:
+def tap_token_metrics(
+    events: Iterable[Dict[str, object]], token: str
+) -> Dict[str, object]:
     request_matches = 0
     success_matches = 0
     response_token_matches = 0

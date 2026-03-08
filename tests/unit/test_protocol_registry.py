@@ -4,9 +4,9 @@ import sys
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PACKAGE_ROOT = REPO_ROOT / "modeio-middleware"
-FIXTURES_DIR = REPO_ROOT / "modeio-middleware" / "tests" / "fixtures"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = REPO_ROOT
+FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
 sys.path.insert(0, str(PACKAGE_ROOT))
 
@@ -27,7 +27,7 @@ class TestProtocolRegistryResolver(unittest.TestCase):
             },
         )
 
-        spec = resolve_plugin_runtime_spec(resolved=resolved, config_base_dir=REPO_ROOT / "modeio-middleware")
+        spec = resolve_plugin_runtime_spec(resolved=resolved, config_base_dir=REPO_ROOT)
         self.assertEqual(spec.mode, MODE_OBSERVE)
         self.assertFalse(spec.capabilities["can_patch"])
 
@@ -46,7 +46,7 @@ class TestProtocolRegistryResolver(unittest.TestCase):
             },
         )
 
-        spec = resolve_plugin_runtime_spec(resolved=resolved, config_base_dir=REPO_ROOT / "modeio-middleware")
+        spec = resolve_plugin_runtime_spec(resolved=resolved, config_base_dir=REPO_ROOT)
         self.assertTrue(spec.capabilities["can_patch"])
 
     def test_runtime_cache_key_changes_when_runtime_config_changes(self):
@@ -73,8 +73,8 @@ class TestProtocolRegistryResolver(unittest.TestCase):
             },
         )
 
-        spec_a = resolve_plugin_runtime_spec(resolved=resolved_a, config_base_dir=REPO_ROOT / "modeio-middleware")
-        spec_b = resolve_plugin_runtime_spec(resolved=resolved_b, config_base_dir=REPO_ROOT / "modeio-middleware")
+        spec_a = resolve_plugin_runtime_spec(resolved=resolved_a, config_base_dir=REPO_ROOT)
+        spec_b = resolve_plugin_runtime_spec(resolved=resolved_b, config_base_dir=REPO_ROOT)
 
         self.assertNotEqual(spec_a.runtime_cache_key(), spec_b.runtime_cache_key())
 
@@ -91,7 +91,7 @@ class TestProtocolRegistryResolver(unittest.TestCase):
             },
         )
 
-        spec = resolve_plugin_runtime_spec(resolved=resolved, config_base_dir=REPO_ROOT / "modeio-middleware" / "config")
+        spec = resolve_plugin_runtime_spec(resolved=resolved, config_base_dir=REPO_ROOT / "config")
         self.assertEqual(spec.command[0], "python3")
         self.assertTrue(Path(spec.command[1]).is_absolute())
         self.assertTrue(Path(spec.command[1]).exists())

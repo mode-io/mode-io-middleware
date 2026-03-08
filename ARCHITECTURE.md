@@ -12,18 +12,29 @@ Core runtime remains generic and plugin-based.
 ## Layout
 
 ```text
-modeio-middleware/
+repo-root/
+  .github/workflows/
+    ci.yml
+    live-smoke.yml
   config/default.json
+  CONTRIBUTING.md
   MODEIO_PLUGIN_PROTOCOL.md
   MODEIO_PLUGIN_MANIFEST.schema.json
   MODEIO_PLUGIN_MESSAGE.schema.json
-  PROTOCOL_IMPLEMENTATION_PLAN.md
+  QUICKSTART.md
+  README.md
   scripts/
     middleware_gateway.py
     new_plugin.py
+    release_check.sh
     run_plugin_conformance.py
     setup_middleware_gateway.py
+    smoke_agent_matrix.py
     validate_plugin_manifest.py
+    smoke_matrix/
+      agents.py
+      common.py
+      sandbox.py
   modeio_middleware/
     resources.py
     resources/
@@ -80,6 +91,9 @@ modeio-middleware/
       base.py
       redact.py
   tests/
+    fixtures/
+      stdio_echo_manifest.json
+      stdio_echo_plugin.py
     helpers/
       gateway_harness.py
       plugin_modules.py

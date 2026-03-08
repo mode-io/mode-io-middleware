@@ -62,7 +62,9 @@ def _default_forward_url(target_base_url: str, request_path: str) -> str:
 
     merged_path = f"{base_path}{normalized_path}" if base_path else normalized_path
     query = incoming.query or parsed.query
-    return urlunsplit((parsed.scheme, parsed.netloc, merged_path, query, parsed.fragment))
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, merged_path, query, parsed.fragment)
+    )
 
 
 class JsonlLogger:
@@ -82,7 +84,8 @@ class JsonlLogger:
 def _sanitize_headers_for_log(headers: Dict[str, str]) -> Dict[str, object]:
     auth_header = headers.get("authorization")
     return {
-        "authorizationPresent": isinstance(auth_header, str) and bool(auth_header.strip()),
+        "authorizationPresent": isinstance(auth_header, str)
+        and bool(auth_header.strip()),
         "authorizationPrefix": auth_header.split(" ", 1)[0] if auth_header else None,
         "contentType": headers.get("content-type"),
         "accept": headers.get("accept"),
@@ -90,7 +93,9 @@ def _sanitize_headers_for_log(headers: Dict[str, str]) -> Dict[str, object]:
     }
 
 
-def _filtered_response_headers(headers: Iterable[Tuple[str, str]], body_len: int) -> List[Tuple[str, str]]:
+def _filtered_response_headers(
+    headers: Iterable[Tuple[str, str]], body_len: int
+) -> List[Tuple[str, str]]:
     filtered: List[Tuple[str, str]] = []
     for key, value in headers:
         normalized = key.lower()
@@ -118,16 +123,23 @@ def _build_handler(
                 return
 
             started = time.monotonic()
-            request_id = hashlib.md5(f"{time.time_ns()}:{threading.get_ident()}".encode("utf-8")).hexdigest()
+            request_id = hashlib.md5(
+                f"{time.time_ns()}:{threading.get_ident()}".encode("utf-8")
+            ).hexdigest()
 
             content_length = int(self.headers.get("Content-Length", "0") or "0")
-            request_body = self.rfile.read(content_length) if content_length > 0 else b""
+            request_body = (
+                self.rfile.read(content_length) if content_length > 0 else b""
+            )
             request_headers = {k.lower(): v for k, v in self.headers.items()}
 
             upstream_headers: Dict[str, str] = {}
             for key, value in self.headers.items():
                 normalized = key.lower()
-                if normalized in HOP_BY_HOP_HEADERS or normalized in {"host", "content-length"}:
+                if normalized in HOP_BY_HOP_HEADERS or normalized in {
+                    "host",
+                    "content-length",
+                }:
                     continue
                 upstream_headers[key] = value
 
@@ -148,13 +160,17 @@ def _build_handler(
             upstream_response_body = b""
             upstream_error = None
             try:
-                with urllib.request.urlopen(upstream_req, timeout=upstream_timeout_seconds) as response:
+                with urllib.request.urlopen(
+                    upstream_req, timeout=upstream_timeout_seconds
+                ) as response:
                     upstream_status = response.status
                     upstream_response_headers = list(response.headers.items())
                     upstream_response_body = response.read()
             except urllib.error.HTTPError as error:
                 upstream_status = error.code
-                upstream_response_headers = list(error.headers.items()) if error.headers else []
+                upstream_response_headers = (
+                    list(error.headers.items()) if error.headers else []
+                )
                 upstream_response_body = error.read()
             except Exception as error:  # pragma: no cover - network/runtime dependent
                 upstream_error = str(error)
@@ -197,15 +213,21 @@ def _build_handler(
                         "upstreamUrl": upstream_url,
                         "headers": _sanitize_headers_for_log(request_headers),
                         "bodySha256": _body_sha256_hex(request_body),
-                        "bodyPreview": _body_preview(request_body, limit=body_preview_limit),
+                        "bodyPreview": _body_preview(
+                            request_body, limit=body_preview_limit
+                        ),
                     },
                     "response": {
                         "status": upstream_status,
                         "headers": {
-                            "contentType": dict((k.lower(), v) for k, v in upstream_response_headers).get("content-type")
+                            "contentType": dict(
+                                (k.lower(), v) for k, v in upstream_response_headers
+                            ).get("content-type")
                         },
                         "bodySha256": _body_sha256_hex(upstream_response_body),
-                        "bodyPreview": _body_preview(upstream_response_body, limit=body_preview_limit),
+                        "bodyPreview": _body_preview(
+                            upstream_response_body, limit=body_preview_limit
+                        ),
                     },
                     "durationMs": elapsed_ms,
                 }
@@ -252,7 +274,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--target-base-url",
         required=True,
-        help="Real upstream base URL (example: https://zenmux.ai/api/v1)",
+        help="Real upstream base URL (example: https://api.openai.com/v1)",
     )
     parser.add_argument(
         "--log-jsonl",
