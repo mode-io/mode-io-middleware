@@ -166,6 +166,11 @@ modeio-middleware-setup \
 ## 9) Contributor validation
 
 ```bash
+# Optional readiness check before live smoke
+modeio-middleware-setup --doctor --json \
+  --require-commands codex,opencode,openclaw,claude \
+  --require-upstream-api-key
+
 # Full Python test suite
 python -m unittest discover tests -p 'test_*.py'
 
@@ -180,6 +185,9 @@ python -m unittest discover tests -p 'test_*.py'
 
 # Full Codex/OpenCode/OpenClaw/Claude matrix (local or self-hosted only)
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
+
+# Fresh-install acceptance path for the middleware only (client CLIs stay host-installed)
+./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
 
 # Build artifact validation
 ./scripts/release_check.sh

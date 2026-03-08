@@ -10,6 +10,7 @@ Additional validation layers live outside `unittest discover` entrypoints:
 
 - `./scripts/release_check.sh` for built-artifact and packaged-resource validation
 - `./scripts/smoke_e2e.sh --live` / `--live-agents` for manual or nightly live-routing validation
+- `modeio-middleware-setup --doctor --json ...` for machine-readable local readiness checks before live acceptance
 
 ## Support Layer
 
@@ -73,6 +74,7 @@ These checks are not required on every PR because they depend on external CLIs, 
 
 - `./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke`
 - `./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke`
+- `./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance`
 
 ## Rules
 

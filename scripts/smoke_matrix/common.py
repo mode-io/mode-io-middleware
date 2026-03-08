@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 SUPPORTED_AGENTS = ("codex", "opencode", "openclaw", "claude")
-UPSTREAM_KEY_FALLBACK_ENVS = ("OPENAI_API_KEY",)
+OPENAI_UPSTREAM_BASE_URL = "https://api.openai.com/v1"
+OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+ZENMUX_UPSTREAM_BASE_URL = "https://zenmux.ai/api/v1"
+ZENMUX_DEFAULT_MODEL = "openai/gpt-5.3-codex"
+UPSTREAM_KEY_FALLBACK_ENVS = ("ZENMUX_API_KEY", "OPENAI_API_KEY")
 
 
 def utc_stamp() -> str:
@@ -19,7 +23,14 @@ def utc_stamp() -> str:
 
 
 def default_repo_root(script_path: Path) -> Path:
-    return script_path.resolve().parents[2]
+    resolved = script_path.resolve()
+    candidates = [resolved.parent, *resolved.parents]
+    for candidate in candidates:
+        if (candidate / "pyproject.toml").exists() and (
+            candidate / "modeio_middleware"
+        ).exists():
+            return candidate
+    return resolved.parents[1]
 
 
 def default_artifacts_root(script_path: Path) -> Path:
@@ -56,6 +67,24 @@ def resolve_upstream_api_key(
 
     searched = [preferred_env, *UPSTREAM_KEY_FALLBACK_ENVS]
     raise RuntimeError("missing upstream API key. Set one of: " + ", ".join(searched))
+
+
+def default_upstream_base_url(env: Dict[str, str]) -> str:
+    explicit = env.get("MODEIO_GATEWAY_UPSTREAM_BASE_URL", "").strip()
+    if explicit:
+        return explicit
+    if env.get("ZENMUX_API_KEY", "").strip():
+        return ZENMUX_UPSTREAM_BASE_URL
+    return OPENAI_UPSTREAM_BASE_URL
+
+
+def default_upstream_model(env: Dict[str, str]) -> str:
+    explicit = env.get("MODEIO_GATEWAY_UPSTREAM_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if default_upstream_base_url(env) == ZENMUX_UPSTREAM_BASE_URL:
+        return ZENMUX_DEFAULT_MODEL
+    return OPENAI_DEFAULT_MODEL
 
 
 def free_port() -> int:

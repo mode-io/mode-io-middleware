@@ -12,7 +12,12 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from smoke_agent_matrix import parse_args  # noqa: E402
 from smoke_matrix.agents import build_agent_command  # noqa: E402
-from smoke_matrix.common import parse_agents  # noqa: E402
+from smoke_matrix.common import (  # noqa: E402
+    default_repo_root,
+    default_upstream_base_url,
+    default_upstream_model,
+    parse_agents,
+)
 from smoke_matrix.sandbox import build_sandbox_paths  # noqa: E402
 
 
@@ -52,11 +57,43 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(command[command.index("--model") + 1], "sonnet")
 
     def test_parse_args_defaults_include_claude(self):
-        args = parse_args([])
+        import smoke_agent_matrix  # noqa: E402
+
+        with (
+            mock.patch.object(
+                smoke_agent_matrix,
+                "DEFAULT_UPSTREAM_BASE_URL",
+                "https://api.openai.com/v1",
+            ),
+            mock.patch.object(
+                smoke_agent_matrix,
+                "DEFAULT_UPSTREAM_MODEL",
+                "gpt-4o-mini",
+            ),
+        ):
+            args = smoke_agent_matrix.parse_args([])
         self.assertEqual(args.agents, "codex,opencode,openclaw,claude")
         self.assertEqual(args.claude_model, "sonnet")
         self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
         self.assertEqual(args.model, "gpt-4o-mini")
+        self.assertEqual(args.install_mode, "repo")
+        self.assertEqual(args.install_target, "")
+
+    def test_parse_args_accepts_wheel_install_mode(self):
+        args = parse_args(
+            ["--install-mode", "wheel", "--install-target", "/tmp/pkg.whl"]
+        )
+        self.assertEqual(args.install_mode, "wheel")
+        self.assertEqual(args.install_target, "/tmp/pkg.whl")
+
+    def test_default_repo_root_resolves_repo_checkout(self):
+        script_path = REPO_ROOT / "scripts" / "smoke_agent_matrix.py"
+        self.assertEqual(default_repo_root(script_path), REPO_ROOT)
+
+    def test_zenmux_env_defaults_select_matching_base_url_and_model(self):
+        env = {"ZENMUX_API_KEY": "sk-test"}
+        self.assertEqual(default_upstream_base_url(env), "https://zenmux.ai/api/v1")
+        self.assertEqual(default_upstream_model(env), "openai/gpt-5.3-codex")
 
     def test_parse_args_uses_environment_defaults_for_live_smoke(self):
         with mock.patch.dict(

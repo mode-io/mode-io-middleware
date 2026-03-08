@@ -91,6 +91,7 @@ PLUGIN_PATH="${RESOURCE_PATHS[2]}"
 log "checking installed console entrypoints"
 PATH="${VENV_BIN}:${PATH}" modeio-middleware-gateway --help >/dev/null
 PATH="${VENV_BIN}:${PATH}" modeio-middleware-setup --json >/dev/null
+PATH="${VENV_BIN}:${PATH}" modeio-middleware-setup --doctor --json >/dev/null
 PATH="${VENV_BIN}:${PATH}" modeio-middleware-new-plugin --help >/dev/null
 
 log "validating bundled example plugin"

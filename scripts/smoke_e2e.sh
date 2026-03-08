@@ -32,6 +32,9 @@ fi
 
 run_live=0
 run_live_agents=0
+live_agents_install_mode="repo"
+live_agents_install_target=""
+live_agents_keep_sandbox=0
 artifacts_root="${MODEIO_SMOKE_ARTIFACTS_DIR:-}"
 ARTIFACTS_DIR=""
 KEEP_ARTIFACTS=0
@@ -45,10 +48,13 @@ live_agent_matrix_status="not_run"
 
 usage() {
   cat <<'EOF' >&2
-Usage: smoke_e2e.sh [--live] [--live-agents] [--artifacts-dir PATH]
+Usage: smoke_e2e.sh [--live] [--live-agents] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH]
 
   --live                Run a generic live gateway smoke against a real upstream
   --live-agents         Run the full live agent matrix (local/self-hosted only)
+  --install-mode MODE   Runtime install mode for the middleware under test: repo|wheel|path|git
+  --install-target VAL  Optional wheel/path/git target used with --install-mode
+  --keep-sandbox        Keep the live-agent temp HOME/XDG sandbox for debugging
   --artifacts-dir PATH  Persist logs and JSON outputs under PATH/<timestamp-pid>/
 EOF
 }
@@ -60,6 +66,25 @@ while [[ $# -gt 0 ]]; do
       ;;
     --live-agents)
       run_live_agents=1
+      ;;
+    --install-mode)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_install_mode="$2"
+      shift
+      ;;
+    --install-target)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_install_target="$2"
+      shift
+      ;;
+    --keep-sandbox)
+      live_agents_keep_sandbox=1
       ;;
     --artifacts-dir)
       if [[ $# -lt 2 ]]; then
@@ -92,6 +117,30 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+resolve_upstream_base_url() {
+  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-}" ]]; then
+    printf '%s\n' "${MODEIO_GATEWAY_UPSTREAM_BASE_URL}"
+    return
+  fi
+  if [[ -n "${ZENMUX_API_KEY:-}" ]]; then
+    printf '%s\n' "https://zenmux.ai/api/v1"
+    return
+  fi
+  printf '%s\n' "https://api.openai.com/v1"
+}
+
+resolve_upstream_model() {
+  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_MODEL:-}" ]]; then
+    printf '%s\n' "${MODEIO_GATEWAY_UPSTREAM_MODEL}"
+    return
+  fi
+  if [[ "$(resolve_upstream_base_url)" == "https://zenmux.ai/api/v1" ]]; then
+    printf '%s\n' "openai/gpt-5.3-codex"
+    return
+  fi
+  printf '%s\n' "gpt-4o-mini"
+}
+
 check_json_field() {
   local file="$1"
   local code="$2"
@@ -118,6 +167,7 @@ write_summary() {
   OFFLINE_GATEWAY_STATUS="$offline_gateway_status" \
   LIVE_GATEWAY_STATUS="$live_gateway_status" \
   LIVE_AGENT_MATRIX_STATUS="$live_agent_matrix_status" \
+  LIVE_AGENT_MATRIX_MODE="$live_agents_install_mode" \
   "$PYTHON_BIN" - "$summary_path" <<'PY'
 import json
 import os
@@ -135,6 +185,7 @@ payload = {
         "liveGatewaySmoke": os.environ["LIVE_GATEWAY_STATUS"],
         "liveAgentMatrixSmoke": os.environ["LIVE_AGENT_MATRIX_STATUS"],
     },
+    "liveAgentMatrixMode": os.environ["LIVE_AGENT_MATRIX_MODE"],
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
@@ -491,13 +542,13 @@ PY
 
 run_live_gateway_smoke() {
   local gateway_port=18787
-  local upstream_base_url="${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-https://api.openai.com/v1}"
-  local upstream_model="${MODEIO_GATEWAY_UPSTREAM_MODEL:-gpt-4o-mini}"
+  local upstream_base_url="$(resolve_upstream_base_url)"
+  local upstream_model="$(resolve_upstream_model)"
   local stdout_log="$ARTIFACTS_DIR/live-gateway.stdout.log"
   local stderr_log="$ARTIFACTS_DIR/live-gateway.stderr.log"
 
-  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "[smoke] --live requires MODEIO_GATEWAY_UPSTREAM_API_KEY or OPENAI_API_KEY" >&2
+  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${ZENMUX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
+    echo "[smoke] --live requires MODEIO_GATEWAY_UPSTREAM_API_KEY, ZENMUX_API_KEY, or OPENAI_API_KEY" >&2
     exit 1
   fi
 
@@ -543,15 +594,30 @@ run_live_gateway_smoke() {
 }
 
 run_live_agent_matrix_smoke() {
-  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "[smoke] --live-agents requires MODEIO_GATEWAY_UPSTREAM_API_KEY or OPENAI_API_KEY" >&2
+  local smoke_args=(
+    scripts/smoke_agent_matrix.py
+    --artifacts-dir "$ARTIFACTS_DIR/live-agent-matrix"
+    --repo-root "$REPO_ROOT"
+    --install-mode "$live_agents_install_mode"
+  )
+
+  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${ZENMUX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
+    echo "[smoke] --live-agents requires MODEIO_GATEWAY_UPSTREAM_API_KEY, ZENMUX_API_KEY, or OPENAI_API_KEY" >&2
     exit 1
   fi
 
-  log "running live agent matrix smoke (codex/opencode/openclaw/claude via middleware)"
+  if [[ -n "$live_agents_install_target" ]]; then
+    smoke_args+=(--install-target "$live_agents_install_target")
+  fi
+
+  if [[ "$live_agents_keep_sandbox" -eq 1 ]]; then
+    smoke_args+=(--keep-sandbox)
+  fi
+
+  log "running live agent matrix smoke (codex/opencode/openclaw/claude via middleware; install-mode=${live_agents_install_mode})"
   (
     cd "$REPO_ROOT"
-    "$PYTHON_BIN" scripts/smoke_agent_matrix.py --artifacts-dir "$ARTIFACTS_DIR/live-agent-matrix"
+    "$PYTHON_BIN" "${smoke_args[@]}"
   )
   live_agent_matrix_status="passed"
 }

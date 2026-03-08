@@ -109,3 +109,12 @@ Full agent-matrix smoke is available for local or self-hosted environments where
 ```bash
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 ```
+
+Fresh-install acceptance smoke uses the packaged middleware entrypoints from a temp virtualenv while keeping agent configs in a temp sandbox:
+
+- This fresh-install path assumes `codex`, `opencode`, `openclaw`, and `claude` are already installed and authenticated on the host.
+- Only the middleware under test is freshly installed for the run.
+
+```bash
+./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
+```
