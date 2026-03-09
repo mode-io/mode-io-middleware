@@ -18,3 +18,15 @@ def bundled_example_plugin_dir() -> Path:
 
 def bundled_protocol_schema_dir() -> Path:
     return RESOURCES_ROOT / "protocol"
+
+
+def bundled_dashboard_dir() -> Path:
+    return RESOURCES_ROOT / "dashboard"
+
+
+def bundled_dashboard_index_path() -> Path:
+    return bundled_dashboard_dir() / "index.html"
+
+
+def bundled_dashboard_favicon_path() -> Path:
+    return bundled_dashboard_dir() / "assets" / "favicon.svg"

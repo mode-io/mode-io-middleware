@@ -7,6 +7,7 @@ build/
 .coverage
 coverage.xml
 .artifacts/
+dashboard/node_modules/
 __pycache__/
 *.py[cod]
 .DS_Store

@@ -288,28 +288,44 @@ class PluginManager:
         self,
         services: Optional[Dict[str, Any]],
         *,
+        request_id: str,
         plugin_name: str,
         hook_name: str,
         action: str,
         duration_ms: float,
         errored: bool,
+        reported_action: str | None = None,
+        error_type: str | None = None,
     ) -> None:
         if not isinstance(services, dict):
             return
         telemetry = services.get("telemetry")
-        if telemetry is None:
-            return
+        if telemetry is not None:
+            record = getattr(telemetry, "record", None)
+            if callable(record):
+                record(
+                    plugin_name=plugin_name,
+                    hook_name=hook_name,
+                    action=action,
+                    duration_ms=duration_ms,
+                    errored=errored,
+                )
 
-        record = getattr(telemetry, "record", None)
-        if not callable(record):
+        request_journal = services.get("request_journal")
+        if request_journal is None:
             return
-
-        record(
+        record_hook = getattr(request_journal, "record_hook_execution", None)
+        if not callable(record_hook):
+            return
+        record_hook(
+            request_id=request_id,
             plugin_name=plugin_name,
             hook_name=hook_name,
-            action=action,
+            effective_action=action,
             duration_ms=duration_ms,
             errored=errored,
+            reported_action=reported_action,
+            error_type=error_type,
         )
 
     def _handle_plugin_error(
@@ -326,7 +342,9 @@ class PluginManager:
 
         if on_plugin_error == "fail_safe":
             result.blocked = True
-            result.block_message = f"plugin '{plugin_name}' failed: {type(error).__name__}"
+            result.block_message = (
+                f"plugin '{plugin_name}' failed: {type(error).__name__}"
+            )
             return
 
         severity = "medium" if on_plugin_error == "warn" else "low"
@@ -380,11 +398,13 @@ class PluginManager:
                 duration_ms = (time.perf_counter() - start) * 1000
                 self._record_telemetry(
                     services,
+                    request_id=request_id,
                     plugin_name=active.name,
                     hook_name=hook_name,
                     action="error",
                     duration_ms=duration_ms,
                     errored=True,
+                    error_type=type(error).__name__,
                 )
                 self._handle_plugin_error(
                     plugin_name=active.name,
@@ -405,18 +425,23 @@ class PluginManager:
             duration_ms = (time.perf_counter() - start) * 1000
             self._record_telemetry(
                 services,
+                request_id=request_id,
                 plugin_name=active.name,
                 hook_name=hook_name,
                 action=action,
                 duration_ms=duration_ms,
                 errored=False,
+                reported_action=normalized["action"],
             )
             result.actions.append(f"{active.name}:{action}")
             result.findings.extend(normalized["findings"])
 
             if action == HOOK_ACTION_BLOCK:
                 result.blocked = True
-                result.block_message = normalized.get("message") or f"plugin '{active.name}' blocked {blocked_message_suffix}"
+                result.block_message = (
+                    normalized.get("message")
+                    or f"plugin '{active.name}' blocked {blocked_message_suffix}"
+                )
                 return result
 
         return result
@@ -436,7 +461,9 @@ class PluginManager:
         services: Optional[Dict[str, Any]] = None,
         connector_capabilities: Optional[Dict[str, bool]] = None,
     ) -> HookPipelineResult:
-        result = HookPipelineResult(body=copy.deepcopy(request_body), headers=dict(request_headers))
+        result = HookPipelineResult(
+            body=copy.deepcopy(request_body), headers=dict(request_headers)
+        )
 
         for active in active_plugins:
             if "pre_request" not in active.supported_hooks:
@@ -461,11 +488,13 @@ class PluginManager:
                 duration_ms = (time.perf_counter() - start) * 1000
                 self._record_telemetry(
                     services,
+                    request_id=request_id,
                     plugin_name=active.name,
                     hook_name="pre_request",
                     action="error",
                     duration_ms=duration_ms,
                     errored=True,
+                    error_type=type(error).__name__,
                 )
                 self._handle_plugin_error(
                     plugin_name=active.name,
@@ -486,11 +515,13 @@ class PluginManager:
             duration_ms = (time.perf_counter() - start) * 1000
             self._record_telemetry(
                 services,
+                request_id=request_id,
                 plugin_name=active.name,
                 hook_name="pre_request",
                 action=action,
                 duration_ms=duration_ms,
                 errored=False,
+                reported_action=normalized["action"],
             )
             result.actions.append(f"{active.name}:{action}")
             result.findings.extend(normalized["findings"])
@@ -512,11 +543,16 @@ class PluginManager:
                             "MODEIO_PLUGIN_ERROR",
                             f"plugin '{active.name}' returned invalid request_headers",
                         )
-                    result.headers.update(_normalize_header_map(normalized["request_headers"]))
+                    result.headers.update(
+                        _normalize_header_map(normalized["request_headers"])
+                    )
 
             if action == HOOK_ACTION_BLOCK:
                 result.blocked = True
-                result.block_message = normalized.get("message") or f"plugin '{active.name}' blocked request"
+                result.block_message = (
+                    normalized.get("message")
+                    or f"plugin '{active.name}' blocked request"
+                )
                 return result
 
         return result
@@ -536,7 +572,9 @@ class PluginManager:
         services: Optional[Dict[str, Any]] = None,
         connector_capabilities: Optional[Dict[str, bool]] = None,
     ) -> HookPipelineResult:
-        result = HookPipelineResult(body=copy.deepcopy(response_body), headers=dict(response_headers))
+        result = HookPipelineResult(
+            body=copy.deepcopy(response_body), headers=dict(response_headers)
+        )
 
         for active in reversed(list(active_plugins)):
             if "post_response" not in active.supported_hooks:
@@ -561,11 +599,13 @@ class PluginManager:
                 duration_ms = (time.perf_counter() - start) * 1000
                 self._record_telemetry(
                     services,
+                    request_id=request_id,
                     plugin_name=active.name,
                     hook_name="post_response",
                     action="error",
                     duration_ms=duration_ms,
                     errored=True,
+                    error_type=type(error).__name__,
                 )
                 self._handle_plugin_error(
                     plugin_name=active.name,
@@ -586,11 +626,13 @@ class PluginManager:
             duration_ms = (time.perf_counter() - start) * 1000
             self._record_telemetry(
                 services,
+                request_id=request_id,
                 plugin_name=active.name,
                 hook_name="post_response",
                 action=action,
                 duration_ms=duration_ms,
                 errored=False,
+                reported_action=normalized["action"],
             )
             result.actions.append(f"{active.name}:{action}")
             result.findings.extend(normalized["findings"])
@@ -612,11 +654,16 @@ class PluginManager:
                             "MODEIO_PLUGIN_ERROR",
                             f"plugin '{active.name}' returned invalid response_headers",
                         )
-                    result.headers.update(_normalize_header_map(normalized["response_headers"]))
+                    result.headers.update(
+                        _normalize_header_map(normalized["response_headers"])
+                    )
 
             if action == HOOK_ACTION_BLOCK:
                 result.blocked = True
-                result.block_message = normalized.get("message") or f"plugin '{active.name}' blocked response"
+                result.block_message = (
+                    normalized.get("message")
+                    or f"plugin '{active.name}' blocked response"
+                )
                 return result
 
         return result
@@ -688,11 +735,13 @@ class PluginManager:
                 duration_ms = (time.perf_counter() - start) * 1000
                 self._record_telemetry(
                     services,
+                    request_id=request_id,
                     plugin_name=active.name,
                     hook_name="post_stream_event",
                     action="error",
                     duration_ms=duration_ms,
                     errored=True,
+                    error_type=type(error).__name__,
                 )
                 self._handle_plugin_error(
                     plugin_name=active.name,
@@ -713,11 +762,13 @@ class PluginManager:
             duration_ms = (time.perf_counter() - start) * 1000
             self._record_telemetry(
                 services,
+                request_id=request_id,
                 plugin_name=active.name,
                 hook_name="post_stream_event",
                 action=action,
                 duration_ms=duration_ms,
                 errored=False,
+                reported_action=normalized["action"],
             )
             result.actions.append(f"{active.name}:{action}")
             result.findings.extend(normalized["findings"])
@@ -733,7 +784,10 @@ class PluginManager:
 
             if action == HOOK_ACTION_BLOCK:
                 result.blocked = True
-                result.block_message = normalized.get("message") or f"plugin '{active.name}' blocked stream event"
+                result.block_message = (
+                    normalized.get("message")
+                    or f"plugin '{active.name}' blocked stream event"
+                )
                 return result
 
         return result

@@ -68,7 +68,27 @@ def http_get_json(base_url: str, path: str):
             error.close()
 
 
-def post_json(base_url: str, path: str, payload: Dict[str, Any], *, headers: Dict[str, str] | None = None):
+def http_get_text(base_url: str, path: str):
+    request = urllib.request.Request(f"{base_url}{path}", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return response.status, response.headers, body
+    except urllib.error.HTTPError as error:
+        try:
+            body = error.read().decode("utf-8", errors="replace")
+            return error.code, error.headers, body
+        finally:
+            error.close()
+
+
+def post_json(
+    base_url: str,
+    path: str,
+    payload: Dict[str, Any],
+    *,
+    headers: Dict[str, str] | None = None,
+):
     request_headers = {"Content-Type": "application/json"}
     if headers:
         request_headers.update(headers)
@@ -91,7 +111,9 @@ def post_json(base_url: str, path: str, payload: Dict[str, Any], *, headers: Dic
             error.close()
 
 
-def post_raw(base_url: str, path: str, body: bytes, *, headers: Dict[str, str] | None = None):
+def post_raw(
+    base_url: str, path: str, body: bytes, *, headers: Dict[str, str] | None = None
+):
     request_headers = {"Content-Type": "application/json"}
     if headers:
         request_headers.update(headers)
@@ -174,7 +196,9 @@ class UpstreamStub:
                         elif event == "[DONE]":
                             chunk = b"data: [DONE]\n\n"
                         elif isinstance(event, dict):
-                            chunk = b"data: " + json.dumps(event).encode("utf-8") + b"\n\n"
+                            chunk = (
+                                b"data: " + json.dumps(event).encode("utf-8") + b"\n\n"
+                            )
                         else:
                             chunk = str(event).encode("utf-8")
                             if not chunk.endswith(b"\n\n"):
@@ -253,8 +277,17 @@ class GatewayStub:
             self._thread.join(timeout=2)
 
 
-def start_gateway_pair(response_factory, *, status: int = 200, stream_factory=None, plugins=None, profiles=None):
-    upstream = UpstreamStub(response_factory=response_factory, status=status, stream_factory=stream_factory)
+def start_gateway_pair(
+    response_factory,
+    *,
+    status: int = 200,
+    stream_factory=None,
+    plugins=None,
+    profiles=None,
+):
+    upstream = UpstreamStub(
+        response_factory=response_factory, status=status, stream_factory=stream_factory
+    )
     upstream.start()
     gateway_stub = GatewayStub(
         upstream_base_url=upstream.base_url,

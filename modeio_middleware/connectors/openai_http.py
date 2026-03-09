@@ -5,7 +5,12 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict
 
-from modeio_middleware.connectors.base import CanonicalInvocation, ConnectorAdapter, ConnectorCapabilities
+from modeio_middleware.connectors.base import (
+    CanonicalInvocation,
+    ConnectorAdapter,
+    ConnectorCapabilities,
+)
+from modeio_middleware.connectors.client_identity import detect_openai_client_name
 from modeio_middleware.core.contracts import (
     ENDPOINT_CHAT_COMPLETIONS,
     ENDPOINT_RESPONSES,
@@ -48,16 +53,21 @@ class OpenAIHttpConnector(ConnectorAdapter):
             request_body,
             default_profile=default_profile,
         )
-        profile = normalize_profile_name(options.profile, default_profile=default_profile)
+        profile = normalize_profile_name(
+            options.profile, default_profile=default_profile
+        )
         capabilities = ConnectorCapabilities(can_patch=True, can_block=True)
+        client_name = detect_openai_client_name(incoming_headers)
         connector_context = {
             "endpoint_kind": endpoint_kind,
             "source": "openai_gateway",
+            "client_name": client_name,
             "source_event": "http_request",
             "surface_capabilities": capabilities.as_dict(),
         }
         return CanonicalInvocation(
             source="openai_gateway",
+            client_name=client_name,
             source_event="http_request",
             endpoint_kind=endpoint_kind,
             phase="request",

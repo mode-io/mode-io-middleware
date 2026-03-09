@@ -1,4 +1,12 @@
 recursive-include modeio_middleware/resources *.json *.py *.md
+recursive-include modeio_middleware/resources/dashboard *.html *.css *.js
+graft dashboard/src
+include dashboard/index.html
+include dashboard/package.json
+include dashboard/package-lock.json
+include dashboard/tsconfig.json
+include dashboard/vite.config.ts
+prune dashboard/node_modules
 recursive-include scripts *.py *.sh
 include QUICKSTART.md
 include ARCHITECTURE.md

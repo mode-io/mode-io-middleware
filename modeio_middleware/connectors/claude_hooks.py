@@ -5,7 +5,12 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict
 
-from modeio_middleware.connectors.base import CanonicalInvocation, ConnectorAdapter, ConnectorCapabilities
+from modeio_middleware.connectors.base import (
+    CanonicalInvocation,
+    ConnectorAdapter,
+    ConnectorCapabilities,
+)
+from modeio_middleware.connectors.client_identity import CLIENT_CLAUDE_CODE
 from modeio_middleware.core.contracts import ModeioOptions, normalize_modeio_options
 from modeio_middleware.core.errors import MiddlewareError
 
@@ -97,6 +102,7 @@ def parse_claude_hook_invocation(
     connector_capabilities = _default_connector_capabilities()
     connector_context = {
         "source": "claude_hooks",
+        "client_name": CLIENT_CLAUDE_CODE,
         "source_event": event_name,
         "surface_capabilities": connector_capabilities.as_dict(),
         "native_event": event_payload,
@@ -109,6 +115,7 @@ def parse_claude_hook_invocation(
         }
         return CanonicalInvocation(
             source="claude_hooks",
+            client_name=CLIENT_CLAUDE_CODE,
             source_event=event_name,
             phase=PHASE_PRE_REQUEST,
             endpoint_kind=ENDPOINT_CLAUDE_USER_PROMPT,
@@ -134,6 +141,7 @@ def parse_claude_hook_invocation(
 
     return CanonicalInvocation(
         source="claude_hooks",
+        client_name=CLIENT_CLAUDE_CODE,
         source_event=event_name,
         phase=PHASE_POST_RESPONSE,
         endpoint_kind=ENDPOINT_CLAUDE_STOP,
@@ -175,7 +183,11 @@ def build_claude_hook_response(
     findings: Any,
 ) -> Dict[str, Any]:
     if blocked:
-        message = block_message.strip() if isinstance(block_message, str) and block_message.strip() else "blocked by modeio policy"
+        message = (
+            block_message.strip()
+            if isinstance(block_message, str) and block_message.strip()
+            else "blocked by modeio policy"
+        )
         return {
             "decision": "block",
             "reason": message,
