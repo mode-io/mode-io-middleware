@@ -145,6 +145,13 @@ function createTrafficEvent(profile = "dev") {
   };
 }
 
+function createEmptyTraffic() {
+  return {
+    items: [],
+    nextCursor: null,
+  };
+}
+
 function createStats() {
   return {
     retainedRecords: 1,
@@ -161,6 +168,25 @@ function createStats() {
     byAction: { modify: 1 },
     byPlugin: { "catalog/rewrite": { calls: 1, errors: 0, actions: { modify: 1 } } },
     latencyMs: { p50: 120, p95: 120, max: 120 },
+  };
+}
+
+function createEmptyStats() {
+  return {
+    retainedRecords: 0,
+    completedRecords: 0,
+    inFlightRecords: 0,
+    changedRequestCount: 0,
+    changedResponseCount: 0,
+    byStatus: {},
+    bySource: {},
+    byClient: {},
+    byImpact: {},
+    byLifecycle: {},
+    byEndpointKind: {},
+    byAction: {},
+    byPlugin: {},
+    latencyMs: { p50: 0, p95: 0, max: 0 },
   };
 }
 
@@ -254,20 +280,21 @@ function applyProfileUpdate(inventory: PluginInventoryResponse, body: { pluginOr
   return next;
 }
 
-function installFetchMock(options?: { inventory?: PluginInventoryResponse; conflictOnce?: boolean }) {
+function installFetchMock(options?: { inventory?: PluginInventoryResponse; conflictOnce?: boolean; emptyTraffic?: boolean }) {
   let inventory = structuredClone(options?.inventory ?? createPluginInventory());
   const updates: any[] = [];
   let conflictOnce = options?.conflictOnce ?? false;
+  const emptyTraffic = options?.emptyTraffic ?? false;
 
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
 
     if (url.startsWith("/modeio/api/events?")) {
-      return jsonResponse(createTrafficEvent());
+      return jsonResponse(emptyTraffic ? createEmptyTraffic() : createTrafficEvent());
     }
     if (url === "/modeio/api/stats") {
-      return jsonResponse(createStats());
+      return jsonResponse(emptyTraffic ? createEmptyStats() : createStats());
     }
     if (url === "/modeio/api/events/req_1") {
       return jsonResponse(createDetail());
@@ -308,7 +335,7 @@ describe("App plugin workspace", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
-    expect(await screen.findByText("Rewrite Plugin")).toBeInTheDocument();
+    expect((await screen.findAllByText("Rewrite Plugin")).length).toBeGreaterThan(0);
 
     await user.click(screen.getAllByRole("button", { name: "Enable safely" })[0]);
 
@@ -324,8 +351,25 @@ describe("App plugin workspace", () => {
       },
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Disable" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Disable" }).length).toBeGreaterThan(0));
     expect(fetchState.getInventory().profiles[0]?.pluginOrder).toEqual(["catalog/rewrite"]);
+
+    await user.click(screen.getAllByRole("button", { name: "Disable" })[0]);
+
+    await waitFor(() => expect(fetchState.updates).toHaveLength(2));
+    expect(fetchState.updates[1]).toMatchObject({
+      pluginOrder: [],
+    });
+  });
+
+  it("keeps the top tabs stable and shows demo messaging inside the traffic view", async () => {
+    installFetchMock({ emptyTraffic: true });
+    render(<App />);
+
+    expect(await screen.findByText("Showing example traces. Live data will replace these automatically.")).toBeInTheDocument();
+    expect(screen.queryByText("example data")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Traffic", selected: true })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Plugins", selected: false })).toBeInTheDocument();
   });
 
   it("edits plugin settings and saves an explicit profile draft", async () => {
@@ -334,7 +378,7 @@ describe("App plugin workspace", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
-    await user.click(await screen.findByText("Rewrite Plugin"));
+    await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
 
     await user.selectOptions(screen.getByLabelText("Mode"), "assist");
     await user.click(screen.getByLabelText("Can patch"));
@@ -364,7 +408,7 @@ describe("App plugin workspace", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
-    await user.click(await screen.findByText("Rewrite Plugin"));
+    await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
 
     await user.selectOptions(screen.getByLabelText("Mode"), "assist");
     await user.click(screen.getAllByRole("button", { name: "Save settings" })[0]);
@@ -381,8 +425,37 @@ describe("App plugin workspace", () => {
     await user.click(pluginLink);
 
     expect(await screen.findByRole("tab", { name: "Plugins", selected: true })).toBeInTheDocument();
-    expect(await screen.findByText("Rewrite Plugin")).toBeInTheDocument();
+    expect((await screen.findAllByText("Rewrite Plugin")).length).toBeGreaterThan(0);
     expect((screen.getByLabelText("Selected profile") as HTMLSelectElement).value).toBe("dev");
+  });
+
+  it("blocks quick row actions while the current profile has unsaved draft changes", async () => {
+    installFetchMock();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("tab", { name: "Plugins" }));
+    await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
+    await user.selectOptions(screen.getByLabelText("Mode"), "assist");
+
+    expect(await screen.findByText("Save or discard draft changes before enabling, disabling, or reordering plugins.")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Enable safely" })[0]).toBeDisabled();
+  });
+
+  it("requires resolving a dirty draft before switching profiles", async () => {
+    installFetchMock();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("tab", { name: "Plugins" }));
+    await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
+    await user.selectOptions(screen.getByLabelText("Mode"), "assist");
+    await user.selectOptions(screen.getByLabelText("Selected profile"), "prod");
+
+    expect(await screen.findByText("Unsaved changes are blocking a profile switch to prod.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Discard and continue" }));
+
+    expect((screen.getByLabelText("Selected profile") as HTMLSelectElement).value).toBe("prod");
   });
 
   it("disables mutating controls when the plugin config is read-only", async () => {

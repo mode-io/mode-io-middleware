@@ -132,7 +132,7 @@ describe("pluginManagement helpers", () => {
   it("creates safe enable, disable, and move drafts deterministically", () => {
     const inventory = createInventory();
     const base = buildBaseProfileDraft(inventory, "dev");
-    const enabled = createSafeEnableDraft(inventory, "dev", base, "beta/plugin");
+    const enabled = createSafeEnableDraft(inventory, base, "beta/plugin");
     expect(enabled.pluginOrder).toEqual(["alpha/plugin", "beta/plugin"]);
     expect(enabled.pluginOverrides["beta/plugin"]?.mode).toBe("observe");
     expect(enabled.pluginOverrides["beta/plugin"]?.capabilities_grant).toEqual({ can_patch: false, can_block: false });

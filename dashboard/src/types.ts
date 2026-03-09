@@ -1,5 +1,6 @@
 export type Locale = "en" | "zh";
 export type DashboardView = "traffic" | "plugins";
+export type ThemeMode = "day" | "night";
 
 export type TraceStatus = "completed" | "blocked" | "error" | "stream_completed";
 export type TraceImpact = "pass_through" | "modified" | "blocked" | "warned" | "mixed";
@@ -129,14 +130,21 @@ export interface EventsResponse {
 }
 
 export type MonitorFilterKey = "status" | "clientName" | "impact" | "lifecycle";
+export type MonitorStatusFilter = "all" | TraceStatus;
+export type MonitorClientFilter = "all" | ClientName;
+export type MonitorImpactFilter = "all" | TraceImpact;
+export type MonitorLifecycleFilter = "all" | TraceLifecycle;
 
-export type MonitorFilters = Record<MonitorFilterKey, string>;
+export interface MonitorFilters {
+  status: MonitorStatusFilter;
+  clientName: MonitorClientFilter;
+  impact: MonitorImpactFilter;
+  lifecycle: MonitorLifecycleFilter;
+}
 
 export type PluginValidationStatus = "ok" | "warn" | "error";
 export type PluginMode = "observe" | "assist" | "enforce";
-export type PluginStateFilter = "all" | "enabled" | "disabled" | "attention";
-export type PluginCapabilityFilter = "all" | "canPatch" | "canBlock";
-export type PluginHealthFilter = "all" | PluginValidationStatus;
+export type PluginSourceKind = "discovered" | "config" | "missing" | "other";
 
 export interface PluginCapabilitiesGrant {
   can_patch: boolean;
@@ -145,7 +153,7 @@ export interface PluginCapabilitiesGrant {
 
 export interface PluginProfileOverride {
   enabled?: boolean;
-  mode?: string;
+  mode?: PluginMode;
   capabilities_grant?: Partial<PluginCapabilitiesGrant>;
   timeout_ms?: Record<string, number>;
   pool_size?: number;
@@ -156,7 +164,7 @@ export interface PluginProfileState {
   enabled: boolean;
   position: number | null;
   override: PluginProfileOverride;
-  effectiveMode?: string;
+  effectiveMode?: PluginMode;
   effectiveCapabilitiesGrant?: PluginCapabilitiesGrant;
   effectivePoolSize?: number;
   effectiveTimeoutMs?: Record<string, number>;
@@ -178,7 +186,7 @@ export interface PluginInventoryItem {
   name: string;
   displayName: string;
   description: string;
-  sourceKind: string;
+  sourceKind: PluginSourceKind;
   version: string;
   hooks: string[];
   declaredCapabilities: {
@@ -228,7 +236,4 @@ export interface PluginUpdateResponse {
 
 export interface PluginListFilters {
   search: string;
-  state: PluginStateFilter;
-  capability: PluginCapabilityFilter;
-  health: PluginHealthFilter;
 }

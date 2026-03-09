@@ -1,71 +1,43 @@
 import { getCopy } from "../i18n";
-import type { Locale, PluginListFilters, PluginProfileOverride } from "../types";
-import type { PluginInventoryItem, PluginProfileSummary, PluginRuntimeSummary } from "../types";
-import type { PluginWorkingState, PluginRow } from "../pluginManagement";
+import type { PluginWorkspaceController } from "../hooks/usePluginManagementState";
+import type { Locale } from "../types";
 import { PluginInspector } from "./PluginInspector";
 import { PluginList } from "./PluginList";
 import { PluginToolbar } from "./PluginToolbar";
 
 interface PluginWorkspaceProps {
   locale: Locale;
-  runtime: PluginRuntimeSummary | null;
-  profiles: PluginProfileSummary[];
-  selectedProfile: string;
-  selectedPluginName: string | null;
-  selectedPlugin: PluginInventoryItem | null;
-  selectedWorkingState: PluginWorkingState | null;
-  rows: PluginRow[];
-  filters: PluginListFilters;
-  counts: { total: number; enabled: number; attention: number };
-  warnings: string[];
-  loading: boolean;
-  readOnly: boolean;
-  dirty: boolean;
-  saving: boolean;
-  pendingActionPlugin: string | null;
-  error: string | null;
-  onProfileChange: (profile: string) => void;
-  onSelectPlugin: (pluginName: string) => void;
-  onFiltersChange: (filters: PluginListFilters) => void;
-  onRefresh: () => void;
-  onEnable: (pluginName: string) => void;
-  onDisable: (pluginName: string) => void;
-  onMove: (pluginName: string, direction: -1 | 1) => void;
-  onUpdateSettings: (update: PluginProfileOverride) => void;
-  onSave: () => void;
-  onDiscard: () => void;
+  controller: PluginWorkspaceController;
 }
 
-export function PluginWorkspace({
-  locale,
-  runtime,
-  profiles,
-  selectedProfile,
-  selectedPluginName,
-  selectedPlugin,
-  selectedWorkingState,
-  rows,
-  filters,
-  counts,
-  warnings,
-  loading,
-  readOnly,
-  dirty,
-  saving,
-  pendingActionPlugin,
-  error,
-  onProfileChange,
-  onSelectPlugin,
-  onFiltersChange,
-  onRefresh,
-  onEnable,
-  onDisable,
-  onMove,
-  onUpdateSettings,
-  onSave,
-  onDiscard,
-}: PluginWorkspaceProps) {
+export function PluginWorkspace({ locale, controller }: PluginWorkspaceProps) {
   const copy = getCopy(locale);
+  const {
+    runtime,
+    profiles,
+    selectedProfile,
+    selectedPluginName,
+    selectedPlugin,
+    selectedWorkingState,
+    rows,
+    filters,
+    counts,
+    warnings,
+    loading,
+    readOnly,
+    dirty,
+    saving,
+    quickActionsDisabled,
+    pendingActionPlugin,
+    pendingIntent,
+    selectionHiddenByFilter,
+    error,
+  } = controller;
+  const pendingIntentLabel = pendingIntent
+    ? pendingIntent.type === "switch-profile"
+      ? copy.plugins.pendingSwitchProfile.replace("{target}", pendingIntent.profileName)
+      : copy.plugins.pendingFocusPlugin.replace("{target}", pendingIntent.pluginName)
+    : null;
 
   return (
     <>
@@ -77,33 +49,51 @@ export function PluginWorkspace({
         filters={filters}
         loading={loading}
         counts={counts}
-        visibleCount={rows.length}
-        onProfileChange={onProfileChange}
-        onFiltersChange={onFiltersChange}
-        onRefresh={onRefresh}
+        onProfileChange={controller.setSelectedProfile}
+        onFiltersChange={controller.setFilters}
+        onRefresh={controller.refresh}
       />
 
       {readOnly ? <div className="error-strip">{copy.plugins.readOnly}</div> : null}
+      {pendingIntent ? (
+        <div className="warning-strip plugin-pending-intent">
+          <span>{pendingIntentLabel}</span>
+          <div className="plugin-pending-intent__actions">
+            <button className="btn btn--quiet" type="button" onClick={() => void controller.confirmPendingIntent("discard")}>
+              {copy.plugins.discardAndContinue}
+            </button>
+            <button className="btn btn--quiet" type="button" onClick={() => void controller.confirmPendingIntent("save")} disabled={saving}>
+              {copy.plugins.saveAndContinue}
+            </button>
+            <button className="btn btn--quiet" type="button" onClick={controller.cancelPendingIntent}>
+              {copy.plugins.stayHere}
+            </button>
+          </div>
+        </div>
+      ) : null}
       {warnings.map((warning) => (
         <div key={warning} className="warning-strip">
           {warning}
         </div>
       ))}
       {error ? <div className="error-strip">{error}</div> : null}
+      {quickActionsDisabled && !readOnly && dirty ? <div className="warning-strip">{copy.plugins.quickActionsLocked}</div> : null}
+      {selectionHiddenByFilter ? <div className="warning-strip">{copy.plugins.currentSelectionMissing}</div> : null}
 
       <main className="master-detail master-detail--plugins">
         <PluginList
           locale={locale}
           rows={rows}
-          enabledCount={counts.enabled}
+          selectedProfile={selectedProfile}
           selectedPluginName={selectedPluginName}
           loading={loading}
           readOnly={readOnly}
+          actionsDisabled={quickActionsDisabled}
           pendingActionPlugin={pendingActionPlugin}
-          onSelect={onSelectPlugin}
-          onEnable={onEnable}
-          onDisable={onDisable}
-          onMove={onMove}
+          onSelect={controller.setSelectedPluginName}
+          onEnable={controller.enablePluginSafely}
+          onDisable={controller.disablePlugin}
+          onMove={controller.movePlugin}
         />
         <div className="master-detail__divider" aria-hidden="true" />
         <PluginInspector
@@ -113,11 +103,12 @@ export function PluginWorkspace({
           readOnly={readOnly}
           dirty={dirty}
           saving={saving}
-          onEnable={onEnable}
-          onDisable={onDisable}
-          onUpdate={onUpdateSettings}
-          onSave={onSave}
-          onDiscard={onDiscard}
+          quickActionsDisabled={quickActionsDisabled}
+          onEnable={controller.enablePluginSafely}
+          onDisable={controller.disablePlugin}
+          onUpdate={controller.updateSelectedPluginSettings}
+          onSave={() => void controller.saveChanges()}
+          onDiscard={controller.discardChanges}
         />
       </main>
     </>

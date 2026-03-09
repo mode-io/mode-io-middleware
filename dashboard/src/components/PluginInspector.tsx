@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { buildPluginInspectorActionState } from "../features/plugins/actionState";
 import { fmtBoolean, fmtPluginMode, fmtPluginSource, fmtPluginValidation, getCopy } from "../i18n";
 import type { PluginWorkingState } from "../pluginManagement";
 import type { Locale, PluginInventoryItem, PluginProfileOverride } from "../types";
@@ -11,6 +12,7 @@ interface PluginInspectorProps {
   readOnly: boolean;
   dirty: boolean;
   saving: boolean;
+  quickActionsDisabled: boolean;
   onEnable: (pluginName: string) => void;
   onDisable: (pluginName: string) => void;
   onUpdate: (update: PluginProfileOverride) => void;
@@ -77,6 +79,19 @@ function TimeoutFields({
   );
 }
 
+function calloutTone({ invalid, requiresReview, enabled }: { invalid: boolean; requiresReview: boolean; enabled: boolean }) {
+  if (invalid) {
+    return "danger";
+  }
+  if (requiresReview) {
+    return "warn";
+  }
+  if (enabled) {
+    return "ok";
+  }
+  return "neutral";
+}
+
 export function PluginInspector({
   locale,
   plugin,
@@ -84,6 +99,7 @@ export function PluginInspector({
   readOnly,
   dirty,
   saving,
+  quickActionsDisabled,
   onEnable,
   onDisable,
   onUpdate,
@@ -97,23 +113,63 @@ export function PluginInspector({
     setPoolSizeInput(workingState ? String(workingState.effectivePoolSize) : "");
   }, [workingState?.effectivePoolSize, plugin?.name]);
 
+  const docsUrl = typeof plugin?.metadata.documentation_url === "string"
+    ? plugin.metadata.documentation_url
+    : typeof plugin?.metadata.homepage === "string"
+      ? plugin.metadata.homepage
+      : "";
+
+  const invalid = plugin?.validation.status === "error";
+  const quickActions = plugin && workingState
+    ? buildPluginInspectorActionState(plugin, workingState, {
+        readOnly,
+        actionsDisabled: quickActionsDisabled,
+        actionPending: saving,
+      })
+    : { canEnable: false, canDisable: false };
+
+  const callout = useMemo(() => {
+    if (!plugin || !workingState) {
+      return null;
+    }
+
+    if (invalid) {
+      return {
+        title: copy.plugins.statusInvalid,
+        detail: plugin.validation.errors[0] ?? copy.plugins.invalidPlugin,
+      };
+    }
+
+    if (workingState.requiresReview) {
+      return {
+        title: copy.plugins.statusReview,
+        detail: workingState.enabled ? copy.plugins.statusEnabledDetail : copy.plugins.requiresReview,
+      };
+    }
+
+    if (workingState.enabled) {
+      return {
+        title: copy.plugins.statusSafe,
+        detail: copy.plugins.statusEnabledDetail,
+      };
+    }
+
+    return {
+      title: copy.plugins.statusIdle,
+      detail: copy.plugins.statusDisabledDetail,
+    };
+  }, [copy.plugins, invalid, plugin, workingState]);
+
   if (!plugin || !workingState) {
     return (
       <div className="inspector-panel inspector-panel--empty">
         <div className="inspector-empty-state">
           <strong>{copy.plugins.inspectorTitle}</strong>
-          <p>{copy.inspector.emptyNote}</p>
+          <p>{copy.plugins.selectedHint}</p>
         </div>
       </div>
     );
   }
-
-  const docsUrl = typeof plugin.metadata.documentation_url === "string"
-    ? plugin.metadata.documentation_url
-    : typeof plugin.metadata.homepage === "string"
-      ? plugin.metadata.homepage
-      : "";
-  const invalid = plugin.validation.status === "error";
 
   return (
     <div className="inspector-panel">
@@ -124,11 +180,11 @@ export function PluginInspector({
         </div>
         <div className="plugin-inspector__actions">
           {workingState.enabled ? (
-            <button className="btn btn--quiet" onClick={() => onDisable(plugin.name)} type="button" disabled={readOnly || saving}>
+            <button className="btn btn--quiet" onClick={() => onDisable(plugin.name)} type="button" disabled={!quickActions.canDisable}>
               {copy.plugins.disable}
             </button>
           ) : (
-            <button className="btn btn--quiet" onClick={() => onEnable(plugin.name)} type="button" disabled={readOnly || saving || invalid}>
+            <button className="btn btn--quiet" onClick={() => onEnable(plugin.name)} type="button" disabled={!quickActions.canEnable || invalid}>
               {copy.plugins.enable}
             </button>
           )}
@@ -139,20 +195,33 @@ export function PluginInspector({
       </div>
 
       <div className="plugin-inspector__body">
-        {!readOnly && dirty ? <div className="plugin-banner plugin-banner--draft">{copy.plugins.pendingChanges}</div> : null}
-        {readOnly ? <div className="plugin-banner plugin-banner--warn">{copy.plugins.readOnly}</div> : null}
-        {workingState.requiresReview && !workingState.enabled ? <div className="plugin-banner plugin-banner--warn">{copy.plugins.requiresReview}</div> : null}
-        {!workingState.enabled && workingState.hasRememberedSettings ? <div className="plugin-banner">{copy.plugins.remembered}</div> : null}
-        {invalid ? <div className="plugin-banner plugin-banner--danger">{copy.plugins.invalidPlugin}</div> : null}
+        <section className="plugin-section plugin-section--hero">
+          <div className="plugin-hero">
+            <div className="plugin-hero__identity">
+              <strong className="plugin-hero__title">{plugin.displayName}</strong>
+              <div className="plugin-hero__subtitle mono">{plugin.name}</div>
+            </div>
+            <div className="plugin-hero__chips">
+              <span className={`plugin-state plugin-state--${workingState.enabled ? "enabled" : workingState.requiresReview ? "attention" : "disabled"}`}>
+                {workingState.enabled ? copy.plugins.stateEnabled : workingState.requiresReview ? copy.plugins.stateAttention : copy.plugins.stateDisabled}
+              </span>
+              <span className={`plugin-health plugin-health--${plugin.validation.status}`}>{fmtPluginValidation(plugin.validation.status, locale)}</span>
+            </div>
+          </div>
+          <div className={`plugin-callout plugin-callout--${calloutTone({ invalid, requiresReview: workingState.requiresReview, enabled: workingState.enabled })}`}>
+            <div className="plugin-callout__title">{callout?.title}</div>
+            <div className="plugin-callout__detail">{callout?.detail}</div>
+          </div>
+          {dirty ? <div className="plugin-draft-note mono">{copy.plugins.pendingChanges}</div> : null}
+        </section>
 
         <section className="plugin-section">
           <div className="plugin-section__title">{copy.plugins.overview}</div>
           <div className="plugin-field-grid">
-            <Field label={copy.plugins.manifestName} value={plugin.name} />
-            <Field label={copy.plugins.version} value={plugin.version || copy.plugins.none} />
-            <Field label={copy.plugins.source} value={fmtPluginSource(plugin.sourceKind, locale)} />
-            <Field label={copy.plugins.hooks} value={plugin.hooks.join(", ") || copy.plugins.none} />
             <Field label={copy.plugins.description} value={plugin.description || copy.plugins.none} />
+            <Field label={copy.plugins.version} value={plugin.version || copy.plugins.none} />
+            <Field label={copy.plugins.hooks} value={plugin.hooks.join(", ") || copy.plugins.none} />
+            <Field label={copy.plugins.source} value={fmtPluginSource(plugin.sourceKind, locale)} />
           </div>
         </section>
 
@@ -163,17 +232,15 @@ export function PluginInspector({
             <Field label={copy.plugins.chainPosition} value={workingState.position != null ? String(workingState.position + 1) : copy.plugins.none} />
             <Field label={copy.plugins.mode} value={fmtPluginMode(workingState.effectiveMode, locale)} />
             <Field label={copy.plugins.grants} value={`patch ${fmtBoolean(workingState.effectiveCapabilitiesGrant.can_patch, locale)} / block ${fmtBoolean(workingState.effectiveCapabilitiesGrant.can_block, locale)}`} />
-            <Field label={copy.plugins.poolSize} value={String(workingState.effectivePoolSize)} />
-            <Field label={copy.plugins.timeouts} value={Object.keys(workingState.effectiveTimeoutMs).length > 0 ? Object.entries(workingState.effectiveTimeoutMs).map(([hook, value]) => `${hook}=${value}`).join(", ") : copy.plugins.timeoutUnset} />
           </div>
         </section>
 
         <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.settings}</div>
+          <div className="plugin-section__title">{copy.plugins.quickSettings}</div>
           <div className="plugin-settings-grid">
             <label className="filter-field">
               <span className="filter-field__label">{copy.plugins.mode}</span>
-              <select value={workingState.effectiveMode} aria-label={copy.plugins.mode} disabled={readOnly} onChange={(event) => onUpdate({ mode: event.target.value })}>
+              <select value={workingState.effectiveMode} aria-label={copy.plugins.mode} disabled={readOnly} onChange={(event) => onUpdate({ mode: event.target.value as PluginProfileOverride["mode"] })}>
                 <option value="observe">{fmtPluginMode("observe", locale)}</option>
                 <option value="assist">{fmtPluginMode("assist", locale)}</option>
                 <option value="enforce">{fmtPluginMode("enforce", locale)}</option>
@@ -220,7 +287,6 @@ export function PluginInspector({
               <input
                 className="input input--numeric"
                 type="text"
-                min={1}
                 inputMode="numeric"
                 value={poolSizeInput}
                 aria-label={copy.plugins.poolSize}
@@ -242,70 +308,69 @@ export function PluginInspector({
               />
             </label>
           </div>
-
-          <div className="plugin-timeout-panel">
-            <div className="plugin-timeout-panel__title">{copy.plugins.timeoutOverride}</div>
-            <TimeoutFields
-              hooks={plugin.hooks}
-              timeouts={workingState.effectiveTimeoutMs}
-              onUpdate={(nextTimeouts) => onUpdate({ timeout_ms: nextTimeouts })}
-              disabled={readOnly}
-              locale={locale}
-            />
-          </div>
         </section>
 
-        <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.declaredCapabilities}</div>
-          <div className="plugin-field-grid">
-            <Field label={copy.plugins.canPatch} value={fmtBoolean(plugin.declaredCapabilities.canPatch, locale)} />
-            <Field label={copy.plugins.canBlock} value={fmtBoolean(plugin.declaredCapabilities.canBlock, locale)} />
-            <Field label={copy.plugins.needsNetwork} value={fmtBoolean(plugin.declaredCapabilities.needsNetwork, locale)} />
-            <Field label={copy.plugins.needsRawBody} value={fmtBoolean(plugin.declaredCapabilities.needsRawBody, locale)} />
+        <details className="plugin-details" open={dirty || invalid}>
+          <summary className="plugin-details__summary">{copy.plugins.advanced}</summary>
+          <div className="plugin-details__body">
+            <div className="plugin-timeout-panel">
+              <div className="plugin-timeout-panel__title">{copy.plugins.timeoutOverride}</div>
+              <TimeoutFields
+                hooks={plugin.hooks}
+                timeouts={workingState.effectiveTimeoutMs}
+                onUpdate={(nextTimeouts) => onUpdate({ timeout_ms: nextTimeouts })}
+                disabled={readOnly}
+                locale={locale}
+              />
+            </div>
+            <div className="plugin-field-grid">
+              <Field label={copy.plugins.pathPlugin} value={plugin.pluginDir || copy.plugins.none} />
+              <Field label={copy.plugins.pathManifest} value={plugin.manifestPath || copy.plugins.none} />
+              <Field label={copy.plugins.pathHost} value={plugin.hostPath || copy.plugins.none} />
+              <Field label={copy.plugins.pathReadme} value={plugin.readmePath || copy.plugins.none} />
+            </div>
+            {docsUrl ? (
+              <a className="plugin-link mono" href={docsUrl} target="_blank" rel="noreferrer">
+                {copy.plugins.openDocs}
+              </a>
+            ) : null}
           </div>
-        </section>
+        </details>
 
-        <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.validation}</div>
-          <div className="plugin-validation-stack">
-            <div className={`plugin-health plugin-health--${plugin.validation.status}`}>{fmtPluginValidation(plugin.validation.status, locale)}</div>
-            {plugin.validation.warnings.map((warning) => (
-              <div key={warning} className="plugin-banner plugin-banner--warn">{warning}</div>
-            ))}
-            {plugin.validation.errors.map((validationError) => (
-              <div key={validationError} className="plugin-banner plugin-banner--danger">{validationError}</div>
-            ))}
-            {plugin.validation.warnings.length === 0 && plugin.validation.errors.length === 0 ? <div className="plugin-banner">{copy.plugins.none}</div> : null}
+        <details className="plugin-details" open={invalid || plugin.validation.warnings.length > 0}>
+          <summary className="plugin-details__summary">{copy.plugins.diagnostics}</summary>
+          <div className="plugin-details__body">
+            <section className="plugin-section plugin-section--nested">
+              <div className="plugin-section__title">{copy.plugins.validation}</div>
+              <div className="plugin-validation-stack">
+                <div className={`plugin-health plugin-health--${plugin.validation.status}`}>{fmtPluginValidation(plugin.validation.status, locale)}</div>
+                {plugin.validation.warnings.map((warning) => (
+                  <div key={warning} className="plugin-callout plugin-callout--warn">
+                    <div className="plugin-callout__title">{copy.plugins.issue}</div>
+                    <div className="plugin-callout__detail">{warning}</div>
+                  </div>
+                ))}
+                {plugin.validation.errors.map((validationError) => (
+                  <div key={validationError} className="plugin-callout plugin-callout--danger">
+                    <div className="plugin-callout__title">{copy.plugins.issue}</div>
+                    <div className="plugin-callout__detail">{validationError}</div>
+                  </div>
+                ))}
+                {plugin.validation.warnings.length === 0 && plugin.validation.errors.length === 0 ? <div className="plugin-field__value">{copy.plugins.none}</div> : null}
+              </div>
+            </section>
+
+            <section className="plugin-section plugin-section--nested">
+              <div className="plugin-section__title">{copy.plugins.usage}</div>
+              <div className="plugin-field-grid">
+                <Field label={copy.plugins.calls} value={String(plugin.stats.calls)} />
+                <Field label={copy.plugins.errors} value={String(plugin.stats.errors)} />
+                <Field label={copy.plugins.actionsShort} value={Object.entries(plugin.stats.actions).map(([key, value]) => `${key}:${value}`).join(", ") || copy.plugins.none} />
+                <Field label={copy.plugins.declaredCapabilities} value={`patch ${fmtBoolean(plugin.declaredCapabilities.canPatch, locale)} / block ${fmtBoolean(plugin.declaredCapabilities.canBlock, locale)}`} />
+              </div>
+            </section>
           </div>
-        </section>
-
-        <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.usage}</div>
-          <div className="plugin-field-grid">
-            <Field label={copy.plugins.calls} value={String(plugin.stats.calls)} />
-            <Field label={copy.plugins.errors} value={String(plugin.stats.errors)} />
-            <Field label={copy.plugins.actions} value={Object.entries(plugin.stats.actions).map(([key, value]) => `${key}:${value}`).join(", ") || copy.plugins.none} />
-          </div>
-        </section>
-
-        <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.files}</div>
-          <div className="plugin-field-grid">
-            <Field label={copy.plugins.pathPlugin} value={plugin.pluginDir || copy.plugins.none} />
-            <Field label={copy.plugins.pathManifest} value={plugin.manifestPath || copy.plugins.none} />
-            <Field label={copy.plugins.pathHost} value={plugin.hostPath || copy.plugins.none} />
-            <Field label={copy.plugins.pathReadme} value={plugin.readmePath || copy.plugins.none} />
-          </div>
-        </section>
-
-        {docsUrl ? (
-          <section className="plugin-section">
-            <div className="plugin-section__title">{copy.plugins.docs}</div>
-            <a className="plugin-link mono" href={docsUrl} target="_blank" rel="noreferrer">
-              {copy.plugins.openDocs}
-            </a>
-          </section>
-        ) : null}
+        </details>
 
         {!readOnly && dirty ? (
           <div className="plugin-inspector__footer">

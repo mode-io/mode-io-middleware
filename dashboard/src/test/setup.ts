@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
 
 class TestEventSource {
   static instances: TestEventSource[] = [];
@@ -89,11 +89,30 @@ Object.defineProperty(window, "EventSource", {
   value: TestEventSource,
 });
 
+Object.defineProperty(window, "__TEST_EVENT_SOURCE__", {
+  writable: true,
+  value: TestEventSource,
+});
+
 Object.defineProperty(window, "localStorage", {
   writable: true,
   value: new TestStorage(),
 });
 
 afterEach(() => {
+  TestEventSource.instances = [];
+  vi.unstubAllGlobals();
+  Object.defineProperty(window, "EventSource", {
+    writable: true,
+    value: TestEventSource,
+  });
+  Object.defineProperty(window, "__TEST_EVENT_SOURCE__", {
+    writable: true,
+    value: TestEventSource,
+  });
+  Object.defineProperty(window, "localStorage", {
+    writable: true,
+    value: new TestStorage(),
+  });
   cleanup();
 });

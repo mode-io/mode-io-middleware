@@ -1,5 +1,14 @@
 import { fmtClient, fmtImpact, fmtLifecycle, fmtStatus, getCopy } from "./i18n";
-import type { EventSummary, Locale, MonitorFilterKey, MonitorFilters } from "./types";
+import type {
+  EventSummary,
+  Locale,
+  MonitorClientFilter,
+  MonitorFilterKey,
+  MonitorFilters,
+  MonitorImpactFilter,
+  MonitorLifecycleFilter,
+  MonitorStatusFilter,
+} from "./types";
 
 export const DEFAULT_FILTERS: MonitorFilters = {
   status: "all",
@@ -8,14 +17,23 @@ export const DEFAULT_FILTERS: MonitorFilters = {
   lifecycle: "all",
 };
 
-export const FILTER_OPTIONS: Record<MonitorFilterKey, string[]> = {
+export const FILTER_OPTIONS: {
+  status: MonitorStatusFilter[];
+  clientName: MonitorClientFilter[];
+  impact: MonitorImpactFilter[];
+  lifecycle: MonitorLifecycleFilter[];
+} = {
   status: ["all", "completed", "blocked", "error", "stream_completed"],
   clientName: ["all", "codex", "opencode", "openclaw", "claude_code", "unknown"],
   impact: ["all", "pass_through", "modified", "blocked", "warned", "mixed"],
   lifecycle: ["all", "none", "pre_request", "post_response", "pre_and_post", "stream", "pre_and_stream"],
 };
 
-export function setFilterValue(filters: MonitorFilters, key: MonitorFilterKey, value: string): MonitorFilters {
+export function setFilterValue<K extends MonitorFilterKey>(
+  filters: MonitorFilters,
+  key: K,
+  value: MonitorFilters[K],
+): MonitorFilters {
   return {
     ...filters,
     [key]: value,
@@ -46,7 +64,7 @@ export function filterEvents(events: EventSummary[], filters: MonitorFilters): E
   return events.filter((event) => matchesMonitorFilters(event, filters));
 }
 
-export function formatFilterValue(key: MonitorFilterKey, value: string, locale: Locale): string {
+export function formatFilterValue(key: MonitorFilterKey, value: MonitorFilters[MonitorFilterKey], locale: Locale): string {
   const copy = getCopy(locale);
 
   if (value === "all") {
@@ -68,7 +86,7 @@ export function formatFilterValue(key: MonitorFilterKey, value: string, locale: 
   return value;
 }
 
-export function formatFilterChip(key: MonitorFilterKey, value: string, locale: Locale): string {
+export function formatFilterChip(key: MonitorFilterKey, value: MonitorFilters[MonitorFilterKey], locale: Locale): string {
   const copy = getCopy(locale);
   const labelByKey: Record<MonitorFilterKey, string> = {
     status: copy.filters.status,

@@ -1,14 +1,16 @@
+import { buildPluginRowActionState } from "../features/plugins/actionState";
 import { fmtPluginMode, fmtPluginSource, fmtPluginValidation, getCopy } from "../i18n";
+import { groupPluginRows, type PluginRow } from "../pluginManagement";
 import type { Locale } from "../types";
-import type { PluginRow } from "../pluginManagement";
 
 interface PluginListProps {
   locale: Locale;
   rows: PluginRow[];
-  enabledCount: number;
+  selectedProfile: string;
   selectedPluginName: string | null;
   loading: boolean;
   readOnly: boolean;
+  actionsDisabled: boolean;
   pendingActionPlugin: string | null;
   onSelect: (pluginName: string) => void;
   onEnable: (pluginName: string) => void;
@@ -16,19 +18,219 @@ interface PluginListProps {
   onMove: (pluginName: string, direction: -1 | 1) => void;
 }
 
-function PluginStateLabel({ kind, locale }: { kind: PluginRow["stateKind"]; locale: Locale }) {
+function renderIssue(row: PluginRow): string | null {
+  return row.plugin.validation.errors[0] ?? row.plugin.validation.warnings[0] ?? null;
+}
+
+function RowActionCluster({
+  row,
+  enabledCount,
+  readOnly,
+  actionsDisabled,
+  pendingActionPlugin,
+  locale,
+  onSelect,
+  onEnable,
+  onDisable,
+  onMove,
+}: {
+  row: PluginRow;
+  enabledCount: number;
+  readOnly: boolean;
+  actionsDisabled: boolean;
+  pendingActionPlugin: string | null;
+  locale: Locale;
+  onSelect: (pluginName: string) => void;
+  onEnable: (pluginName: string) => void;
+  onDisable: (pluginName: string) => void;
+  onMove: (pluginName: string, direction: -1 | 1) => void;
+}) {
   const copy = getCopy(locale);
-  const label = kind === "enabled" ? copy.plugins.stateEnabled : kind === "attention" ? copy.plugins.stateAttention : copy.plugins.stateDisabled;
-  return <span className={`plugin-state plugin-state--${kind}`}>{label}</span>;
+  const quickActions = buildPluginRowActionState(row, {
+    readOnly,
+    actionsDisabled,
+    actionPending: pendingActionPlugin === row.plugin.name,
+    enabledCount,
+  });
+
+  if (row.working.enabled) {
+    return (
+      <div className="plugin-card__actions">
+        <button className="btn btn--quiet" type="button" disabled={!quickActions.canDisable} onClick={(event) => { event.stopPropagation(); void onDisable(row.plugin.name); }}>
+          {copy.plugins.disable}
+        </button>
+        <button className="btn btn--quiet" type="button" disabled={!quickActions.canMoveUp} onClick={(event) => { event.stopPropagation(); void onMove(row.plugin.name, -1); }}>
+          {copy.plugins.moveUp}
+        </button>
+        <button className="btn btn--quiet" type="button" disabled={!quickActions.canMoveDown} onClick={(event) => { event.stopPropagation(); void onMove(row.plugin.name, 1); }}>
+          {copy.plugins.moveDown}
+        </button>
+      </div>
+    );
+  }
+
+  if (quickActions.showReview) {
+    return (
+      <div className="plugin-card__actions">
+        <button className="btn btn--quiet" type="button" onClick={(event) => { event.stopPropagation(); onSelect(row.plugin.name); }}>
+          {copy.plugins.review}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="plugin-card__actions">
+      <button className="btn btn--quiet" type="button" disabled={!quickActions.canEnable} onClick={(event) => { event.stopPropagation(); void onEnable(row.plugin.name); }}>
+        {copy.plugins.enable}
+      </button>
+    </div>
+  );
+}
+
+function PluginCard({
+  row,
+  locale,
+  selected,
+  readOnly,
+  actionsDisabled,
+  pendingActionPlugin,
+  enabledCount,
+  onSelect,
+  onEnable,
+  onDisable,
+  onMove,
+}: {
+  row: PluginRow;
+  locale: Locale;
+  selected: boolean;
+  readOnly: boolean;
+  actionsDisabled: boolean;
+  pendingActionPlugin: string | null;
+  enabledCount: number;
+  onSelect: (pluginName: string) => void;
+  onEnable: (pluginName: string) => void;
+  onDisable: (pluginName: string) => void;
+  onMove: (pluginName: string, direction: -1 | 1) => void;
+}) {
+  const copy = getCopy(locale);
+  const issue = renderIssue(row);
+
+  return (
+    <article
+      className={`plugin-card${selected ? " plugin-card--selected" : ""}`}
+      onClick={() => onSelect(row.plugin.name)}
+    >
+      <div className="plugin-card__topline">
+        <div className="plugin-card__title-group">
+          <div className="plugin-card__title-row">
+            <strong>{row.plugin.displayName}</strong>
+            {row.working.enabled && row.working.position != null ? (
+              <span className="plugin-card__order mono">#{row.working.position + 1}</span>
+            ) : null}
+            <span className={`plugin-health plugin-health--${row.plugin.validation.status}`}>{fmtPluginValidation(row.plugin.validation.status, locale)}</span>
+          </div>
+          <div className="plugin-card__identity mono">{row.plugin.name}</div>
+        </div>
+        <RowActionCluster
+          row={row}
+          enabledCount={enabledCount}
+          readOnly={readOnly}
+          actionsDisabled={actionsDisabled}
+          pendingActionPlugin={pendingActionPlugin}
+          locale={locale}
+          onSelect={onSelect}
+          onEnable={onEnable}
+          onDisable={onDisable}
+          onMove={onMove}
+        />
+      </div>
+
+      <div className="plugin-card__description">{row.plugin.description || copy.plugins.none}</div>
+
+      <div className="plugin-card__meta">
+        <span className={`plugin-state plugin-state--${row.stateKind}`}>{row.stateKind === "enabled" ? copy.plugins.stateEnabled : row.stateKind === "attention" ? copy.plugins.stateAttention : copy.plugins.stateDisabled}</span>
+        <span className="plugin-card__meta-chip mono">{fmtPluginMode(row.working.effectiveMode, locale)}</span>
+        <span className="plugin-card__meta-chip mono">{row.plugin.hooks.join(", ") || copy.plugins.none}</span>
+        <span className="plugin-card__meta-chip mono">{fmtPluginSource(row.plugin.sourceKind, locale)}</span>
+        {row.plugin.declaredCapabilities.canPatch ? <span className="plugin-card__meta-chip mono">{copy.plugins.capabilityPatch}</span> : null}
+        {row.plugin.declaredCapabilities.canBlock ? <span className="plugin-card__meta-chip mono">{copy.plugins.capabilityBlock}</span> : null}
+      </div>
+
+      <div className="plugin-card__footer">
+        <span className="plugin-card__usage mono">{copy.plugins.calls}: {row.plugin.stats.calls}</span>
+        {issue ? <span className="plugin-card__issue">{copy.plugins.issue}: {issue}</span> : null}
+      </div>
+    </article>
+  );
+}
+
+function PluginSection({
+  title,
+  emptyText,
+  rows,
+  locale,
+  selectedPluginName,
+  readOnly,
+  actionsDisabled,
+  pendingActionPlugin,
+  enabledCount,
+  onSelect,
+  onEnable,
+  onDisable,
+  onMove,
+}: {
+  title: string;
+  emptyText: string;
+  rows: PluginRow[];
+  locale: Locale;
+  selectedPluginName: string | null;
+  readOnly: boolean;
+  actionsDisabled: boolean;
+  pendingActionPlugin: string | null;
+  enabledCount: number;
+  onSelect: (pluginName: string) => void;
+  onEnable: (pluginName: string) => void;
+  onDisable: (pluginName: string) => void;
+  onMove: (pluginName: string, direction: -1 | 1) => void;
+}) {
+  return (
+    <section className="plugin-group">
+      <div className="plugin-group__header">
+        <strong className="plugin-group__title">{title}</strong>
+        <span className="plugin-group__count mono">{rows.length}</span>
+      </div>
+      {rows.length === 0 ? <div className="plugin-group__empty">{emptyText}</div> : null}
+      <div className="plugin-group__list">
+        {rows.map((row) => (
+          <PluginCard
+            key={row.plugin.name}
+            row={row}
+            locale={locale}
+            selected={row.plugin.name === selectedPluginName}
+            readOnly={readOnly}
+            actionsDisabled={actionsDisabled}
+            pendingActionPlugin={pendingActionPlugin}
+            enabledCount={enabledCount}
+            onSelect={onSelect}
+            onEnable={onEnable}
+            onDisable={onDisable}
+            onMove={onMove}
+          />
+        ))}
+      </div>
+    </section>
+  );
 }
 
 export function PluginList({
   locale,
   rows,
-  enabledCount,
+  selectedProfile,
   selectedPluginName,
   loading,
   readOnly,
+  actionsDisabled,
   pendingActionPlugin,
   onSelect,
   onEnable,
@@ -36,120 +238,76 @@ export function PluginList({
   onMove,
 }: PluginListProps) {
   const copy = getCopy(locale);
+  const groups = groupPluginRows(rows);
 
   return (
     <div className="plugin-list-panel">
       <div className="pane-header">
         <div>
           <strong className="pane-header__title">{copy.plugins.listTitle}</strong>
-          <div className="pane-header__meta">{copy.plugins.listSubtitle}</div>
+          <div className="pane-header__meta">{selectedProfile}</div>
         </div>
         <div className="pane-header__count mono">{rows.length}</div>
       </div>
 
       <div className="plugin-list__scroll">
-        <table className="plugin-list">
-          <colgroup>
-            <col className="plugin-list__col plugin-list__col--state" />
-            <col className="plugin-list__col plugin-list__col--plugin" />
-            <col className="plugin-list__col plugin-list__col--mode" />
-            <col className="plugin-list__col plugin-list__col--hooks" />
-            <col className="plugin-list__col plugin-list__col--health" />
-            <col className="plugin-list__col plugin-list__col--usage" />
-            <col className="plugin-list__col plugin-list__col--actions" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>{copy.plugins.stateCol}</th>
-              <th>{copy.plugins.pluginCol}</th>
-              <th>{copy.plugins.modeCol}</th>
-              <th>{copy.plugins.hooksCol}</th>
-              <th>{copy.plugins.healthCol}</th>
-              <th>{copy.plugins.usageCol}</th>
-              <th>{copy.plugins.actionsCol}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && rows.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="trace-table__message">{copy.table.loading}</td>
-              </tr>
-            ) : null}
-            {!loading && rows.length === 0 && enabledCount === 0 ? (
-              <tr>
-                <td colSpan={7} className="trace-table__message">
-                  <strong>{copy.plugins.noPluginsTitle}</strong>
-                  <div style={{ marginTop: 4 }}>{copy.plugins.noPluginsNote}</div>
-                </td>
-              </tr>
-            ) : null}
-            {!loading && rows.length === 0 && enabledCount > 0 ? (
-              <tr>
-                <td colSpan={7} className="trace-table__message">
-                  <strong>{copy.plugins.emptyTitle}</strong>
-                  <div style={{ marginTop: 4 }}>{copy.plugins.emptyNote}</div>
-                </td>
-              </tr>
-            ) : null}
-            {rows.map((row) => {
-              const selected = row.plugin.name === selectedPluginName;
-              const canEnable = row.plugin.validation.status !== "error" && !readOnly;
-              const showReview = !row.working.enabled && row.working.requiresReview && row.working.hasRememberedSettings;
-              const moveDisabled = pendingActionPlugin === row.plugin.name || readOnly;
+        {loading && rows.length === 0 ? <div className="plugin-group__empty plugin-group__empty--standalone">{copy.table.loading}</div> : null}
+        {!loading && rows.length === 0 ? (
+          <div className="plugin-group__empty plugin-group__empty--standalone">
+            <strong>{copy.plugins.emptyTitle}</strong>
+            <div>{copy.plugins.emptyNote}</div>
+          </div>
+        ) : null}
 
-              return (
-                <tr
-                  key={row.plugin.name}
-                  className={`plugin-list__row${selected ? " plugin-list__row--selected" : ""}`}
-                  onClick={() => onSelect(row.plugin.name)}
-                >
-                  <td>
-                    <PluginStateLabel kind={row.stateKind} locale={locale} />
-                  </td>
-                  <td className="plugin-list__plugin-col">
-                    <div className="plugin-list__plugin-name-row">
-                      <strong>{row.plugin.displayName}</strong>
-                      <span className="plugin-list__plugin-source mono">{fmtPluginSource(row.plugin.sourceKind, locale)}</span>
-                    </div>
-                    <div className="plugin-list__plugin-id mono">{row.plugin.name}</div>
-                    <div className="plugin-list__plugin-desc">{row.plugin.description || copy.plugins.none}</div>
-                  </td>
-                  <td className="mono">{fmtPluginMode(row.working.effectiveMode, locale)}</td>
-                  <td className="mono" title={row.plugin.hooks.join(", ")}>{row.plugin.hooks.join(", ") || copy.plugins.none}</td>
-                  <td>
-                    <span className={`plugin-health plugin-health--${row.plugin.validation.status}`}>{fmtPluginValidation(row.plugin.validation.status, locale)}</span>
-                  </td>
-                  <td className="mono">{row.plugin.stats.calls} / {row.plugin.stats.errors}</td>
-                  <td>
-                    <div className="plugin-list__actions">
-                      {row.working.enabled ? (
-                        <>
-                          <button className="btn btn--quiet" onClick={(event) => { event.stopPropagation(); void onDisable(row.plugin.name); }} type="button" disabled={moveDisabled}>
-                            {copy.plugins.disable}
-                          </button>
-                          <button className="btn btn--quiet" onClick={(event) => { event.stopPropagation(); void onMove(row.plugin.name, -1); }} type="button" disabled={moveDisabled || row.working.position === 0}>
-                            {copy.plugins.moveUp}
-                          </button>
-                          <button className="btn btn--quiet" onClick={(event) => { event.stopPropagation(); void onMove(row.plugin.name, 1); }} type="button" disabled={moveDisabled || row.working.position === enabledCount - 1}>
-                            {copy.plugins.moveDown}
-                          </button>
-                        </>
-                      ) : showReview ? (
-                        <button className="btn btn--quiet" onClick={(event) => { event.stopPropagation(); onSelect(row.plugin.name); }} type="button">
-                          {copy.plugins.review}
-                        </button>
-                      ) : (
-                        <button className="btn btn--quiet" onClick={(event) => { event.stopPropagation(); void onEnable(row.plugin.name); }} type="button" disabled={!canEnable || pendingActionPlugin === row.plugin.name}>
-                          {copy.plugins.enable}
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {loading && rows.length > 0 ? null : (
+          <div className="plugin-list__sections">
+            <PluginSection
+              title={copy.plugins.enabledSection}
+              emptyText={copy.plugins.enabledSectionEmpty}
+              rows={groups.enabled}
+              locale={locale}
+              selectedPluginName={selectedPluginName}
+              readOnly={readOnly}
+              actionsDisabled={actionsDisabled}
+              pendingActionPlugin={pendingActionPlugin}
+              enabledCount={groups.enabled.length}
+              onSelect={onSelect}
+              onEnable={onEnable}
+              onDisable={onDisable}
+              onMove={onMove}
+            />
+            <PluginSection
+              title={copy.plugins.attentionSection}
+              emptyText={copy.plugins.attentionSectionEmpty}
+              rows={groups.attention}
+              locale={locale}
+              selectedPluginName={selectedPluginName}
+              readOnly={readOnly}
+              actionsDisabled={actionsDisabled}
+              pendingActionPlugin={pendingActionPlugin}
+              enabledCount={groups.enabled.length}
+              onSelect={onSelect}
+              onEnable={onEnable}
+              onDisable={onDisable}
+              onMove={onMove}
+            />
+            <PluginSection
+              title={copy.plugins.availableSection}
+              emptyText={copy.plugins.availableSectionEmpty}
+              rows={groups.available}
+              locale={locale}
+              selectedPluginName={selectedPluginName}
+              readOnly={readOnly}
+              actionsDisabled={actionsDisabled}
+              pendingActionPlugin={pendingActionPlugin}
+              enabledCount={groups.enabled.length}
+              onSelect={onSelect}
+              onEnable={onEnable}
+              onDisable={onDisable}
+              onMove={onMove}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
