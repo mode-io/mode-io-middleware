@@ -39,6 +39,29 @@ modeio-middleware-gateway \
   --upstream-responses-url "https://api.openai.com/v1/responses"
 ```
 
+### Source-checkout maintainer flow
+
+If you are working from the repo and want a deterministic local runtime, use the maintainer wrapper instead:
+
+```bash
+python scripts/dev_gateway.py --fresh
+```
+
+What it does:
+
+- stores config and discovered plugins under `./.modeio-dev/`
+- keeps traces ephemeral because the request journal is still in-memory
+- avoids accidental reuse of `~/.config/modeio`
+- serves the canonical review URL at `http://127.0.0.1:8787/modeio/dashboard`
+
+Useful maintainer commands:
+
+```bash
+python scripts/dev_gateway.py status
+python scripts/dev_gateway.py reset
+python scripts/dev_gateway.py --build-dashboard
+```
+
 ## 3) Configure local client routing
 
 ### Codex CLI
@@ -196,6 +219,15 @@ python -m unittest discover tests -p 'test_*.py'
 If you are working from a source checkout and want the repo-local helper equivalents, use:
 
 ```bash
-python scripts/middleware_gateway.py
+python scripts/dev_gateway.py
 python scripts/setup_middleware_gateway.py --health-check
 ```
+
+For live frontend editing against the same middleware state:
+
+```bash
+cd dashboard
+npm run dev
+```
+
+The Vite server stays on `127.0.0.1:4173` and proxies middleware APIs to `127.0.0.1:8787` by default. Set `MODEIO_DASHBOARD_PROXY_TARGET` if you need a different gateway target.
