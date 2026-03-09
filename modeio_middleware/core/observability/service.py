@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from modeio_middleware.core.observability.diffing import summarize_change
@@ -29,7 +29,7 @@ from modeio_middleware.core.observability.store import (
 
 
 def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _coerce_bool(raw: Any, *, default: bool) -> bool:
