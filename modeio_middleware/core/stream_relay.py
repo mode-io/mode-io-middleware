@@ -8,6 +8,12 @@ from modeio_middleware.core.plugin_manager import ActivePlugin, PluginManager
 from modeio_middleware.core.sse import iter_sse_events, serialize_sse_event
 
 
+def _request_journal(services: Dict[str, Any] | None) -> Any:
+    if not isinstance(services, dict):
+        return None
+    return services.get("request_journal")
+
+
 def iter_transformed_sse_stream(
     *,
     upstream_response: Any,
@@ -25,12 +31,21 @@ def iter_transformed_sse_stream(
     on_finish: Callable[[], None] | None = None,
 ) -> Iterator[bytes]:
     runtime_degraded = list(degraded)
+    journal = _request_journal(services)
     try:
         for parsed_event in iter_sse_events(upstream_response.iter_lines()):
             is_done_event = parsed_event.get("data_type") == "done"
             if parsed_event.get("data_type") == "none":
                 yield serialize_sse_event(parsed_event)
                 continue
+
+            if journal is not None:
+                try:
+                    journal.record_stream_event(
+                        request_id=request_id, done_received=is_done_event
+                    )
+                except Exception:
+                    pass
 
             event_result = plugin_manager.apply_post_stream_event(
                 active_plugins,
@@ -48,6 +63,14 @@ def iter_transformed_sse_stream(
 
             if event_result.blocked:
                 runtime_degraded.append("stream_blocked")
+                if journal is not None:
+                    try:
+                        journal.record_stream_blocked(
+                            request_id=request_id,
+                            block_message=event_result.block_message,
+                        )
+                    except Exception:
+                        pass
                 payload = {
                     "error": {
                         "message": event_result.block_message,
@@ -77,6 +100,14 @@ def iter_transformed_sse_stream(
         )
         runtime_degraded.extend(end_result.degraded)
         if end_result.blocked:
+            if journal is not None:
+                try:
+                    journal.record_stream_blocked(
+                        request_id=request_id,
+                        block_message=end_result.block_message,
+                    )
+                except Exception:
+                    pass
             payload = {
                 "error": {
                     "message": end_result.block_message,

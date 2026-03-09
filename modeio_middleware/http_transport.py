@@ -14,10 +14,16 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
-from starlette.routing import Route
+from starlette.responses import FileResponse, Response, StreamingResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
-from modeio_middleware.core.engine import GatewayRuntimeConfig, MiddlewareEngine, ProcessResult, StreamProcessResult
+from modeio_middleware.core.engine import (
+    GatewayRuntimeConfig,
+    MiddlewareEngine,
+    ProcessResult,
+    StreamProcessResult,
+)
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.http_contract import (
     CONTRACT_VERSION,
@@ -25,6 +31,12 @@ from modeio_middleware.core.http_contract import (
     error_payload,
     new_request_id,
     safe_json_dumps,
+)
+from modeio_middleware.monitoring.api import build_monitoring_routes
+from modeio_middleware.resources import (
+    bundled_dashboard_dir,
+    bundled_dashboard_favicon_path,
+    bundled_dashboard_index_path,
 )
 
 try:  # Python 3.14+
@@ -37,7 +49,9 @@ CLAUDE_HOOK_CONNECTOR_PATH = "/connectors/claude/hooks"
 
 def _decode_content_encoded_body(body_bytes: bytes, content_encoding: str) -> bytes:
     decoded = body_bytes
-    encodings = [item.strip().lower() for item in content_encoding.split(",") if item.strip()]
+    encodings = [
+        item.strip().lower() for item in content_encoding.split(",") if item.strip()
+    ]
     if not encodings:
         return decoded
 
@@ -82,7 +96,9 @@ def _decode_content_encoded_body(body_bytes: bytes, content_encoding: str) -> by
 async def _read_json_body(request: Request) -> Dict[str, Any]:
     body_bytes = await request.body()
     if not body_bytes:
-        raise MiddlewareError(400, "MODEIO_VALIDATION_ERROR", "request body must not be empty")
+        raise MiddlewareError(
+            400, "MODEIO_VALIDATION_ERROR", "request body must not be empty"
+        )
 
     content_encoding = str(request.headers.get("Content-Encoding", "")).strip()
     if content_encoding:
@@ -91,10 +107,14 @@ async def _read_json_body(request: Request) -> Dict[str, Any]:
     try:
         payload = json.loads(body_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
-        raise MiddlewareError(400, "MODEIO_VALIDATION_ERROR", "request body must be valid JSON") from error
+        raise MiddlewareError(
+            400, "MODEIO_VALIDATION_ERROR", "request body must be valid JSON"
+        ) from error
 
     if not isinstance(payload, dict):
-        raise MiddlewareError(400, "MODEIO_VALIDATION_ERROR", "request body must be a JSON object")
+        raise MiddlewareError(
+            400, "MODEIO_VALIDATION_ERROR", "request body must be a JSON object"
+        )
     return payload
 
 
@@ -114,7 +134,9 @@ def _json_response(
     return response
 
 
-def _default_contract_headers(engine: MiddlewareEngine, request_id: str) -> Dict[str, str]:
+def _default_contract_headers(
+    engine: MiddlewareEngine, request_id: str
+) -> Dict[str, str]:
     return contract_headers(
         request_id,
         profile=engine.config.default_profile,
@@ -184,6 +206,27 @@ def _render_engine_result(
     )
 
 
+def _dashboard_index_response() -> Response:
+    index_path = bundled_dashboard_index_path()
+    if not index_path.exists():
+        return Response(
+            content=(
+                "ModeIO dashboard assets are missing. "
+                "Run 'bash ./scripts/build_dashboard.sh' from the repository root."
+            ),
+            status_code=503,
+            media_type="text/plain; charset=utf-8",
+        )
+    return FileResponse(index_path, media_type="text/html; charset=utf-8")
+
+
+def _dashboard_favicon_response() -> Response:
+    favicon_path = bundled_dashboard_favicon_path()
+    if not favicon_path.exists():
+        return Response(status_code=204)
+    return FileResponse(favicon_path, media_type="image/svg+xml")
+
+
 def create_app(config: GatewayRuntimeConfig) -> Starlette:
     engine = MiddlewareEngine(config)
 
@@ -202,6 +245,12 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             "profiles": sorted(list((engine.config.profiles or {}).keys())),
         }
         return _json_response(200, payload)
+
+    async def dashboard_index(_request: Request) -> Response:
+        return _dashboard_index_response()
+
+    async def dashboard_favicon(_request: Request) -> Response:
+        return _dashboard_favicon_response()
 
     async def _process_post_request(request: Request) -> Response:
         request_id = new_request_id()
@@ -252,6 +301,17 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
     app = Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            Route("/favicon.ico", dashboard_favicon, methods=["GET"]),
+            Route("/modeio/dashboard", dashboard_index, methods=["GET"]),
+            Route("/modeio/dashboard/", dashboard_index, methods=["GET"]),
+            Mount(
+                "/modeio/dashboard/assets",
+                app=StaticFiles(
+                    directory=bundled_dashboard_dir() / "assets", check_dir=False
+                ),
+                name="modeio-dashboard-assets",
+            ),
+            *build_monitoring_routes(engine),
             Route(CLAUDE_HOOK_CONNECTOR_PATH, _process_post_request, methods=["POST"]),
             Route("/v1/chat/completions", _process_post_request, methods=["POST"]),
             Route("/v1/responses", _process_post_request, methods=["POST"]),

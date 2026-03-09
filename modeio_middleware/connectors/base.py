@@ -22,6 +22,7 @@ class ConnectorCapabilities:
 @dataclass(frozen=True)
 class CanonicalInvocation:
     source: str
+    client_name: str
     source_event: str
     endpoint_kind: str
     phase: str
@@ -33,7 +34,9 @@ class CanonicalInvocation:
     request_body: Dict[str, Any] = field(default_factory=dict)
     response_body: Dict[str, Any] = field(default_factory=dict)
     connector_context: Dict[str, Any] = field(default_factory=dict)
-    connector_capabilities: ConnectorCapabilities = field(default_factory=ConnectorCapabilities)
+    connector_capabilities: ConnectorCapabilities = field(
+        default_factory=ConnectorCapabilities
+    )
     stream: bool = False
 
 

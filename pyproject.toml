@@ -50,6 +50,8 @@ include-package-data = true
 [tool.setuptools.package-data]
 modeio_middleware = [
   "resources/config/*.json",
+  "resources/dashboard/*.html",
+  "resources/dashboard/assets/*",
   "resources/plugins_external/example/*.json",
   "resources/plugins_external/example/*.py",
   "resources/plugins_external/example/*.md",

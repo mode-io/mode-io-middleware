@@ -30,5 +30,15 @@
       },
       "pool_size": 2
     }
+  },
+  "services": {
+    "request_journal": {
+      "enabled": true,
+      "max_records": 500,
+      "capture_bodies": true,
+      "max_body_chars": 20000,
+      "sample_diff_paths": 20,
+      "live_queue_size": 100
+    }
   }
 }
