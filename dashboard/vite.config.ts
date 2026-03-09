@@ -3,9 +3,21 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const proxyTarget = process.env.MODEIO_DASHBOARD_PROXY_TARGET || "http://127.0.0.1:8787";
+
 export default defineConfig({
   plugins: [react()],
   base: "/modeio/dashboard/",
+  server: {
+    host: "127.0.0.1",
+    port: 4173,
+    proxy: {
+      "/healthz": proxyTarget,
+      "/v1": proxyTarget,
+      "/connectors": proxyTarget,
+      "/modeio/api": proxyTarget,
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",

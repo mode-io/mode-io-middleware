@@ -76,6 +76,14 @@ modeio-middleware-gateway \
   --upstream-responses-url "https://api.openai.com/v1/responses"
 ```
 
+Source-checkout maintainers should prefer the repo-local wrapper instead of the installed entrypoint:
+
+```bash
+python scripts/dev_gateway.py --fresh
+```
+
+That flow keeps dev config and discovered plugins under `./.modeio-dev/` instead of `~/.config/modeio/`, so local review stays isolated from your normal user runtime.
+
 2. Route supported clients through it:
 
 ```bash
@@ -125,6 +133,8 @@ It is designed for day-to-day operators and troubleshooting workflows. Out of th
 - switch between English and Chinese, plus day and night themes
 
 If you want raw data or to wire your own tooling around it, use the monitoring APIs under `/modeio/api/*`.
+
+For frontend editing, `npm run dev` inside `dashboard/` serves the Vite app on `http://127.0.0.1:4173/modeio/dashboard/` and proxies `/modeio/api/*`, `/v1`, `/connectors/*`, and `/healthz` to `127.0.0.1:8787` by default. That means the canonical gateway still owns the live middleware state while the dev server handles hot-reload UI work.
 
 ## Plugin workflow
 

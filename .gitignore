@@ -6,6 +6,7 @@ build/
 .mypy_cache/
 .coverage
 coverage.xml
+.modeio-dev/
 .artifacts/
 dashboard/node_modules/
 __pycache__/
