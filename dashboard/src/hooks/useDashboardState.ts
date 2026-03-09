@@ -1,22 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { fetchJson } from "../api";
 import { buildDemoState } from "../demoData";
 import { DEFAULT_FILTERS, filterEvents } from "../monitorFilters";
 import type { EventDetail, EventSummary, EventsResponse, Locale, MonitorFilters, StatsSnapshot } from "../types";
 
 const EVENTS_LIMIT = 50;
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
-  }
-  return (await response.json()) as T;
-}
 
 function buildEventsUrl(filters: MonitorFilters): string {
   const params = new URLSearchParams({ limit: String(EVENTS_LIMIT) });
@@ -35,7 +24,7 @@ function buildEventsUrl(filters: MonitorFilters): string {
   return `/modeio/api/events?${params.toString()}`;
 }
 
-export function useDashboardState(locale: Locale) {
+export function useTrafficMonitorState(locale: Locale) {
   const demoState = useMemo(() => buildDemoState(locale), [locale]);
   const [filters, setFilters] = useState<MonitorFilters>(DEFAULT_FILTERS);
   const [events, setEvents] = useState<EventSummary[]>([]);

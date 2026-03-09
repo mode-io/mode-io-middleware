@@ -11,6 +11,7 @@ interface TraceInspectorProps {
   detail: EventDetail | null;
   loading: boolean;
   locale: Locale;
+  onOpenPlugin?: (pluginName: string, profile: string) => void;
 }
 
 function ChangeBadge({ change, locale }: { change: ChangeSummary; locale: Locale }) {
@@ -189,7 +190,7 @@ function RawTab({ detail }: { detail: EventDetail }) {
   );
 }
 
-export function TraceInspector({ detail, loading, locale }: TraceInspectorProps) {
+export function TraceInspector({ detail, loading, locale, onOpenPlugin }: TraceInspectorProps) {
   const [activeTab, setActiveTab] = useState<Tab>("request");
   const copy = getCopy(locale);
 
@@ -269,7 +270,17 @@ export function TraceInspector({ detail, loading, locale }: TraceInspectorProps)
                 <tr>
                   {metadataColumns.map((column) => (
                     <td key={column.key} title={column.value}>
-                      {column.value}
+                      {column.key === "pluginSummary" && detail.primaryPlugin && onOpenPlugin ? (
+                        <button
+                          className="link-inline"
+                          onClick={() => onOpenPlugin(detail.primaryPlugin as string, detail.profile)}
+                          type="button"
+                        >
+                          {column.value}
+                        </button>
+                      ) : (
+                        column.value
+                      )}
                     </td>
                   ))}
                 </tr>

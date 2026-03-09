@@ -1,4 +1,5 @@
 export type Locale = "en" | "zh";
+export type DashboardView = "traffic" | "plugins";
 
 export type TraceStatus = "completed" | "blocked" | "error" | "stream_completed";
 export type TraceImpact = "pass_through" | "modified" | "blocked" | "warned" | "mixed";
@@ -130,3 +131,104 @@ export interface EventsResponse {
 export type MonitorFilterKey = "status" | "clientName" | "impact" | "lifecycle";
 
 export type MonitorFilters = Record<MonitorFilterKey, string>;
+
+export type PluginValidationStatus = "ok" | "warn" | "error";
+export type PluginMode = "observe" | "assist" | "enforce";
+export type PluginStateFilter = "all" | "enabled" | "disabled" | "attention";
+export type PluginCapabilityFilter = "all" | "canPatch" | "canBlock";
+export type PluginHealthFilter = "all" | PluginValidationStatus;
+
+export interface PluginCapabilitiesGrant {
+  can_patch: boolean;
+  can_block: boolean;
+}
+
+export interface PluginProfileOverride {
+  enabled?: boolean;
+  mode?: string;
+  capabilities_grant?: Partial<PluginCapabilitiesGrant>;
+  timeout_ms?: Record<string, number>;
+  pool_size?: number;
+}
+
+export interface PluginProfileState {
+  listed: boolean;
+  enabled: boolean;
+  position: number | null;
+  override: PluginProfileOverride;
+  effectiveMode?: string;
+  effectiveCapabilitiesGrant?: PluginCapabilitiesGrant;
+  effectivePoolSize?: number;
+  effectiveTimeoutMs?: Record<string, number>;
+}
+
+export interface PluginValidation {
+  status: PluginValidationStatus;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface PluginStats {
+  calls: number;
+  errors: number;
+  actions: Record<string, number>;
+}
+
+export interface PluginInventoryItem {
+  name: string;
+  displayName: string;
+  description: string;
+  sourceKind: string;
+  version: string;
+  hooks: string[];
+  declaredCapabilities: {
+    canPatch: boolean;
+    canBlock: boolean;
+    needsNetwork: boolean;
+    needsRawBody: boolean;
+  };
+  metadata: Record<string, unknown>;
+  pluginDir: string | null;
+  manifestPath: string | null;
+  hostPath: string | null;
+  readmePath: string | null;
+  profiles: Record<string, PluginProfileState>;
+  validation: PluginValidation;
+  stats: PluginStats;
+}
+
+export interface PluginProfileSummary {
+  name: string;
+  onPluginError: string;
+  pluginOrder: string[];
+}
+
+export interface PluginRuntimeSummary {
+  configPath: string;
+  configWritable: boolean;
+  generation: number;
+  defaultProfile: string;
+  discoveryRoots: string[];
+}
+
+export interface PluginInventoryResponse {
+  runtime: PluginRuntimeSummary;
+  profiles: PluginProfileSummary[];
+  plugins: PluginInventoryItem[];
+  warnings: string[];
+}
+
+export interface PluginUpdateResponse {
+  ok: boolean;
+  generation: number;
+  configPath: string;
+  backupPath: string;
+  reloaded: boolean;
+}
+
+export interface PluginListFilters {
+  search: string;
+  state: PluginStateFilter;
+  capability: PluginCapabilityFilter;
+  health: PluginHealthFilter;
+}

@@ -6,6 +6,10 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   base: "/modeio/dashboard/",
+  test: {
+    environment: "jsdom",
+    setupFiles: "./src/test/setup.ts",
+  },
   build: {
     outDir: path.resolve(__dirname, "../modeio_middleware/resources/dashboard"),
     emptyOutDir: true,

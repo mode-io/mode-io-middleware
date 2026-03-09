@@ -13,6 +13,7 @@ interface TraceTableProps {
   onFiltersChange: (filters: MonitorFilters) => void;
   onSelect: (requestId: string) => void;
   usingDemo: boolean;
+  onOpenPlugin?: (pluginName: string, profile: string) => void;
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -28,6 +29,7 @@ export function TraceTable({
   onFiltersChange,
   onSelect,
   usingDemo,
+  onOpenPlugin,
 }: TraceTableProps) {
   const copy = getCopy(locale);
   const visibleCount = events.length;
@@ -99,10 +101,23 @@ export function TraceTable({
                   </td>
                   <td className="col-client">{fmtClient(event.clientName, locale)}</td>
                   <td className="col-lifecycle">{fmtLifecycle(event.lifecycle, locale)}</td>
-                  <td className="col-impact">{fmtImpact(event.impact, locale)}</td>
-                  <td className="col-plugin mono" title={event.pluginNames.join(", ") || undefined}>
-                    {summarizePluginLabel(event.primaryPlugin, event.pluginNames)}
-                  </td>
+                    <td className="col-impact">{fmtImpact(event.impact, locale)}</td>
+                    <td className="col-plugin mono" title={event.pluginNames.join(", ") || undefined}>
+                      {event.primaryPlugin && onOpenPlugin ? (
+                        <button
+                          className="link-inline link-inline--mono"
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation();
+                            onOpenPlugin(event.primaryPlugin as string, event.profile);
+                          }}
+                          type="button"
+                        >
+                          {summarizePluginLabel(event.primaryPlugin, event.pluginNames)}
+                        </button>
+                      ) : (
+                        summarizePluginLabel(event.primaryPlugin, event.pluginNames)
+                      )}
+                    </td>
                   <td className="col-duration mono">{formatDuration(event.durationMs, locale)}</td>
                   <td className="col-id mono">{event.requestId}</td>
                   <td className="col-time mono">{formatTimestamp(event.startedAt, locale)}</td>

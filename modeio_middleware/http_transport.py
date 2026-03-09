@@ -20,7 +20,6 @@ from starlette.staticfiles import StaticFiles
 
 from modeio_middleware.core.engine import (
     GatewayRuntimeConfig,
-    MiddlewareEngine,
     ProcessResult,
     StreamProcessResult,
 )
@@ -38,6 +37,7 @@ from modeio_middleware.resources import (
     bundled_dashboard_favicon_path,
     bundled_dashboard_index_path,
 )
+from modeio_middleware.runtime_control import GatewayController
 
 try:  # Python 3.14+
     from compression import zstd as _zstd_codec
@@ -135,8 +135,9 @@ def _json_response(
 
 
 def _default_contract_headers(
-    engine: MiddlewareEngine, request_id: str
+    controller: GatewayController, request_id: str
 ) -> Dict[str, str]:
+    engine = controller.current_engine()
     return contract_headers(
         request_id,
         profile=engine.config.default_profile,
@@ -148,7 +149,7 @@ def _default_contract_headers(
 
 
 def _contract_error_response(
-    engine: MiddlewareEngine,
+    controller: GatewayController,
     request_id: str,
     *,
     status: int,
@@ -166,12 +167,12 @@ def _contract_error_response(
             retryable=retryable,
             details=details,
         ),
-        _default_contract_headers(engine, request_id),
+        _default_contract_headers(controller, request_id),
     )
 
 
 def _render_engine_result(
-    engine: MiddlewareEngine,
+    controller: GatewayController,
     request_id: str,
     result: ProcessResult | StreamProcessResult,
 ) -> Response:
@@ -202,7 +203,7 @@ def _render_engine_result(
             "unexpected result type from middleware engine",
             retryable=False,
         ),
-        _default_contract_headers(engine, request_id),
+        _default_contract_headers(controller, request_id),
     )
 
 
@@ -228,16 +229,17 @@ def _dashboard_favicon_response() -> Response:
 
 
 def create_app(config: GatewayRuntimeConfig) -> Starlette:
-    engine = MiddlewareEngine(config)
+    controller = GatewayController(config)
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
         try:
             yield
         finally:
-            engine.shutdown()
+            controller.shutdown()
 
     async def healthz(_request: Request) -> Response:
+        engine = controller.current_engine()
         payload = {
             "ok": True,
             "service": "modeio-middleware",
@@ -258,7 +260,7 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             body = await _read_json_body(request)
         except MiddlewareError as error:
             return _contract_error_response(
-                engine,
+                controller,
                 request_id,
                 status=error.status,
                 code=error.code,
@@ -269,7 +271,7 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
 
         try:
             result = await run_in_threadpool(
-                engine.process_http_request,
+                controller.process_http_request,
                 path=str(request.url.path),
                 request_id=request_id,
                 payload=body,
@@ -277,7 +279,7 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             )
         except MiddlewareError as error:
             return _contract_error_response(
-                engine,
+                controller,
                 request_id,
                 status=error.status,
                 code=error.code,
@@ -285,12 +287,12 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
                 retryable=error.retryable,
                 details=error.details,
             )
-        return _render_engine_result(engine, request_id, result)
+        return _render_engine_result(controller, request_id, result)
 
     async def unknown_post(_request: Request) -> Response:
         request_id = new_request_id()
         return _contract_error_response(
-            engine,
+            controller,
             request_id,
             status=404,
             code="MODEIO_ROUTE_NOT_FOUND",
@@ -311,7 +313,7 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
                 ),
                 name="modeio-dashboard-assets",
             ),
-            *build_monitoring_routes(engine),
+            *build_monitoring_routes(controller),
             Route(CLAUDE_HOOK_CONNECTOR_PATH, _process_post_request, methods=["POST"]),
             Route("/v1/chat/completions", _process_post_request, methods=["POST"]),
             Route("/v1/responses", _process_post_request, methods=["POST"]),
@@ -319,7 +321,8 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
         ],
         lifespan=lifespan,
     )
-    app.state.engine = engine
+    app.state.controller = controller
+    app.state.engine = controller.current_engine()
     return app
 
 
