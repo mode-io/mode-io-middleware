@@ -45,6 +45,7 @@ class GatewayRuntimeConfig:
     preset_registry: Dict[str, Any] = None  # type: ignore[assignment]
     service_config: Dict[str, Any] = None  # type: ignore[assignment]
     config_base_dir: str = ""
+    config_path: str = ""
 
 
 @dataclass

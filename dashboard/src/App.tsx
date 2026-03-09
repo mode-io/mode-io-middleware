@@ -1,69 +1,70 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
-import { StatsBar } from "./components/StatsBar";
-import { TraceInspector } from "./components/TraceInspector";
-import { TraceTable } from "./components/TraceTable";
-import { useDashboardState } from "./hooks/useDashboardState";
+import { PluginWorkspace } from "./components/PluginWorkspace";
+import { TrafficWorkspace } from "./components/TrafficWorkspace";
+import { ViewTabs } from "./components/ViewTabs";
+import { useLocalStorageState } from "./hooks/useLocalStorageState";
+import { usePluginManagementState } from "./hooks/usePluginManagementState";
+import { useTrafficMonitorState } from "./hooks/useDashboardState";
 import { getCopy } from "./i18n";
-import type { Locale } from "./types";
+import { createDashboardQueryClient } from "./queryClient";
+import type { DashboardView, Locale, ThemeMode } from "./types";
 
-type ThemeMode = "day" | "night";
+function resolveInitialView(): DashboardView {
+  return "traffic";
+}
 
 function resolveInitialLocale(): Locale {
-  const stored = window.localStorage.getItem("modeio-dashboard-locale");
-  if (stored === "en" || stored === "zh") {
-    return stored;
-  }
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
 function resolveInitialTheme(): ThemeMode {
-  const stored = window.localStorage.getItem("modeio-dashboard-theme");
-  if (stored === "day" || stored === "night") {
-    return stored;
-  }
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "night" : "day";
 }
 
-export function App() {
-  const [locale, setLocale] = useState<Locale>(resolveInitialLocale);
-  const [theme, setTheme] = useState<ThemeMode>(resolveInitialTheme);
+function AppShell() {
+  const [locale, setLocale] = useLocalStorageState<Locale>("modeio-dashboard-locale", resolveInitialLocale, {
+    serialize: (value) => value,
+    deserialize: (raw) => (raw === "en" || raw === "zh" ? raw : null),
+  });
+  const [theme, setTheme] = useLocalStorageState<ThemeMode>("modeio-dashboard-theme", resolveInitialTheme, {
+    serialize: (value) => value,
+    deserialize: (raw) => (raw === "day" || raw === "night" ? raw : null),
+  });
+  const [activeView, setActiveView] = useLocalStorageState<DashboardView>("modeio-dashboard-view", resolveInitialView, {
+    serialize: (value) => value,
+    deserialize: (raw) => (raw === "traffic" || raw === "plugins" ? raw : null),
+  });
   const copy = useMemo(() => getCopy(locale), [locale]);
-  const {
-    detail,
-    detailLoading,
-    error,
-    events,
-    filters,
-    overviewLoading,
-    refreshOverview,
-    selectedRequestId,
-    setFilters,
-    setSelectedRequestId,
-    stats,
-    usingDemo,
-  } = useDashboardState(locale);
+  const trafficMonitor = useTrafficMonitorState(locale);
+  const pluginManagement = usePluginManagementState(locale);
 
   useEffect(() => {
     document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
     document.title = locale === "zh" ? "ModeIO 监控台" : "ModeIO Monitor";
-    window.localStorage.setItem("modeio-dashboard-locale", locale);
   }, [locale]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("modeio-dashboard-theme", theme);
   }, [theme]);
+
+  function openPlugin(pluginName: string, profile: string) {
+    pluginManagement.focusPlugin(pluginName, profile);
+    setActiveView("plugins");
+  }
 
   return (
     <div className="shell">
       <header className="toolbar">
         <div className="toolbar__left">
-          <strong className="toolbar__title">{copy.toolbar.title}</strong>
-          {usingDemo ? <span className="badge badge--muted">{copy.toolbar.demoBadge}</span> : null}
+          <div className="toolbar__brand">
+            <strong className="toolbar__title">{copy.toolbar.title}</strong>
+          </div>
+          <ViewTabs activeView={activeView} locale={locale} onChange={setActiveView} />
         </div>
         <div className="toolbar__right">
-          <button className="btn" onClick={() => void refreshOverview()} type="button">
+          <button className="btn" onClick={() => (activeView === "traffic" ? void trafficMonitor.refreshOverview() : void pluginManagement.refresh())} type="button">
             {copy.toolbar.refresh}
           </button>
           <div className="toggle-group" role="group" aria-label={copy.toolbar.language}>
@@ -89,24 +90,21 @@ export function App() {
         </div>
       </header>
 
-      {error ? <div className="error-strip">{error}</div> : null}
-
-      <StatsBar locale={locale} stats={stats} filters={filters} onFiltersChange={setFilters} />
-
-      <main className="master-detail">
-        <TraceTable
-          events={events}
-          filters={filters}
-          locale={locale}
-          loading={overviewLoading}
-          selectedRequestId={selectedRequestId}
-          onFiltersChange={setFilters}
-          onSelect={setSelectedRequestId}
-          usingDemo={usingDemo}
-        />
-        <div className="master-detail__divider" aria-hidden="true" />
-        <TraceInspector detail={detail} loading={detailLoading} locale={locale} />
-      </main>
+      {activeView === "traffic" ? (
+        <TrafficWorkspace locale={locale} controller={trafficMonitor} onOpenPlugin={openPlugin} />
+      ) : (
+        <PluginWorkspace locale={locale} controller={pluginManagement} />
+      )}
     </div>
+  );
+}
+
+export function App() {
+  const [queryClient] = useState(() => createDashboardQueryClient());
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AppShell />
+    </QueryClientProvider>
   );
 }

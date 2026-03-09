@@ -1,6 +1,6 @@
 import { getCopy } from "../i18n";
 import { setFilterValue } from "../monitorFilters";
-import type { Locale, MonitorFilters, StatsSnapshot } from "../types";
+import type { Locale, MonitorFilters, MonitorImpactFilter, MonitorStatusFilter, StatsSnapshot } from "../types";
 import { formatDuration } from "../utils";
 
 interface StatsBarProps {
@@ -51,11 +51,11 @@ export function StatsBar({ locale, stats, filters, onFiltersChange }: StatsBarPr
   const errorCount = stats.byStatus["error"] ?? 0;
   const modifiedCount = stats.byImpact["modified"] ?? 0;
 
-  function toggleStatusFilter(status: string) {
+  function toggleStatusFilter(status: MonitorStatusFilter) {
     onFiltersChange(setFilterValue(filters, "status", filters.status === status ? "all" : status));
   }
 
-  function toggleImpactFilter(impact: string) {
+  function toggleImpactFilter(impact: MonitorImpactFilter) {
     onFiltersChange(setFilterValue(filters, "impact", filters.impact === impact ? "all" : impact));
   }
 

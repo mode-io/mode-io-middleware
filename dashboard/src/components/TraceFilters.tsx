@@ -30,11 +30,11 @@ export function TraceFilters({ filters, locale, visibleCount, onFiltersChange }:
           return (
             <label key={key} className={`filter-field${value !== "all" ? " filter-field--active" : ""}`}>
               <span className="filter-field__label">{fieldLabels[key]}</span>
-              <select
-                value={value}
-                onChange={(event) => onFiltersChange(setFilterValue(filters, key, event.target.value))}
-                aria-label={fieldLabels[key]}
-              >
+                <select
+                  value={value}
+                  onChange={(event) => onFiltersChange(setFilterValue(filters, key, event.target.value as MonitorFilters[typeof key]))}
+                  aria-label={fieldLabels[key]}
+                >
                 {FILTER_OPTIONS[key].map((option) => (
                   <option key={option} value={option}>
                     {formatFilterValue(key, option, locale)}

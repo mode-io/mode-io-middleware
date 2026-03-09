@@ -17,6 +17,7 @@ if str(PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGE_DIR))
 
 from modeio_middleware.cli import gateway
+from modeio_middleware.runtime_config_store import build_gateway_runtime_config
 
 
 def completion_payload(content: str) -> Dict[str, Any]:
@@ -98,6 +99,35 @@ def post_json(
         data=json.dumps(payload).encode("utf-8"),
         headers=request_headers,
         method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            return response.status, response.headers, body
+    except urllib.error.HTTPError as error:
+        try:
+            body = json.loads(error.read().decode("utf-8"))
+            return error.code, error.headers, body
+        finally:
+            error.close()
+
+
+def put_json(
+    base_url: str,
+    path: str,
+    payload: Dict[str, Any],
+    *,
+    headers: Dict[str, str] | None = None,
+):
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
+
+    request = urllib.request.Request(
+        f"{base_url}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=request_headers,
+        method="PUT",
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -235,32 +265,44 @@ class UpstreamStub:
 
 
 class GatewayStub:
-    def __init__(self, upstream_base_url: str, *, plugins=None, profiles=None):
+    def __init__(
+        self, upstream_base_url: str, *, plugins=None, profiles=None, config_path=None
+    ):
         self._server = None
         self._thread = None
         self.base_url = ""
-        self.config = gateway.GatewayRuntimeConfig(
-            upstream_chat_completions_url=f"{upstream_base_url}/v1/chat/completions",
-            upstream_responses_url=f"{upstream_base_url}/v1/responses",
-            upstream_timeout_seconds=5,
-            upstream_api_key_env="MODEIO_GATEWAY_UPSTREAM_API_KEY",
-            default_profile="dev",
-            config_base_dir=str(REPO_ROOT),
-            profiles=profiles
-            or {
-                "dev": {
-                    "on_plugin_error": "warn",
-                    "plugins": ["redact"],
-                }
-            },
-            plugins=plugins
-            or {
-                "redact": {
-                    "enabled": False,
-                    "module": "modeio_middleware.plugins.redact",
+        if config_path is not None:
+            self.config = build_gateway_runtime_config(
+                Path(config_path),
+                upstream_chat_completions_url=f"{upstream_base_url}/v1/chat/completions",
+                upstream_responses_url=f"{upstream_base_url}/v1/responses",
+                upstream_timeout_seconds=5,
+                upstream_api_key_env="MODEIO_GATEWAY_UPSTREAM_API_KEY",
+                default_profile="dev",
+            )
+        else:
+            self.config = gateway.GatewayRuntimeConfig(
+                upstream_chat_completions_url=f"{upstream_base_url}/v1/chat/completions",
+                upstream_responses_url=f"{upstream_base_url}/v1/responses",
+                upstream_timeout_seconds=5,
+                upstream_api_key_env="MODEIO_GATEWAY_UPSTREAM_API_KEY",
+                default_profile="dev",
+                config_base_dir=str(REPO_ROOT),
+                profiles=profiles
+                or {
+                    "dev": {
+                        "on_plugin_error": "warn",
+                        "plugins": ["redact"],
+                    }
                 },
-            },
-        )
+                plugins=plugins
+                or {
+                    "redact": {
+                        "enabled": False,
+                        "module": "modeio_middleware.plugins.redact",
+                    },
+                },
+            )
 
     def start(self):
         self._server = gateway.create_server("127.0.0.1", 0, self.config)
@@ -284,6 +326,7 @@ def start_gateway_pair(
     stream_factory=None,
     plugins=None,
     profiles=None,
+    config_path=None,
 ):
     upstream = UpstreamStub(
         response_factory=response_factory, status=status, stream_factory=stream_factory
@@ -293,6 +336,7 @@ def start_gateway_pair(
         upstream_base_url=upstream.base_url,
         plugins=plugins,
         profiles=profiles,
+        config_path=config_path,
     )
     gateway_stub.start()
     return upstream, gateway_stub

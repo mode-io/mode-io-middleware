@@ -27,6 +27,7 @@ class TestPackagingResources(unittest.TestCase):
         self.assertTrue((bundled_dashboard_dir() / "assets" / "dashboard.js").exists())
         self.assertTrue((bundled_dashboard_dir() / "assets" / "dashboard.css").exists())
         self.assertTrue((bundled_example_plugin_dir() / "manifest.json").exists())
+        self.assertTrue((bundled_example_plugin_dir() / "modeio.host.json").exists())
         self.assertTrue((bundled_example_plugin_dir() / "plugin.py").exists())
         self.assertTrue(
             (
@@ -64,6 +65,19 @@ class TestPackagingResources(unittest.TestCase):
         )
         bundled_payload = json.loads(
             (bundled_example_plugin_dir() / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(repo_payload, bundled_payload)
+
+    def test_repo_and_bundled_example_host_config_match(self):
+        repo_payload = json.loads(
+            (
+                PACKAGE_ROOT / "plugins_external" / "example" / "modeio.host.json"
+            ).read_text(encoding="utf-8")
+        )
+        bundled_payload = json.loads(
+            (bundled_example_plugin_dir() / "modeio.host.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(repo_payload, bundled_payload)
 
