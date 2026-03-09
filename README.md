@@ -109,13 +109,13 @@ curl -i http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-The dashboard will update as traces arrive. If there is no live traffic yet, it shows example traces so the UI is still explorable for demos and onboarding.
+The dashboard will update as traces arrive. If there is no live traffic yet, it shows example traces so the UI is still explorable during onboarding and verification.
 
 ## Monitoring dashboard
 
 The dashboard is served directly by the gateway at `http://127.0.0.1:8787/modeio/dashboard`.
 
-It is designed for both day-to-day operators and product demos. Out of the box you can:
+It is designed for day-to-day operators and troubleshooting workflows. Out of the box you can:
 
 - watch the live request stream in a browser
 - inspect request and response bodies before and after middleware processing
