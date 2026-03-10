@@ -202,8 +202,78 @@
   - The focused contract/auth/transport subset is green again.
   - That means the next work can safely optimize for structure instead of continuing to chase correctness ambiguity.
 - The main problem is not hidden dead runtime code. It is concentrated duplication and mixed responsibilities.
-  - High-confidence deletions in the touched path are limited.
+- High-confidence deletions in the touched path are limited.
   - The larger maintenance cost comes from multiple overlapping implementations of the same ideas.
+
+## Strict Harness-State Contract Audit
+- Product contract clarified:
+  - middleware runs on top of an already-working harness
+  - middleware does not choose provider, model, profile, or auth for the user
+  - middleware does not rescue missing state with fallback, heuristics, or borrowed config
+  - preserve the exact harness-selected state or fail clearly
+
+### Remaining drift: runtime auth
+- Codex still falls back to `OPENAI_API_KEY` when `~/.codex/auth.json` is missing.
+  - File: `modeio_middleware/core/provider_auth.py`
+  - Evidence: `_inspect_codex_store()` returns `strategy="provider-env"` when the Codex auth store is absent.
+- OpenCode still falls back to provider env vars after config/auth-store lookup.
+  - File: `modeio_middleware/core/provider_auth.py`
+  - Evidence: `_inspect_opencode_provider()` iterates `_opencode_provider_envs()` and returns `strategy="provider-env"`.
+- OpenClaw still falls back to provider env vars for supported families.
+  - File: `modeio_middleware/core/provider_auth.py`
+  - Evidence: `_openclaw_provider_env_inspection()` returns `strategy="provider-env"`.
+- OpenClaw still uses heuristic profile resolution instead of one exact selected profile.
+  - File: `modeio_middleware/core/provider_auth.py`
+  - Evidence: `OpenClawSelectionResolver.resolve()` chooses `:default` or the first matching profile.
+- OpenClaw still infers API family from provider id when config/cache state is missing.
+  - File: `modeio_middleware/core/provider_auth.py`
+  - Evidence: `_openclaw_current_api_family()` defaults to `anthropic-messages`, `openai-codex-responses`, or `openai-completions` by provider id.
+
+### Remaining drift: smoke harness
+- Codex selected-model fallback was the first obvious violation and is now being corrected to require the seeded Codex config unless an explicit `--model` override is provided.
+- OpenCode smoke still falls back to a generic model when it cannot resolve the selected one from config/state.
+  - File: `scripts/smoke_matrix/sandbox.py`
+  - Evidence: `resolve_opencode_smoke_model(..., fallback_model=...)`.
+- OpenClaw openai-family smoke still uses first-match heuristics for provider and model selection.
+  - File: `scripts/smoke_matrix/openclaw_family.py`
+  - Evidence:
+    - chooses the first matching OpenAI-compatible provider candidate
+    - chooses the first listed model if the current selection is unavailable
+    - finally falls back to `args.model`
+- OpenClaw anthropic-family smoke still synthesizes provider/model/base-url defaults rather than requiring the exact current harness selection.
+  - File: `scripts/smoke_matrix/openclaw_family.py`
+  - Evidence:
+    - `DEFAULT_OPENCLAW_ANTHROPIC_PROVIDER`
+    - `DEFAULT_OPENCLAW_ANTHROPIC_MODEL`
+    - `DEFAULT_OPENCLAW_ANTHROPIC_BASE_URL`
+
+### Remaining drift: setup / doctor / UX
+- OpenClaw managed-mode scaffolding is still present in setup code even though the clarified product contract is strict preserve-provider or fail.
+  - Files:
+    - `modeio_middleware/cli/setup_lib/openclaw_common.py`
+    - `modeio_middleware/cli/setup_lib/openclaw_routes.py`
+    - `modeio_middleware/cli/setup_lib/openclaw_transaction.py`
+  - Evidence:
+    - `OPENCLAW_AUTH_MODE_MANAGED`
+    - `_resolve_managed_route_target()`
+    - `_apply_managed_provider_route()`
+    - `_apply_managed_models_cache_provider()`
+- Doctor/setup language still emphasizes `guaranteed`, `best_effort`, and generalized readiness rather than exact harness-state preservation.
+  - File: `modeio_middleware/cli/setup.py`
+  - Impact:
+    - this is less severe than runtime drift, but it still frames middleware as if it can compensate for missing native state
+
+## Refactor Direction Decision
+- The right product contract is now explicit:
+  - exact selected harness provider/model/auth only
+  - no cross-harness borrowing
+  - no same-harness heuristic fallback
+  - no managed-mode rescue path in the normal product flow
+- That means the next cleanup should not be another feature pass.
+- It should be a strict-state enforcement pass that removes remaining fallback/heuristic paths across:
+  - runtime auth
+  - smoke scenario resolution
+  - setup/doctor semantics
 
 ### Highest-priority refactor targets
 - `modeio_middleware/cli/setup_lib/openclaw.py` (`1456` lines)

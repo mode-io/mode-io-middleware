@@ -197,6 +197,55 @@ Phase 15
   - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.unit.test_setup_gateway tests.integration.test_gateway_contract tests.smoke.test_smoke_agent_matrix_support tests.smoke.test_smoke_client_setup_flows`
     - `108` tests passed
 
+### Phase 16: Strict Harness-State Enforcement
+- [ ] Remove runtime auth fallback that compensates for missing harness state.
+  - Codex:
+    - remove `OPENAI_API_KEY` fallback when `~/.codex/auth.json` is missing
+    - require Codex-owned auth state or explicit incoming auth only
+  - OpenCode:
+    - remove provider-env fallback from `_inspect_opencode_provider()`
+    - require selected-provider config/auth-store state only
+  - OpenClaw:
+    - remove provider-env fallback from `_openclaw_provider_env_inspection()`
+    - require the selected provider/profile state only
+- [ ] Make OpenClaw resolution exact instead of heuristic.
+  - Replace `OpenClawSelectionResolver` default/first-available logic with exact current-profile resolution.
+  - Remove API-family default inference from provider id; require config/models-cache metadata to say what the current family is.
+  - Fail clearly when the selected provider/profile/family cannot be resolved exactly.
+- [ ] Make smoke scenario resolution exact instead of heuristic.
+  - Codex:
+    - use explicit `--model` override or seeded Codex selected model only
+    - fail if seeded selected model is unavailable
+  - OpenCode:
+    - use explicit `--opencode-model` override or seeded selected model only
+    - remove generic `fallback_model`
+  - OpenClaw:
+    - use current selected provider/model only for each supported family
+    - remove first-candidate provider/model selection
+    - remove synthetic anthropic/openai family defaults from normal live smoke
+- [ ] Remove remaining managed-mode / rescue semantics from setup and doctor.
+  - Delete OpenClaw managed-mode branches and legacy managed route helpers from setup libs.
+  - Remove user-facing framing that implies middleware can compensate for missing native state.
+  - Doctor should report exact-state support only:
+    - supported
+    - unsupported
+    - missing-required-state
+- [ ] Tighten tests around the strict contract.
+  - Add negative tests proving missing selected provider/model/profile/auth now fails instead of falling back.
+  - Update smoke-support tests to assert no generic fallback behavior remains.
+  - Keep explicit override tests only for user-provided CLI overrides, not implicit harness rescue.
+- [ ] Re-run validation after the cleanup.
+  - targeted runtime/auth slice
+  - targeted setup/smoke-support slice
+  - codex-only live smoke
+  - full supported live smoke matrix after the strict-state pass lands
+- **Status:** planned
+- Acceptance criteria:
+  - no runtime `provider-env` auth rescue remains for Codex, OpenCode, or OpenClaw native flows
+  - no smoke provider/model fallback remains for Codex/OpenCode/OpenClaw
+  - no OpenClaw managed-mode product path remains in setup
+  - middleware preserves exact harness-selected state or fails clearly
+
 ## Key Questions
 1. What exact backend/transport contract should `CodexNativeAdapter` target so native auth is actually valid end to end?
 2. How should provider adapters expose refresh, request injection, and protocol rewrite hooks without duplicating transport code?

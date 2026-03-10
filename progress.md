@@ -219,6 +219,33 @@
   - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract`
     - `55` tests passed
 
+### Phase 16 planning: strict harness-state contract
+- **Status:** planning complete
+- Actions taken:
+  - Reconfirmed the product contract with the user:
+    - middleware is not an auth provider
+    - middleware is not a model/provider chooser
+    - middleware should preserve exact harness-selected state or fail clearly
+  - Audited the current branch for remaining drift against that contract.
+  - Identified remaining runtime drift:
+    - Codex still falls back to `OPENAI_API_KEY` if `~/.codex/auth.json` is missing
+    - OpenCode still falls back to provider env vars
+    - OpenClaw still falls back to provider env vars
+    - OpenClaw still resolves `:default` or first available matching profile
+    - OpenClaw still infers API family from provider id when state is incomplete
+  - Identified remaining smoke drift:
+    - Codex smoke was still forcing a fallback model and is being corrected toward exact selected-model resolution
+    - OpenCode smoke still has generic `fallback_model`
+    - OpenClaw smoke still picks first-matching providers/models and uses synthesized family defaults
+  - Identified remaining setup/doctor drift:
+    - OpenClaw managed-mode code paths are still present in setup libs
+    - doctor/setup output still frames readiness with softer `guaranteed` / `best_effort` language instead of exact-state semantics
+  - Converted the audit into a new Phase 16 strict-state enforcement plan in `task_plan.md`.
+- Files created/modified:
+  - `findings.md`
+  - `task_plan.md`
+  - `progress.md`
+
 ### Session: 2026-03-10 refactor readiness review
 - Committed the OpenClaw boundary fix checkpoint as `1177ebb` (`Gate deferred OpenClaw Codex family`).
 - Performed a structural review over the current branch with local inspection focused on:

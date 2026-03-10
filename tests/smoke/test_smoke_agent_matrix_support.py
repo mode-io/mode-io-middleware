@@ -15,6 +15,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from smoke_agent_matrix import parse_args  # noqa: E402
 from smoke_agent_matrix import (  # noqa: E402
     _parse_openclaw_families,
+    _resolve_codex_smoke_model,
     _resolve_openclaw_family_scenarios,
 )
 from smoke_matrix.agents import build_agent_command  # noqa: E402
@@ -28,6 +29,7 @@ from smoke_matrix.sandbox import (  # noqa: E402
     build_sandbox_env,
     build_sandbox_paths,
     configure_openclaw_supported_family,
+    resolve_codex_smoke_model,
     resolve_opencode_smoke_model,
 )
 
@@ -44,6 +46,10 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(
             paths["claude_settings"],
             Path("/tmp/modeio-smoke/home/.claude/settings.json"),
+        )
+        self.assertEqual(
+            paths["codex_config"],
+            Path("/tmp/modeio-smoke/home/.codex/config.toml"),
         )
 
     def test_build_sandbox_env_uses_codex_only_base_url_marker(self):
@@ -174,6 +180,41 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
         self.assertEqual(args.model, "gpt-4o-mini")
         self.assertEqual(args.opencode_model, "")
+
+    def test_resolve_codex_smoke_model_returns_none_for_generic_default(self):
+        import smoke_agent_matrix  # noqa: E402
+
+        with mock.patch.object(smoke_agent_matrix, "DEFAULT_UPSTREAM_MODEL", "gpt-4o-mini"):
+            self.assertIsNone(_resolve_codex_smoke_model("gpt-4o-mini"))
+            self.assertIsNone(_resolve_codex_smoke_model(""))
+
+    def test_resolve_codex_smoke_model_keeps_explicit_override(self):
+        import smoke_agent_matrix  # noqa: E402
+
+        with mock.patch.object(smoke_agent_matrix, "DEFAULT_UPSTREAM_MODEL", "gpt-4o-mini"):
+            self.assertEqual(_resolve_codex_smoke_model("gpt-5.4"), "gpt-5.4")
+            self.assertEqual(
+                _resolve_codex_smoke_model("openai/gpt-5.3-codex"),
+                "gpt-5.3-codex",
+            )
+
+    def test_resolve_codex_smoke_model_prefers_seeded_codex_config(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.toml"
+            config_path.write_text('model = "gpt-5.4"\n', encoding="utf-8")
+
+            resolved = resolve_codex_smoke_model(
+                config_path=config_path,
+            )
+
+            self.assertEqual(resolved, "gpt-5.4")
+
+    def test_resolve_codex_smoke_model_raises_when_config_missing(self):
+        with TemporaryDirectory() as temp_dir:
+            with self.assertRaises(ValueError):
+                resolve_codex_smoke_model(
+                    config_path=Path(temp_dir) / "missing.toml",
+                )
 
     def test_resolve_opencode_smoke_model_prefers_config_model(self):
         with TemporaryDirectory() as temp_dir:

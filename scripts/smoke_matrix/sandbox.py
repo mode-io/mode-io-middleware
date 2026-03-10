@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -13,6 +14,7 @@ def build_sandbox_paths(root: Path) -> Dict[str, Path]:
     return {
         "root": root,
         "home": home,
+        "codex_config": home / ".codex" / "config.toml",
         "xdg_config": xdg_root / "config",
         "xdg_state": xdg_root / "state",
         "xdg_cache": xdg_root / "cache",
@@ -77,7 +79,7 @@ def seed_codex_credentials(real_home: Path, sandbox_home: Path) -> List[str]:
     if not source_root.exists():
         return seeded
 
-    for relative in ("auth.json",):
+    for relative in ("auth.json", "config.toml"):
         src = source_root / relative
         if not src.exists():
             continue
@@ -88,6 +90,23 @@ def seed_codex_credentials(real_home: Path, sandbox_home: Path) -> List[str]:
         dst.symlink_to(src)
         seeded.append(relative)
     return seeded
+
+
+def resolve_codex_smoke_model(
+    *,
+    config_path: Path,
+) -> str:
+    if config_path.exists():
+        try:
+            payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        config_model = payload.get("model")
+        if isinstance(config_model, str) and config_model.strip():
+            return config_model.strip()
+    raise ValueError(
+        f"unable to determine Codex selected model from {config_path}"
+    )
 
 
 def seed_opencode_state(real_home: Path, paths: Dict[str, Path]) -> Dict[str, object]:

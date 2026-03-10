@@ -61,6 +61,7 @@ from smoke_matrix.runner import (
 from smoke_matrix.sandbox import (
     build_sandbox_env as _build_sandbox_env,
     build_sandbox_paths as _build_sandbox_paths,
+    resolve_codex_smoke_model as _resolve_codex_config_model,
     resolve_opencode_smoke_model as _resolve_opencode_smoke_model,
     seed_codex_credentials as _seed_codex_credentials,
     seed_opencode_state as _seed_opencode_state,
@@ -79,6 +80,20 @@ def _default_repo_root() -> Path:
 def _default_artifacts_root() -> Path:
     return default_artifacts_root(Path(__file__))
 
+
+def _normalize_codex_model(model: str) -> str:
+    normalized = model.strip()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized
+
+
+def _resolve_codex_smoke_model(requested_model: str) -> str | None:
+    normalized = _normalize_codex_model(requested_model)
+    if not normalized or normalized == DEFAULT_UPSTREAM_MODEL:
+        return None
+    return normalized
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run isolated live smoke tests via codex/opencode/openclaw/claude through modeio-middleware."
@@ -91,7 +106,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=DEFAULT_UPSTREAM_MODEL,
-        help="OpenAI-compatible model name used for codex smoke prompts and as the fallback default elsewhere",
+        help=(
+            "OpenAI-compatible model name used as the generic fallback; "
+            "Codex smoke uses a Codex-native default when this stays at the generic default"
+        ),
     )
     parser.add_argument(
         "--opencode-model",
@@ -234,7 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "agentModels": {
             "openaiCompatible": args.model,
-            "codex": args.model,
+            "codex": None,
             "opencode": args.opencode_model or None,
             "claude": args.claude_model,
         },
@@ -324,6 +342,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["sandbox"]["seededOpenCode"] = seeded_opencode
         report["sandbox"]["seededOpenClaw"] = seeded_openclaw
         report["sandbox"]["claudeUsesHostAuthContext"] = needs_claude
+        explicit_codex_model = _resolve_codex_smoke_model(args.model)
+        resolved_codex_model = explicit_codex_model or _resolve_codex_config_model(
+            config_path=paths["codex_config"],
+        )
+        report["agentModels"]["codex"] = resolved_codex_model
         resolved_opencode_model = (
             args.opencode_model.strip()
             or _resolve_opencode_smoke_model(
@@ -599,7 +622,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     index=index,
                     run_id=run_id,
                     report_name=None,
-                    model=resolved_opencode_model if agent == "opencode" else args.model,
+                    model=(
+                        resolved_codex_model
+                        if agent == "codex"
+                        else resolved_opencode_model
+                        if agent == "opencode"
+                        else args.model
+                    ),
                     claude_model=args.claude_model,
                     repo_root=repo_root,
                     run_dir=run_dir,
