@@ -3,6 +3,7 @@ import { renderHook, waitFor, act } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { modeioMonitoringRoutes } from "../../apiRoutes";
 import { createDashboardQueryClient } from "../../queryClient";
 import { useTrafficMonitorState } from "./controller";
 
@@ -120,10 +121,10 @@ describe("useTrafficMonitorState", () => {
   it("falls back to demo data when traffic queries are empty", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.startsWith("/modeio/api/events?")) {
+      if (url.startsWith(`${modeioMonitoringRoutes.events}?`)) {
         return jsonResponse({ items: [], nextCursor: null });
       }
-      if (url === "/modeio/api/stats") {
+      if (url === modeioMonitoringRoutes.stats) {
         return jsonResponse({
           retainedRecords: 0,
           completedRecords: 0,
@@ -156,13 +157,13 @@ describe("useTrafficMonitorState", () => {
   it("loads live traffic detail for the selected request", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.startsWith("/modeio/api/events?")) {
+      if (url.startsWith(`${modeioMonitoringRoutes.events}?`)) {
         return jsonResponse(createLiveEvents());
       }
-      if (url === "/modeio/api/stats") {
+      if (url === modeioMonitoringRoutes.stats) {
         return jsonResponse(createLiveStats());
       }
-      if (url === "/modeio/api/events/req_1") {
+      if (url === modeioMonitoringRoutes.eventDetail("req_1")) {
         return jsonResponse(createDetail());
       }
       return jsonResponse({}, 404);
@@ -174,19 +175,19 @@ describe("useTrafficMonitorState", () => {
     await waitFor(() => expect(result.current.selectedRequestId).toBe("req_1"));
     await waitFor(() => expect(result.current.detail?.requestId).toBe("req_1"));
     expect(result.current.usingDemo).toBe(false);
-    expect(fetchMock).toHaveBeenCalledWith("/modeio/api/events/req_1", expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith(modeioMonitoringRoutes.eventDetail("req_1"), expect.anything());
   });
 
   it("invalidates traffic queries when live events arrive", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.startsWith("/modeio/api/events?")) {
+      if (url.startsWith(`${modeioMonitoringRoutes.events}?`)) {
         return jsonResponse(createLiveEvents());
       }
-      if (url === "/modeio/api/stats") {
+      if (url === modeioMonitoringRoutes.stats) {
         return jsonResponse(createLiveStats());
       }
-      if (url === "/modeio/api/events/req_1") {
+      if (url === modeioMonitoringRoutes.eventDetail("req_1")) {
         return jsonResponse(createDetail());
       }
       return jsonResponse({}, 404);

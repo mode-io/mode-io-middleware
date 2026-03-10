@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { modeioAdminRoutes, modeioMonitoringRoutes } from "./apiRoutes";
 import { App } from "./App";
 import type { PluginInventoryResponse } from "./types";
 
@@ -290,19 +291,19 @@ function installFetchMock(options?: { inventory?: PluginInventoryResponse; confl
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
 
-    if (url.startsWith("/modeio/api/events?")) {
+    if (url.startsWith(`${modeioMonitoringRoutes.events}?`)) {
       return jsonResponse(emptyTraffic ? createEmptyTraffic() : createTrafficEvent());
     }
-    if (url === "/modeio/api/stats") {
+    if (url === modeioMonitoringRoutes.stats) {
       return jsonResponse(emptyTraffic ? createEmptyStats() : createStats());
     }
-    if (url === "/modeio/api/events/req_1") {
+    if (url === modeioMonitoringRoutes.eventDetail("req_1")) {
       return jsonResponse(createDetail());
     }
-    if (url === "/modeio/api/plugins" && method === "GET") {
+    if (url === modeioAdminRoutes.plugins && method === "GET") {
       return jsonResponse(inventory);
     }
-    if (url === "/modeio/api/profiles/dev/plugins" && method === "PUT") {
+    if (url === modeioAdminRoutes.profilePlugins("dev") && method === "PUT") {
       const body = JSON.parse(String(init?.body || "{}"));
       updates.push(body);
       if (conflictOnce) {

@@ -42,16 +42,21 @@ class GatewayRuntimeConfig:
     config_path: str = ""
 
 
-def _build_runtime_services(service_config: Optional[Dict[str, Any]]) -> EngineServices:
-    try:
-        request_journal = build_request_journal_service(service_config)
-    except ValueError as error:
-        raise MiddlewareError(
-            500,
-            "MODEIO_CONFIG_ERROR",
-            str(error),
-            retryable=False,
-        ) from error
+def _build_runtime_services(
+    service_config: Optional[Dict[str, Any]],
+    *,
+    request_journal=None,
+) -> EngineServices:
+    if request_journal is None:
+        try:
+            request_journal = build_request_journal_service(service_config)
+        except ValueError as error:
+            raise MiddlewareError(
+                500,
+                "MODEIO_CONFIG_ERROR",
+                str(error),
+                retryable=False,
+            ) from error
     return EngineServices(
         telemetry=PluginTelemetry(),
         request_journal=request_journal,
@@ -59,14 +64,22 @@ def _build_runtime_services(service_config: Optional[Dict[str, Any]]) -> EngineS
 
 
 class MiddlewareEngine:
-    def __init__(self, runtime_config: GatewayRuntimeConfig):
+    def __init__(
+        self,
+        runtime_config: GatewayRuntimeConfig,
+        *,
+        request_journal=None,
+    ):
         self.config = runtime_config
         self.plugin_manager = PluginManager(
             runtime_config.plugins or {},
             preset_registry=runtime_config.preset_registry or {},
             config_base_dir=runtime_config.config_base_dir,
         )
-        self.services = _build_runtime_services(runtime_config.service_config)
+        self.services = _build_runtime_services(
+            runtime_config.service_config,
+            request_journal=request_journal,
+        )
         self._plugin_services = self.services.as_plugin_services()
         connectors: tuple[ConnectorAdapter, ...] = (
             ClaudeHookConnector(),

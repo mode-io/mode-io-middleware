@@ -294,7 +294,7 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             )
         return _render_engine_result(controller, request_id, result)
 
-    async def unknown_post(_request: Request) -> Response:
+    async def unknown_route(_request: Request) -> Response:
         request_id = new_request_id()
         return _contract_error_response(
             controller,
@@ -322,7 +322,7 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             Route(CLAUDE_HOOK_CONNECTOR_PATH, _process_post_request, methods=["POST"]),
             Route("/v1/chat/completions", _process_post_request, methods=["POST"]),
             Route("/v1/responses", _process_post_request, methods=["POST"]),
-            Route("/{rest:path}", unknown_post, methods=["POST"]),
+            Route("/{rest:path}", unknown_route, methods=["GET", "POST"]),
         ],
         lifespan=lifespan,
     )

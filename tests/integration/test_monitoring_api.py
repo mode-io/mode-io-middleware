@@ -274,11 +274,11 @@ class TestMonitoringApi(unittest.TestCase):
             self.assertEqual(events["items"][0]["impact"], "pass_through")
             self.assertEqual(events["items"][0]["lifecycle"], "none")
 
-            status, _headers, legacy_events = http_get_json(
-                gateway_stub.base_url, "/modeio/api/events"
+            status, _headers, missing_route = http_get_json(
+                gateway_stub.base_url, "/modeio/unknown-monitoring-route"
             )
-            self.assertEqual(status, 200)
-            self.assertEqual(len(legacy_events["items"]), 1)
+            self.assertEqual(status, 404)
+            self.assertEqual(missing_route["error"]["code"], "MODEIO_ROUTE_NOT_FOUND")
         finally:
             gateway_stub.stop()
             upstream.stop()

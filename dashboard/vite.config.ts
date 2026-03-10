@@ -15,8 +15,8 @@ export default defineConfig({
       "/healthz": proxyTarget,
       "/v1": proxyTarget,
       "/connectors": proxyTarget,
-      "/modeio/api": proxyTarget,
-      "/modeio/admin": proxyTarget,
+      "/modeio/api/v1": proxyTarget,
+      "/modeio/admin/v1": proxyTarget,
     },
   },
   test: {

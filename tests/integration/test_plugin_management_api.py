@@ -314,14 +314,86 @@ class TestPluginManagementApi(unittest.TestCase):
                 self.assertEqual(status, 409)
                 self.assertEqual(stale["error"]["code"], "MODEIO_GENERATION_CONFLICT")
 
-                status, _headers, legacy_inventory = http_get_json(
-                    gateway_stub.base_url, "/modeio/api/plugins"
+                status, _headers, missing = http_get_json(
+                    gateway_stub.base_url, "/modeio/unknown-admin-route"
+                )
+                self.assertEqual(status, 404)
+                self.assertEqual(missing["error"]["code"], "MODEIO_ROUTE_NOT_FOUND")
+                self.assertEqual(update["generation"], generation + 1)
+            finally:
+                gateway_stub.stop()
+                upstream.stop()
+
+    def test_monitoring_history_survives_profile_reload(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = _write_runtime_home(Path(temp_dir))
+            upstream, gateway_stub = start_gateway_pair(
+                lambda _path, payload: completion_payload(
+                    payload["messages"][0]["content"]
+                ),
+                config_path=config_path,
+            )
+            try:
+                status, _headers, inventory = http_get_json(
+                    gateway_stub.base_url,
+                    "/modeio/admin/v1/plugins",
                 )
                 self.assertEqual(status, 200)
-                self.assertEqual(
-                    legacy_inventory["runtime"]["generation"],
-                    update["generation"],
+
+                status, _headers, first = post_json(
+                    gateway_stub.base_url,
+                    "/v1/chat/completions",
+                    {
+                        "model": "gpt-test",
+                        "messages": [{"role": "user", "content": "before reload"}],
+                    },
                 )
+                self.assertEqual(status, 200)
+
+                status, _headers, events_before = http_get_json(
+                    gateway_stub.base_url,
+                    "/modeio/api/v1/events",
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(len(events_before["items"]), 1)
+                first_request_id = events_before["items"][0]["requestId"]
+
+                status, _headers, update = put_json(
+                    gateway_stub.base_url,
+                    "/modeio/admin/v1/profiles/dev/plugins",
+                    {
+                        "expectedGeneration": inventory["runtime"]["generation"],
+                        "pluginOrder": ["catalog/rewrite"],
+                        "pluginOverrides": {},
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(update["reloaded"])
+
+                status, _headers, second = post_json(
+                    gateway_stub.base_url,
+                    "/v1/chat/completions",
+                    {
+                        "model": "gpt-test",
+                        "messages": [{"role": "user", "content": "after reload"}],
+                    },
+                )
+                self.assertEqual(status, 200)
+
+                status, _headers, events_after = http_get_json(
+                    gateway_stub.base_url,
+                    "/modeio/api/v1/events",
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(len(events_after["items"]), 2)
+                self.assertEqual(events_after["items"][-1]["requestId"], first_request_id)
+
+                status, _headers, stats = http_get_json(
+                    gateway_stub.base_url,
+                    "/modeio/api/v1/stats",
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(stats["completedRecords"], 2)
             finally:
                 gateway_stub.stop()
                 upstream.stop()
