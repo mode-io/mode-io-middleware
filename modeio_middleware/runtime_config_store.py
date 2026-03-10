@@ -14,7 +14,7 @@ from modeio_middleware.core.config_resolver import load_preset_registry
 from modeio_middleware.core.engine import GatewayRuntimeConfig
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.profiles import DEFAULT_PROFILE, normalize_profile_name
-from modeio_middleware.plugin_catalog import build_plugin_catalog
+from modeio_middleware.plugin_catalog_discovery import build_plugin_catalog
 
 
 def read_runtime_config_payload(path: Path) -> Dict[str, Any]:
@@ -111,29 +111,37 @@ def is_runtime_config_writable(path: Path) -> bool:
 
 def write_runtime_config_payload(path: Path, payload: Dict[str, Any]) -> str:
     target = path.expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    backup_dir = target.parent / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / f"{target.stem}.{utc_timestamp()}{target.suffix}"
-    if target.exists():
-        shutil.copy2(target, backup_path)
-    else:
-        backup_path.write_text("", encoding="utf-8")
-
-    body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
-    )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(body)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, target)
-    finally:
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        backup_dir = target.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"{target.stem}.{utc_timestamp()}{target.suffix}"
+        if target.exists():
+            shutil.copy2(target, backup_path)
+        else:
+            backup_path.write_text("", encoding="utf-8")
+
+        body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+        )
         try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, target)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+    except OSError as error:
+        raise MiddlewareError(
+            500,
+            "MODEIO_CONFIG_ERROR",
+            f"failed to write config file: {target}",
+            retryable=False,
+        ) from error
     return str(backup_path)

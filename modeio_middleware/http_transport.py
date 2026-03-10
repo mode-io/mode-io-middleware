@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover
     _zstd_codec = None
 
 CLAUDE_HOOK_CONNECTOR_PATH = "/connectors/claude/hooks"
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def _decode_content_encoded_body(body_bytes: bytes, content_encoding: str) -> bytes:
@@ -228,6 +229,10 @@ def _dashboard_favicon_response() -> Response:
     return FileResponse(favicon_path, media_type="image/svg+xml")
 
 
+def _is_loopback_host(host: str) -> bool:
+    return str(host).strip().lower() in LOOPBACK_HOSTS
+
+
 def create_app(config: GatewayRuntimeConfig) -> Starlette:
     controller = GatewayController(config)
 
@@ -375,5 +380,19 @@ class GatewayServer:
         self._finalize()
 
 
-def create_server(host: str, port: int, config: GatewayRuntimeConfig) -> GatewayServer:
+def create_server(
+    host: str,
+    port: int,
+    config: GatewayRuntimeConfig,
+    *,
+    allow_remote_admin: bool = False,
+) -> GatewayServer:
+    if not allow_remote_admin and not _is_loopback_host(host):
+        raise MiddlewareError(
+            400,
+            "MODEIO_REMOTE_ADMIN_DISABLED",
+            "admin routes require loopback host binding unless --allow-remote-admin is set",
+            retryable=False,
+            details={"host": host},
+        )
     return GatewayServer(host, port, create_app(config))

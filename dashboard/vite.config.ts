@@ -16,6 +16,7 @@ export default defineConfig({
       "/v1": proxyTarget,
       "/connectors": proxyTarget,
       "/modeio/api": proxyTarget,
+      "/modeio/admin": proxyTarget,
     },
   },
   test: {

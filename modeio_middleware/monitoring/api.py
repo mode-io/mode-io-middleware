@@ -208,6 +208,16 @@ def build_monitoring_routes(controller: GatewayController) -> list[Route]:
         return _json_response(result)
 
     return [
+        Route("/modeio/admin/v1/plugins", plugins, methods=["GET"]),
+        Route(
+            "/modeio/admin/v1/profiles/{profile}/plugins",
+            update_profile_plugins,
+            methods=["PUT"],
+        ),
+        Route("/modeio/api/v1/events/live", live, methods=["GET"]),
+        Route("/modeio/api/v1/events/{request_id}", event_detail, methods=["GET"]),
+        Route("/modeio/api/v1/events", events, methods=["GET"]),
+        Route("/modeio/api/v1/stats", stats, methods=["GET"]),
         Route("/modeio/api/plugins", plugins, methods=["GET"]),
         Route(
             "/modeio/api/profiles/{profile}/plugins",

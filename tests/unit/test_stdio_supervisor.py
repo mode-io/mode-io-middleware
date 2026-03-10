@@ -89,6 +89,60 @@ class TestJsonRpcStdioSupervisor(unittest.TestCase):
             finally:
                 supervisor.shutdown()
 
+    def test_call_drains_stderr_without_deadlocking_chatty_plugin(self):
+        with TemporaryDirectory() as temp_dir:
+            plugin_path = self._write_plugin(
+                Path(temp_dir),
+                """
+                import json
+                import sys
+
+                for line in sys.stdin:
+                    request = json.loads(line)
+                    for _ in range(128):
+                        sys.stderr.write(("loud log " + ("x" * 4096)) + "\\n")
+                    sys.stderr.flush()
+                    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}}) + "\\n")
+                    sys.stdout.flush()
+                    break
+                """,
+            )
+            supervisor = JsonRpcStdioSupervisor(
+                plugin_name="stderr-drain",
+                command=[sys.executable, str(plugin_path)],
+            )
+            try:
+                result = supervisor.call(
+                    method="modeio.initialize",
+                    params={},
+                    timeout_ms=1000,
+                )
+            finally:
+                supervisor.shutdown()
+
+            self.assertEqual(result, {"ok": True})
+
+    def test_call_includes_stderr_tail_in_runtime_errors(self):
+        with TemporaryDirectory() as temp_dir:
+            plugin_path = self._write_plugin(
+                Path(temp_dir),
+                """
+                import sys
+
+                sys.stderr.write("plugin boot failed\\n")
+                sys.stderr.flush()
+                """,
+            )
+            supervisor = JsonRpcStdioSupervisor(
+                plugin_name="stderr-tail",
+                command=[sys.executable, str(plugin_path)],
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "plugin boot failed"):
+                    supervisor.call(method="modeio.initialize", params={}, timeout_ms=200)
+            finally:
+                supervisor.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

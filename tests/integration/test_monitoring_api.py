@@ -73,7 +73,7 @@ class TestMonitoringApi(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertIn("javascript", headers.get_content_type())
-            self.assertIn("/modeio/api/events", javascript)
+            self.assertIn("/modeio/api/v1/events", javascript)
 
             status, headers, favicon = http_get_text(
                 gateway_stub.base_url,
@@ -103,7 +103,7 @@ class TestMonitoringApi(unittest.TestCase):
             self.assertEqual(status, 200)
 
             status, _headers, events = http_get_json(
-                gateway_stub.base_url, "/modeio/api/events"
+                gateway_stub.base_url, "/modeio/api/v1/events"
             )
             self.assertEqual(status, 200)
             self.assertEqual(len(events["items"]), 1)
@@ -113,7 +113,7 @@ class TestMonitoringApi(unittest.TestCase):
             self.assertEqual(events["items"][0]["impact"], "pass_through")
 
             status, _headers, detail = http_get_json(
-                gateway_stub.base_url, f"/modeio/api/events/{request_id}"
+                gateway_stub.base_url, f"/modeio/api/v1/events/{request_id}"
             )
             self.assertEqual(status, 200)
             self.assertEqual(detail["clientName"], "codex")
@@ -124,7 +124,7 @@ class TestMonitoringApi(unittest.TestCase):
             )
 
             status, _headers, stats = http_get_json(
-                gateway_stub.base_url, "/modeio/api/stats"
+                gateway_stub.base_url, "/modeio/api/v1/stats"
             )
             self.assertEqual(status, 200)
             self.assertEqual(stats["completedRecords"], 1)
@@ -171,12 +171,12 @@ class TestMonitoringApi(unittest.TestCase):
             )
 
             status, _headers, events = http_get_json(
-                gateway_stub.base_url, "/modeio/api/events"
+                gateway_stub.base_url, "/modeio/api/v1/events"
             )
             request_id = events["items"][0]["requestId"]
 
             status, _headers, detail = http_get_json(
-                gateway_stub.base_url, f"/modeio/api/events/{request_id}"
+                gateway_stub.base_url, f"/modeio/api/v1/events/{request_id}"
             )
             self.assertEqual(status, 200)
             self.assertEqual(detail["lifecycle"], "pre_and_post")
@@ -231,13 +231,13 @@ class TestMonitoringApi(unittest.TestCase):
             self.assertEqual(payload["error"]["code"], "MODEIO_PLUGIN_BLOCKED")
 
             status, _headers, stats = http_get_json(
-                gateway_stub.base_url, "/modeio/api/stats"
+                gateway_stub.base_url, "/modeio/api/v1/stats"
             )
             self.assertEqual(status, 200)
             self.assertEqual(stats["byStatus"]["blocked"], 1)
 
             status, _headers, events = http_get_json(
-                gateway_stub.base_url, "/modeio/api/events?status=blocked"
+                gateway_stub.base_url, "/modeio/api/v1/events?status=blocked"
             )
             self.assertEqual(status, 200)
             self.assertEqual(len(events["items"]), 1)
@@ -266,13 +266,19 @@ class TestMonitoringApi(unittest.TestCase):
 
             status, _headers, events = http_get_json(
                 gateway_stub.base_url,
-                "/modeio/api/events?client=opencode&impact=pass_through&lifecycle=none",
+                "/modeio/api/v1/events?client=opencode&impact=pass_through&lifecycle=none",
             )
             self.assertEqual(status, 200)
             self.assertEqual(len(events["items"]), 1)
             self.assertEqual(events["items"][0]["clientName"], "opencode")
             self.assertEqual(events["items"][0]["impact"], "pass_through")
             self.assertEqual(events["items"][0]["lifecycle"], "none")
+
+            status, _headers, legacy_events = http_get_json(
+                gateway_stub.base_url, "/modeio/api/events"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(len(legacy_events["items"]), 1)
         finally:
             gateway_stub.stop()
             upstream.stop()

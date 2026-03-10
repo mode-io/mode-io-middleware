@@ -11,10 +11,9 @@ PACKAGE_ROOT = REPO_ROOT
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from modeio_middleware.plugin_catalog import (  # noqa: E402
-    build_plugin_catalog,
-    build_plugin_inventory_response,
-)
+from modeio_middleware.plugin_catalog import PluginCatalogEntry  # noqa: E402
+from modeio_middleware.plugin_catalog_discovery import build_plugin_catalog  # noqa: E402
+from modeio_middleware.plugin_inventory import build_plugin_inventory_response  # noqa: E402
 
 
 def _write_manifest(path: Path, *, name: str, description: str = "Discovered plugin"):
@@ -63,6 +62,9 @@ def _write_host(path: Path):
 
 
 class TestPluginCatalog(unittest.TestCase):
+    def test_catalog_compat_exports_still_resolve(self):
+        self.assertIsNotNone(PluginCatalogEntry)
+
     def test_build_plugin_catalog_discovers_default_sibling_plugins_dir(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

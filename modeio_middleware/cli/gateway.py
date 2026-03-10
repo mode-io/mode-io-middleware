@@ -109,6 +109,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_PROFILE,
         help=f"Default middleware profile when request has no modeio.profile (default: {DEFAULT_PROFILE})",
     )
+    parser.add_argument(
+        "--allow-remote-admin",
+        action="store_true",
+        help="Allow admin routes when binding the gateway on a non-loopback host",
+    )
     return parser.parse_args(argv)
 
 
@@ -116,11 +121,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     try:
         config = load_runtime_config(args)
+        server = create_server(
+            args.host,
+            args.port,
+            config,
+            allow_remote_admin=args.allow_remote_admin,
+        )
     except MiddlewareError as error:
-        print(f"Failed to load middleware config: {error.message}", file=sys.stderr)
+        print(f"Failed to start middleware gateway: {error.message}", file=sys.stderr)
         return 1
-
-    server = create_server(args.host, args.port, config)
     listen_host, listen_port = server.server_address
     print(
         (

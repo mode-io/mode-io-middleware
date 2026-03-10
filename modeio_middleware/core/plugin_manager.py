@@ -16,6 +16,7 @@ from modeio_middleware.core.contracts import (
 )
 from modeio_middleware.core.decision import normalize_decision_payload
 from modeio_middleware.core.errors import MiddlewareError
+from modeio_middleware.core.hook_envelope import HookEnvelope
 from modeio_middleware.registry.resolver import (
     MODE_ASSIST,
     MODE_OBSERVE,
@@ -94,52 +95,56 @@ class PluginManager:
     ) -> List[ActivePlugin]:
         profile_overrides = profile_plugin_overrides or {}
         active: List[ActivePlugin] = []
-        for plugin_name in plugin_order:
-            plugin_config = self._plugins_config.get(plugin_name)
-            request_override = request_plugin_overrides.get(plugin_name, {})
-            if not isinstance(request_override, dict):
-                raise MiddlewareError(
-                    400,
-                    "MODEIO_VALIDATION_ERROR",
-                    f"modeio.plugins.{plugin_name} must be an object",
+        try:
+            for plugin_name in plugin_order:
+                plugin_config = self._plugins_config.get(plugin_name)
+                request_override = request_plugin_overrides.get(plugin_name, {})
+                if not isinstance(request_override, dict):
+                    raise MiddlewareError(
+                        400,
+                        "MODEIO_VALIDATION_ERROR",
+                        f"modeio.plugins.{plugin_name} must be an object",
+                    )
+
+                profile_override = profile_overrides.get(plugin_name, {})
+                if not isinstance(profile_override, dict):
+                    raise MiddlewareError(
+                        500,
+                        "MODEIO_CONFIG_ERROR",
+                        f"profile.plugin_overrides.{plugin_name} must be an object",
+                        retryable=False,
+                    )
+
+                resolved = resolve_plugin_runtime_config(
+                    plugin_name=plugin_name,
+                    plugin_config=plugin_config,
+                    preset_registry=self._preset_registry,
+                    profile_override=profile_override,
+                    request_override=request_override,
                 )
 
-            profile_override = profile_overrides.get(plugin_name, {})
-            if not isinstance(profile_override, dict):
-                raise MiddlewareError(
-                    500,
-                    "MODEIO_CONFIG_ERROR",
-                    f"profile.plugin_overrides.{plugin_name} must be an object",
-                    retryable=False,
+                if not resolved.enabled:
+                    continue
+
+                spec = resolve_plugin_runtime_spec(
+                    resolved=resolved,
+                    config_base_dir=self._config_base_dir,
                 )
-
-            resolved = resolve_plugin_runtime_config(
-                plugin_name=plugin_name,
-                plugin_config=plugin_config,
-                preset_registry=self._preset_registry,
-                profile_override=profile_override,
-                request_override=request_override,
-            )
-
-            if not resolved.enabled:
-                continue
-
-            spec = resolve_plugin_runtime_spec(
-                resolved=resolved,
-                config_base_dir=self._config_base_dir,
-            )
-            lease = self._runtime_manager.acquire(spec)
-            active.append(
-                ActivePlugin(
-                    name=plugin_name,
-                    runtime=lease.runtime,
-                    lease=lease,
-                    config=spec.hook_config,
-                    mode=spec.mode,
-                    capabilities=spec.capabilities,
-                    supported_hooks=spec.supported_hooks,
+                lease = self._runtime_manager.acquire(spec)
+                active.append(
+                    ActivePlugin(
+                        name=plugin_name,
+                        runtime=lease.runtime,
+                        lease=lease,
+                        config=spec.hook_config,
+                        mode=spec.mode,
+                        capabilities=spec.capabilities,
+                        supported_hooks=spec.supported_hooks,
+                    )
                 )
-            )
+        except Exception:
+            self.shutdown_active_plugins(active)
+            raise
         return active
 
     def shutdown_active_plugins(self, active_plugins: Iterable[ActivePlugin]) -> None:
@@ -242,47 +247,33 @@ class PluginManager:
         response_body: Optional[Dict[str, Any]] = None,
         response_headers: Optional[Dict[str, str]] = None,
         event: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> HookEnvelope:
         plugin_state = shared_state.setdefault(active.name, {})
-        hook_input: Dict[str, Any] = {
-            "request_id": request_id,
-            "endpoint_kind": endpoint_kind,
-            "profile": profile,
-            "plugin_config": active.config,
-            "state": shared_state,
-            "plugin_state": plugin_state,
-            "services": services or {},
-        }
-
-        if context is not None:
-            hook_input["context"] = context
-        if request_context is not None:
-            hook_input["request_context"] = request_context
-        if context is None and request_context is not None:
-            hook_input["context"] = request_context
-        if request_context is None and context is not None:
-            hook_input["request_context"] = context
-
-        if response_context is not None:
-            hook_input["response_context"] = response_context
-        if request_body is not None:
-            hook_input["request_body"] = request_body
-        if request_headers is not None:
-            hook_input["request_headers"] = request_headers
-        if response_body is not None:
-            hook_input["response_body"] = response_body
-        if response_headers is not None:
-            hook_input["response_headers"] = response_headers
-        if event is not None:
-            hook_input["event"] = event
-
-        hook_input.update(
-            self._extract_connector_metadata(
-                context=context,
-                request_context=request_context,
-            )
+        connector_metadata = self._extract_connector_metadata(
+            context=context,
+            request_context=request_context,
         )
-        return hook_input
+        return HookEnvelope(
+            request_id=request_id,
+            endpoint_kind=endpoint_kind,
+            profile=profile,
+            plugin_config=active.config,
+            shared_state=shared_state,
+            plugin_state=plugin_state,
+            services=services or {},
+            context=context,
+            request_context=request_context,
+            response_context=response_context,
+            request_body=request_body,
+            request_headers=request_headers,
+            response_body=response_body,
+            response_headers=response_headers,
+            event=event,
+            source=connector_metadata.get("source"),
+            source_event=connector_metadata.get("source_event"),
+            surface_capabilities=connector_metadata.get("surface_capabilities"),
+            native_event=connector_metadata.get("native_event"),
+        )
 
     def _record_telemetry(
         self,
@@ -354,7 +345,10 @@ class PluginManager:
                 "severity": severity,
                 "confidence": 1.0,
                 "reason": f"plugin '{plugin_name}' failed",
-                "evidence": [type(error).__name__],
+                "evidence": [
+                    type(error).__name__,
+                    *([str(error)] if str(error) else []),
+                ],
             }
         )
 

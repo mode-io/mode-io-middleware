@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from modeio_middleware.core.engine import GatewayRuntimeConfig, MiddlewareEngine
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.plugin_overrides import validate_plugin_overrides
-from modeio_middleware.plugin_catalog import build_plugin_inventory_response
+from modeio_middleware.plugin_inventory import build_plugin_inventory_response
 from modeio_middleware.runtime_config_store import (
     build_gateway_runtime_config_from_payload,
     is_runtime_config_writable,
@@ -26,6 +26,12 @@ class RuntimeLaunchSettings:
     upstream_timeout_seconds: int
     upstream_api_key_env: str
     default_profile: str
+
+
+@dataclass
+class PreparedEngineSwap:
+    next_engine: MiddlewareEngine
+    backup_path: str = ""
 
 
 class EngineLease:
@@ -130,6 +136,38 @@ class GatewayController:
             config_writable=self.config_writable(),
             stats_snapshot=stats_snapshot,
         )
+
+    def _build_runtime_config_from_payload(self, payload: Dict[str, Any]):
+        assert self._config_path is not None
+        return build_gateway_runtime_config_from_payload(
+            payload,
+            config_path=self._config_path,
+            upstream_chat_completions_url=self._launch_settings.upstream_chat_completions_url,
+            upstream_responses_url=self._launch_settings.upstream_responses_url,
+            upstream_timeout_seconds=self._launch_settings.upstream_timeout_seconds,
+            upstream_api_key_env=self._launch_settings.upstream_api_key_env,
+            default_profile=self._launch_settings.default_profile,
+        )
+
+    def _prepare_engine_swap(self, payload: Dict[str, Any]) -> PreparedEngineSwap:
+        next_config = self._build_runtime_config_from_payload(payload)
+        return PreparedEngineSwap(next_engine=MiddlewareEngine(next_config))
+
+    def _activate_prepared_engine(self, prepared: PreparedEngineSwap) -> MiddlewareEngine | None:
+        current_generation = self._generation
+        current_engine = self._engine
+        current_count = self._active_counts.get(current_generation, 0)
+
+        self._generation = current_generation + 1
+        self._engine = prepared.next_engine
+        self._active_counts[self._generation] = 0
+
+        if current_count == 0:
+            self._active_counts.pop(current_generation, None)
+            return current_engine
+
+        self._retired[current_generation] = current_engine
+        return None
 
     def update_profile_plugins(
         self,
@@ -261,31 +299,17 @@ class GatewayController:
             profiles[profile_name] = profile_payload
             payload["profiles"] = profiles
 
-            next_config = build_gateway_runtime_config_from_payload(
-                payload,
-                config_path=self._config_path,
-                upstream_chat_completions_url=self._launch_settings.upstream_chat_completions_url,
-                upstream_responses_url=self._launch_settings.upstream_responses_url,
-                upstream_timeout_seconds=self._launch_settings.upstream_timeout_seconds,
-                upstream_api_key_env=self._launch_settings.upstream_api_key_env,
-                default_profile=self._launch_settings.default_profile,
-            )
-            backup_path = write_runtime_config_payload(self._config_path, payload)
-            next_engine = MiddlewareEngine(next_config)
+            prepared = self._prepare_engine_swap(payload)
+            try:
+                prepared.backup_path = write_runtime_config_payload(
+                    self._config_path, payload
+                )
+            except Exception:
+                prepared.next_engine.shutdown()
+                raise
 
-            current_generation = self._generation
-            current_engine = self._engine
-            current_count = self._active_counts.get(current_generation, 0)
-
-            self._generation = current_generation + 1
-            self._engine = next_engine
-            self._active_counts[self._generation] = 0
-
-            if current_count == 0:
-                self._active_counts.pop(current_generation, None)
-                retired_engine = current_engine
-            else:
-                self._retired[current_generation] = current_engine
+            backup_path = prepared.backup_path
+            retired_engine = self._activate_prepared_engine(prepared)
 
         if retired_engine is not None:
             retired_engine.shutdown()
