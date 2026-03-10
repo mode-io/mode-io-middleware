@@ -10,7 +10,7 @@ from modeio_middleware.connectors.base import (
     ConnectorAdapter,
     ConnectorCapabilities,
 )
-from modeio_middleware.connectors.client_identity import detect_openai_client_name
+from modeio_middleware.core.request_context import client_route_context_from_headers
 from modeio_middleware.core.client_auth import normalize_client_upstream_model
 from modeio_middleware.core.contracts import (
     ENDPOINT_ANTHROPIC_MESSAGES,
@@ -23,18 +23,6 @@ from modeio_middleware.core.profiles import normalize_profile_name
 ANTHROPIC_CONNECTOR_PATHS = {
     "/v1/messages": ENDPOINT_ANTHROPIC_MESSAGES,
 }
-
-
-def _client_provider_name(incoming_headers: Dict[str, str]) -> str | None:
-    for key, value in incoming_headers.items():
-        if key.lower() == "x-modeio-client-provider":
-            provider_name = str(value).strip()
-            if provider_name:
-                return provider_name
-            return None
-    return None
-
-
 class AnthropicHttpConnector(ConnectorAdapter):
     route_paths = tuple(ANTHROPIC_CONNECTOR_PATHS.keys())
 
@@ -67,24 +55,27 @@ class AnthropicHttpConnector(ConnectorAdapter):
             default_profile=default_profile,
         )
         capabilities = ConnectorCapabilities(can_patch=True, can_block=True)
-        client_name = detect_openai_client_name(incoming_headers)
-        client_provider_name = _client_provider_name(incoming_headers)
+        route_context = client_route_context_from_headers(
+            incoming_headers,
+            normalized_path=path,
+        )
         request_body["model"] = normalize_client_upstream_model(
             request_body.get("model"),
-            client_name=client_name,
-            client_provider_name=client_provider_name,
+            client_name=route_context.client_name,
+            client_provider_name=route_context.client_provider_name,
         )
         connector_context = {
             "endpoint_kind": endpoint_kind,
             "source": "anthropic_gateway",
-            "client_name": client_name,
-            "client_provider_name": client_provider_name,
+            "client_name": route_context.client_name,
+            "client_provider_name": route_context.client_provider_name,
+            "client_route_context": route_context.as_dict(),
             "source_event": "http_request",
             "surface_capabilities": capabilities.as_dict(),
         }
         return CanonicalInvocation(
             source="anthropic_gateway",
-            client_name=client_name,
+            client_name=route_context.client_name,
             source_event="http_request",
             endpoint_kind=endpoint_kind,
             phase="request",

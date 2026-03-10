@@ -19,6 +19,11 @@ from modeio_middleware.connectors.client_identity import (
     CLIENT_OPENCLAW,
     CLIENT_UNKNOWN,
 )
+from modeio_middleware.core.upstream_plan import (
+    ResolvedAuthMaterial,
+    ResolvedCredential,
+    ResolvedUpstreamPlan,
+)
 
 AUTH_KIND_API_KEY = "api_key"
 AUTH_KIND_MISSING = "missing"
@@ -53,7 +58,6 @@ OPENCLAW_SUPPORTED_API_FAMILIES = frozenset(
         "anthropic-messages",
     }
 )
-
 
 def normalize_provider_id(raw_provider_id: str | None) -> str:
     text = str(raw_provider_id or "").strip().lower().replace("_", "-")
@@ -212,6 +216,14 @@ class CredentialInspection:
     scopes: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def auth_material(self) -> ResolvedAuthMaterial:
+        return resolve_inspection_auth_material(self)
+
+    @property
+    def upstream_plan(self) -> ResolvedUpstreamPlan:
+        return resolve_inspection_upstream_plan(self)
+
     def to_public_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "providerId": self.provider_id,
@@ -236,6 +248,159 @@ class CredentialInspection:
             payload["scopes"] = list(self.scopes)
         payload.update(self.metadata)
         return payload
+
+
+def _default_api_family(provider_id: str) -> str:
+    normalized = normalize_provider_id(provider_id)
+    if normalized == PROVIDER_ANTHROPIC:
+        return "anthropic-messages"
+    if normalized == PROVIDER_OPENAI_CODEX:
+        return "openai-codex-responses"
+    return "openai-completions"
+
+
+def _default_transport_kind(provider_id: str) -> str:
+    if normalize_provider_id(provider_id) == PROVIDER_OPENAI_CODEX:
+        return TRANSPORT_CODEX_NATIVE
+    return TRANSPORT_OPENAI_COMPAT
+
+
+def resolve_inspection_credential(inspection: CredentialInspection) -> ResolvedCredential:
+    source = getattr(inspection, "auth_source", None) or getattr(inspection, "auth_env", None)
+    auth_kind = str(getattr(inspection, "auth_kind", AUTH_KIND_MISSING) or AUTH_KIND_MISSING)
+    guaranteed = bool(getattr(inspection, "guaranteed", False))
+    reason = getattr(inspection, "reason", None)
+    refresh_state = None
+    if auth_kind == AUTH_KIND_OAUTH and bool(getattr(inspection, "ready", False)):
+        refresh_state = "reusable"
+    return ResolvedCredential(
+        provider_id=str(getattr(inspection, "provider_id", "")),
+        auth_kind=auth_kind,
+        source=source,
+        guaranteed=guaranteed,
+        best_effort_reason=reason if not guaranteed else None,
+        refresh_state=refresh_state,
+    )
+
+
+def resolve_inspection_auth_material(
+    inspection: CredentialInspection,
+) -> ResolvedAuthMaterial:
+    metadata = getattr(inspection, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    account_id = metadata.get("accountId")
+    return ResolvedAuthMaterial(
+        authorization=getattr(inspection, "authorization", None),
+        resolved_headers=dict(getattr(inspection, "resolved_headers", {}) or {}),
+        account_id=account_id.strip() if isinstance(account_id, str) and account_id.strip() else None,
+    )
+
+
+def resolve_inspection_upstream_plan(
+    inspection: CredentialInspection,
+) -> ResolvedUpstreamPlan:
+    metadata = getattr(inspection, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    provider_id = str(getattr(inspection, "provider_id", "") or metadata.get("providerId") or "")
+    unsupported_family = None
+    if metadata.get("unsupportedFamily"):
+        unsupported_family = str(metadata.get("apiFamily") or _default_api_family(provider_id))
+    supported_families = ()
+    raw_supported = metadata.get("supportedFamilies")
+    if isinstance(raw_supported, list):
+        supported_families = tuple(str(item) for item in raw_supported if str(item).strip())
+    base_url = metadata.get("upstreamBaseUrl") or metadata.get("overrideBaseUrl")
+    if not isinstance(base_url, str) or not base_url.strip():
+        native_base = metadata.get("nativeBaseUrl")
+        if isinstance(native_base, str) and native_base.strip():
+            base_url = native_base.strip()
+        else:
+            base_url = None
+    model_override = metadata.get("fallbackModelId")
+    if not isinstance(model_override, str) or not model_override.strip():
+        model_override = None
+    transport_kind = str(
+        getattr(inspection, "transport", "") or _default_transport_kind(provider_id)
+    )
+    native_base_url = (
+        str(metadata.get("nativeBaseUrl")).strip().rstrip("/")
+        if isinstance(metadata.get("nativeBaseUrl"), str)
+        and str(metadata.get("nativeBaseUrl")).strip()
+        else None
+    )
+    if transport_kind == TRANSPORT_CODEX_NATIVE and native_base_url is None:
+        transport_kind = TRANSPORT_OPENAI_COMPAT
+    return ResolvedUpstreamPlan(
+        provider_id=str(metadata.get("providerId") or provider_id),
+        transport_kind=transport_kind,
+        api_family=str(metadata.get("apiFamily") or _default_api_family(provider_id)),
+        upstream_base_url=(
+            base_url.strip().rstrip("/")
+            if isinstance(base_url, str) and base_url.strip()
+            else None
+        ),
+        native_base_url=native_base_url,
+        model_override=model_override,
+        unsupported_family=unsupported_family,
+        supported_families=supported_families,
+        fallback_mode=getattr(inspection, "fallback_mode", FALLBACK_MODE_NONE),
+        metadata=dict(metadata),
+    )
+
+
+def _context_upstream_plan(
+    *,
+    client_name: str,
+    provider_id: str,
+    env: Mapping[str, str],
+) -> ResolvedUpstreamPlan:
+    normalized_provider = normalize_provider_id(provider_id)
+    metadata: dict[str, Any] = {"providerId": normalized_provider}
+    if client_name == CLIENT_OPENCLAW:
+        api_family = _openclaw_current_api_family(normalized_provider, env)
+        upstream_base_url = _openclaw_preserved_upstream_base_url(normalized_provider, env)
+        if upstream_base_url:
+            metadata["upstreamBaseUrl"] = upstream_base_url
+        if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
+            return ResolvedUpstreamPlan(
+                provider_id=normalized_provider,
+                transport_kind=_default_transport_kind(normalized_provider),
+                api_family=api_family,
+                upstream_base_url=upstream_base_url,
+                unsupported_family=api_family,
+                supported_families=tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES)),
+                fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
+                metadata=metadata,
+            )
+        return ResolvedUpstreamPlan(
+            provider_id=normalized_provider,
+            transport_kind=_default_transport_kind(normalized_provider),
+            api_family=api_family,
+            upstream_base_url=upstream_base_url,
+            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
+            metadata=metadata,
+        )
+
+    if normalized_provider == PROVIDER_OPENAI_CODEX:
+        native_base_url = _codex_native_base_url(env)
+        metadata["nativeBaseUrl"] = native_base_url
+        return ResolvedUpstreamPlan(
+            provider_id=normalized_provider,
+            transport_kind=TRANSPORT_CODEX_NATIVE,
+            api_family="openai-codex-responses",
+            native_base_url=native_base_url,
+            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
+            metadata=metadata,
+        )
+
+    return ResolvedUpstreamPlan(
+        provider_id=normalized_provider,
+        transport_kind=_default_transport_kind(normalized_provider),
+        api_family=_default_api_family(normalized_provider),
+        upstream_base_url=None,
+        fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
+        metadata=metadata,
+    )
 
 
 @dataclass(frozen=True)
@@ -1522,6 +1687,25 @@ class CredentialResolver:
             health_store=self._health_store,
         )
         return self._registry.normalize_model_name(model_name, context)
+
+    def resolve_upstream_plan(
+        self,
+        *,
+        client_name: str,
+        provider_name: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ResolvedUpstreamPlan:
+        resolved_env = _env_mapping(env)
+        provider_id = self.resolve_provider_id(
+            client_name=client_name,
+            provider_name=provider_name,
+            env=resolved_env,
+        )
+        return _context_upstream_plan(
+            client_name=client_name,
+            provider_id=provider_id,
+            env=resolved_env,
+        )
 
     def resolve_authorization(
         self,

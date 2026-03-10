@@ -167,7 +167,35 @@ Phase 15
     - duplicated route/base-url helpers
     - fixture duplication in setup/auth/smoke tests
 - [ ] Use this structural refactor as the gate before continuing Phases 9-14.
-- **Status:** in_progress
+- **Status:** complete
+- Completion checkpoint:
+  - Landed typed runtime seams:
+    - `modeio_middleware/core/request_context.py`
+    - `modeio_middleware/core/upstream_plan.py`
+    - `modeio_middleware/core/upstream_strategy.py`
+  - Refactored auth/runtime orchestration so request context, credential materialization, and upstream planning no longer depend on free-form transport metadata at the call sites.
+  - Split OpenClaw setup into focused modules:
+    - `setup_lib/openclaw_common.py`
+    - `setup_lib/openclaw_routes.py`
+    - `setup_lib/openclaw_transaction.py`
+    - `setup_lib/openclaw.py` is now a thin facade instead of a monolith.
+  - Split smoke orchestration so `scripts/smoke_agent_matrix.py` is reduced to CLI composition and family/runner behavior lives in:
+    - `scripts/smoke_matrix/openclaw_family.py`
+    - `scripts/smoke_matrix/runner.py`
+  - Added an inspection builder and migrated the most drift-prone gateway/upstream tests off ad hoc `SimpleNamespace` stubs.
+  - Large dead-surface removal already landed as part of the split:
+    - legacy bulk logic was removed from `openclaw.py`
+    - legacy scenario/runner logic was removed from `smoke_agent_matrix.py`
+  - Remaining deletion work is now ordinary follow-up cleanup, not a gate for continuing product work.
+- Validation:
+  - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract`
+    - `55` tests passed
+  - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_setup_gateway tests.smoke.test_smoke_client_setup_flows`
+    - `40` tests passed
+  - `python-test-env.sh test --repo ... -- python -m unittest discover tests/smoke -p 'test_*.py'`
+    - `18` tests passed
+  - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.unit.test_setup_gateway tests.integration.test_gateway_contract tests.smoke.test_smoke_agent_matrix_support tests.smoke.test_smoke_client_setup_flows`
+    - `108` tests passed
 
 ## Key Questions
 1. What exact backend/transport contract should `CodexNativeAdapter` target so native auth is actually valid end to end?

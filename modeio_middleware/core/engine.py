@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Union
 
 from modeio_middleware.connectors.base import CanonicalInvocation, ConnectorAdapter
 from modeio_middleware.connectors.anthropic_http import AnthropicHttpConnector
-from modeio_middleware.connectors.client_identity import detect_openai_client_name
+from modeio_middleware.core.request_context import client_route_context_from_headers
 from modeio_middleware.connectors.claude_hooks import (
     CLAUDE_HOOK_CONNECTOR_PATH,
     ClaudeHookConnector,
@@ -321,21 +321,18 @@ class MiddlewareEngine:
         incoming_headers: Dict[str, str],
         query_params: Dict[str, str],
     ) -> ProcessResult:
-        client_name = detect_openai_client_name(incoming_headers)
-        client_provider_name = None
-        for key, value in incoming_headers.items():
-            if key.lower() == "x-modeio-client-provider":
-                text = str(value).strip()
-                if text:
-                    client_provider_name = text
-                break
+        route_context = client_route_context_from_headers(
+            incoming_headers,
+            normalized_path="/v1/models",
+        )
 
         session = self._new_session(request_id=request_id)
         try:
             upstream_response = self._upstream_transport.forward_models_json(
                 incoming_headers=incoming_headers,
-                client_name=client_name,
-                client_provider_name=client_provider_name,
+                route_context=route_context,
+                client_name=route_context.client_name,
+                client_provider_name=route_context.client_provider_name,
                 query_params=query_params,
             )
             return ProcessResult(
@@ -422,6 +419,10 @@ class MiddlewareEngine:
                 endpoint_kind=invocation.endpoint_kind,
                 payload=pre_result.body,
                 incoming_headers=pre_result.headers,
+                route_context=client_route_context_from_headers(
+                    pre_result.headers,
+                    normalized_path=invocation.connector_context.get("client_route_context", {}).get("normalized_path"),
+                ),
                 client_name=invocation.client_name,
                 client_provider_name=invocation.connector_context.get(
                     "client_provider_name"

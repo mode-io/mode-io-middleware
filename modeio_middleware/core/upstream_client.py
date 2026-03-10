@@ -14,14 +14,23 @@ from modeio_middleware.connectors.client_identity import CLIENT_OPENCLAW
 from modeio_middleware.core.client_auth import (
     inspect_client_native_auth,
     record_client_native_failure,
+    resolve_client_inspection_auth_material,
+    resolve_client_inspection_credential,
+    resolve_client_inspection_upstream_plan,
+    resolve_client_route_upstream_plan,
 )
 from modeio_middleware.core.contracts import (
     ENDPOINT_ANTHROPIC_MESSAGES,
-    ENDPOINT_CHAT_COMPLETIONS,
     ENDPOINT_RESPONSES,
 )
 from modeio_middleware.core.errors import MiddlewareError
-from modeio_middleware.core.provider_auth import TRANSPORT_CODEX_NATIVE
+from modeio_middleware.core.request_context import ClientRouteContext
+from modeio_middleware.core.upstream_plan import (
+    ResolvedAuthMaterial,
+    ResolvedClientUpstreamAuth,
+    ResolvedCredential,
+)
+from modeio_middleware.core.upstream_strategy import strategy_for_plan
 
 if TYPE_CHECKING:
     from modeio_middleware.core.engine import GatewayRuntimeConfig
@@ -55,6 +64,7 @@ AUTH_HEADER_NAMES = {
 }
 ANTHROPIC_VERSION_HEADER = "anthropic-version"
 ANTHROPIC_DEFAULT_VERSION = "2023-06-01"
+LOCAL_AUTH_PLACEHOLDER_VALUES = {"bearer modeio-middleware", "modeio-middleware"}
 
 
 @dataclass(frozen=True)
@@ -91,88 +101,6 @@ def _should_retry_exception(error: httpx.RequestError) -> bool:
     return isinstance(error, (httpx.ConnectError, httpx.TimeoutException))
 
 
-def _build_upstream_headers(
-    incoming_headers: Dict[str, str],
-    *,
-    client_name: str,
-    client_provider_name: str | None,
-    endpoint_kind: str,
-    upstream_api_key_env: str,
-) -> tuple[Dict[str, str], Any, bool]:
-    headers: Dict[str, str] = {}
-    for key, value in incoming_headers.items():
-        key_text = str(key)
-        lower_key = key_text.lower()
-        if lower_key in REQUEST_STRIP_HEADERS or lower_key.startswith("x-modeio-"):
-            continue
-        headers[key_text] = str(value)
-
-    headers["Content-Type"] = "application/json"
-    inspection = inspect_client_native_auth(
-        client_name=client_name,
-        client_provider_name=client_provider_name,
-    )
-    metadata = inspection.metadata if isinstance(getattr(inspection, "metadata", None), dict) else {}
-    if client_name == CLIENT_OPENCLAW and metadata.get("unsupportedFamily"):
-        provider_id = str(
-            client_provider_name
-            or metadata.get("providerId")
-            or getattr(inspection, "provider_id", "")
-        ).strip() or "unknown"
-        api_family = str(metadata.get("apiFamily") or "unknown").strip() or "unknown"
-        supported = metadata.get("supportedFamilies")
-        details = {
-            "client": client_name,
-            "providerId": provider_id,
-            "apiFamily": api_family,
-        }
-        if isinstance(supported, list) and supported:
-            details["supportedFamilies"] = list(supported)
-        raise MiddlewareError(
-            400,
-            "MODEIO_VALIDATION_ERROR",
-            (
-                f"OpenClaw provider '{provider_id}' uses unsupported API family "
-                f"'{api_family}'. Supported families are openai-completions and "
-                "anthropic-messages."
-            ),
-            retryable=False,
-            details=details,
-        )
-    explicit_incoming_auth = False
-    for key, value in incoming_headers.items():
-        lower_key = key.lower()
-        if lower_key not in AUTH_HEADER_NAMES:
-            continue
-        if _looks_like_placeholder(str(value)):
-            continue
-        explicit_incoming_auth = True
-        break
-
-    authorization = None
-    if not explicit_incoming_auth and inspection.ready:
-        _strip_auth_headers(headers)
-        if inspection.resolved_headers:
-            headers.update(inspection.resolved_headers)
-        elif inspection.authorization:
-            authorization = inspection.authorization
-
-    fallback_key = os.environ.get(upstream_api_key_env, "").strip()
-    used_managed_fallback = False
-    if fallback_key and not explicit_incoming_auth and not inspection.ready:
-        _strip_auth_headers(headers)
-        authorization = f"Bearer {fallback_key}"
-        used_managed_fallback = True
-    if authorization:
-        headers["Authorization"] = authorization
-    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
-        _ensure_header(headers, ANTHROPIC_VERSION_HEADER, ANTHROPIC_DEFAULT_VERSION)
-    account_id = inspection.metadata.get("accountId") if isinstance(inspection.metadata, dict) else None
-    if isinstance(account_id, str) and account_id.strip():
-        headers.setdefault("ChatGPT-Account-Id", account_id.strip())
-    return headers, inspection, used_managed_fallback
-
-
 def _sanitize_upstream_response_headers(
     headers: httpx.Headers | Dict[str, str],
 ) -> Dict[str, str]:
@@ -184,46 +112,6 @@ def _sanitize_upstream_response_headers(
             continue
         sanitized[key_text] = str(value)
     return sanitized
-
-
-def _resolve_upstream_url(config: "GatewayRuntimeConfig", endpoint_kind: str) -> str:
-    if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
-        return config.upstream_chat_completions_url
-    if endpoint_kind == ENDPOINT_RESPONSES:
-        return config.upstream_responses_url
-    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
-        return _derive_endpoint_url(
-            config.upstream_responses_url,
-            endpoint_kind=endpoint_kind,
-        )
-    raise MiddlewareError(
-        500,
-        "MODEIO_INTERNAL_ERROR",
-        f"unsupported endpoint kind '{endpoint_kind}'",
-        retryable=False,
-    )
-
-
-def _resolve_models_url(config: "GatewayRuntimeConfig") -> str:
-    for candidate in (
-        config.upstream_chat_completions_url,
-        config.upstream_responses_url,
-    ):
-        text = str(candidate).rstrip("/")
-        for suffix in ("/chat/completions", "/responses"):
-            if text.endswith(suffix):
-                return text[: -len(suffix)] + "/models"
-    raise MiddlewareError(
-        500,
-        "MODEIO_INTERNAL_ERROR",
-        "unable to derive upstream models URL",
-        retryable=False,
-    )
-
-
-def _looks_like_placeholder(value: str) -> bool:
-    normalized = value.strip().lower()
-    return normalized in {"bearer modeio-middleware", "modeio-middleware"}
 
 
 def _strip_auth_headers(headers: Dict[str, str]) -> None:
@@ -240,229 +128,165 @@ def _ensure_header(headers: Dict[str, str], name: str, value: str) -> None:
     headers[name] = value
 
 
-def _derive_endpoint_url(base_url: str, *, endpoint_kind: str) -> str:
-    normalized_base = str(base_url).rstrip("/")
-    for suffix in ("/chat/completions", "/responses", "/models", "/v1/messages"):
-        if normalized_base.endswith(suffix):
-            normalized_base = normalized_base[: -len(suffix)]
-            break
-    if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
-        return f"{normalized_base}/chat/completions"
-    if endpoint_kind == ENDPOINT_RESPONSES:
-        return f"{normalized_base}/responses"
-    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
-        if normalized_base.endswith("/v1"):
-            return f"{normalized_base}/messages"
-        return f"{normalized_base}/v1/messages"
-    raise MiddlewareError(
-        500,
-        "MODEIO_INTERNAL_ERROR",
-        f"unsupported endpoint kind '{endpoint_kind}'",
+def _looks_like_placeholder(value: str) -> bool:
+    return value.strip().lower() in LOCAL_AUTH_PLACEHOLDER_VALUES
+
+
+def _has_explicit_incoming_auth(incoming_headers: Dict[str, str]) -> bool:
+    for key, value in incoming_headers.items():
+        if key.lower() not in AUTH_HEADER_NAMES:
+            continue
+        if _looks_like_placeholder(str(value)):
+            continue
+        return True
+    return False
+
+
+def _unsupported_family_error(
+    *,
+    route_context: ClientRouteContext,
+    resolved: ResolvedClientUpstreamAuth,
+) -> MiddlewareError:
+    provider_id = (
+        route_context.client_provider_name
+        or resolved.credential.provider_id
+        or "unknown"
+    )
+    api_family = str(resolved.upstream_plan.unsupported_family or "unknown").strip() or "unknown"
+    details = {
+        "client": route_context.client_name,
+        "providerId": provider_id,
+        "apiFamily": api_family,
+    }
+    if resolved.upstream_plan.supported_families:
+        details["supportedFamilies"] = list(resolved.upstream_plan.supported_families)
+    return MiddlewareError(
+        400,
+        "MODEIO_VALIDATION_ERROR",
+        (
+            f"OpenClaw provider '{provider_id}' uses unsupported API family "
+            f"'{api_family}'. Supported families are openai-completions and "
+            "anthropic-messages."
+        ),
         retryable=False,
+        details=details,
     )
 
 
-def _derive_models_url(base_url: str, *, api_family: str | None = None) -> str:
-    normalized_base = str(base_url).rstrip("/")
-    for suffix in ("/chat/completions", "/responses", "/models", "/v1/messages"):
-        if normalized_base.endswith(suffix):
-            normalized_base = normalized_base[: -len(suffix)]
-            break
-    if api_family == "anthropic-messages" and not normalized_base.endswith("/v1"):
-        return f"{normalized_base}/v1/models"
-    return f"{normalized_base}/models"
-
-
-def _transport_endpoint_url(
+def _resolve_client_upstream_auth(
     *,
-    config: "GatewayRuntimeConfig",
+    route_context: ClientRouteContext,
+    explicit_incoming_auth: bool,
+    upstream_api_key_env: str,
+) -> ResolvedClientUpstreamAuth:
+    if explicit_incoming_auth:
+        upstream_plan = resolve_client_route_upstream_plan(route_context=route_context)
+        return ResolvedClientUpstreamAuth(
+            credential=ResolvedCredential(
+                provider_id=route_context.client_provider_name or route_context.client_name,
+                auth_kind="incoming_headers",
+                source="incoming_headers",
+                guaranteed=True,
+            ),
+            auth_material=ResolvedAuthMaterial(),
+            upstream_plan=upstream_plan,
+            inspection=None,
+            explicit_incoming_auth=True,
+            used_managed_fallback=False,
+        )
+
+    inspection = inspect_client_native_auth(
+        client_name=route_context.client_name,
+        client_provider_name=route_context.client_provider_name,
+    )
+    credential = resolve_client_inspection_credential(inspection)
+    auth_material = resolve_client_inspection_auth_material(inspection)
+    upstream_plan = resolve_client_inspection_upstream_plan(inspection)
+    used_managed_fallback = False
+    if not inspection.ready:
+        fallback_key = os.environ.get(upstream_api_key_env, "").strip()
+        if fallback_key:
+            used_managed_fallback = True
+            auth_material = ResolvedAuthMaterial(authorization=f"Bearer {fallback_key}")
+    return ResolvedClientUpstreamAuth(
+        credential=credential,
+        auth_material=auth_material,
+        upstream_plan=upstream_plan,
+        inspection=inspection,
+        explicit_incoming_auth=False,
+        used_managed_fallback=used_managed_fallback,
+    )
+
+
+def _build_upstream_headers(
+    incoming_headers: Dict[str, str],
+    *,
+    route_context: ClientRouteContext,
     endpoint_kind: str,
-    inspection: Any,
-    used_managed_fallback: bool,
-) -> str:
-    metadata = getattr(inspection, "metadata", None)
-    api_family = metadata.get("apiFamily") if isinstance(metadata, dict) else None
-    override_base = None
-    if isinstance(metadata, dict):
-        override_base = metadata.get("upstreamBaseUrl") or metadata.get("overrideBaseUrl")
-    if isinstance(override_base, str) and override_base.strip() and not used_managed_fallback:
-        return _derive_endpoint_url(override_base, endpoint_kind=endpoint_kind)
-    if _use_codex_native_transport(inspection, used_managed_fallback):
-        base_url = metadata.get("nativeBaseUrl") if isinstance(metadata, dict) else None
-        if isinstance(base_url, str) and base_url.strip():
-            normalized_base = base_url.rstrip("/")
-            if endpoint_kind == ENDPOINT_RESPONSES:
-                return f"{normalized_base}/responses"
-            if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
-                return f"{normalized_base}/responses"
-            if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
-                return f"{normalized_base}/responses"
-    return _resolve_upstream_url(config, endpoint_kind)
-
-
-def _transport_models_url(
-    *,
-    config: "GatewayRuntimeConfig",
-    inspection: Any,
-    used_managed_fallback: bool,
-) -> str:
-    metadata = getattr(inspection, "metadata", None)
-    api_family = metadata.get("apiFamily") if isinstance(metadata, dict) else None
-    override_base = None
-    if isinstance(metadata, dict):
-        override_base = metadata.get("upstreamBaseUrl") or metadata.get("overrideBaseUrl")
-    if isinstance(override_base, str) and override_base.strip() and not used_managed_fallback:
-        return _derive_models_url(override_base, api_family=api_family)
-    if _use_codex_native_transport(inspection, used_managed_fallback):
-        base_url = metadata.get("nativeBaseUrl") if isinstance(metadata, dict) else None
-        if isinstance(base_url, str) and base_url.strip():
-            return base_url.rstrip("/") + "/models"
-    return _resolve_models_url(config)
-
-
-def _apply_model_override(payload: Dict[str, Any], inspection: Any) -> Dict[str, Any]:
-    metadata = getattr(inspection, "metadata", None)
-    fallback_model_id = metadata.get("fallbackModelId") if isinstance(metadata, dict) else None
-    if not isinstance(fallback_model_id, str) or not fallback_model_id.strip():
-        return payload
-    updated = dict(payload)
-    updated["model"] = fallback_model_id
-    return updated
-
-
-def _use_codex_native_transport(inspection: Any, used_managed_fallback: bool) -> bool:
-    if getattr(inspection, "transport", None) != TRANSPORT_CODEX_NATIVE:
-        return False
-    if used_managed_fallback:
-        return False
-    metadata = getattr(inspection, "metadata", None)
-    native_base = metadata.get("nativeBaseUrl") if isinstance(metadata, dict) else None
-    return isinstance(native_base, str) and bool(native_base.strip())
-
-
-def _to_codex_input_item(role: str, content: Any) -> Dict[str, Any]:
-    normalized_role = role if role in {"user", "assistant", "developer"} else "user"
-    if isinstance(content, list):
-        normalized = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                normalized.append({"type": "input_text", "text": item["text"]})
-            elif isinstance(item, dict) and item.get("type") == "input_text" and isinstance(item.get("text"), str):
-                normalized.append({"type": "input_text", "text": item["text"]})
-        if normalized:
-            return {"type": "message", "role": normalized_role, "content": normalized}
-    if isinstance(content, str):
-        return {"type": "message", "role": normalized_role, "content": [{"type": "input_text", "text": content}]}
-    return {"type": "message", "role": normalized_role, "content": []}
-
-
-def _normalize_codex_native_model(model_name: Any) -> Any:
-    if not isinstance(model_name, str):
-        return model_name
-    stripped = model_name.strip()
-    if stripped == "gpt-5-nano":
-        return "gpt-5.4"
-    return stripped
-
-
-def _normalize_codex_reasoning(reasoning: Any) -> Any:
-    if not isinstance(reasoning, dict):
-        return reasoning
-    normalized = dict(reasoning)
-    effort = normalized.get("effort")
-    if effort == "minimal":
-        normalized["effort"] = "none"
-    return normalized
-
-
-def _codex_native_payload(endpoint_kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
-        messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-        system_messages = [
-            item.get("content")
-            for item in messages
-            if isinstance(item, dict) and item.get("role") == "system" and isinstance(item.get("content"), str)
-        ]
-        input_items = [
-            _to_codex_input_item(str(item.get("role") or "user"), item.get("content"))
-            for item in messages
-            if isinstance(item, dict) and item.get("role") != "system"
-        ]
-        return {
-            "model": _normalize_codex_native_model(payload.get("model")),
-            "instructions": "\n\n".join(system_messages) if system_messages else "You are Codex",
-            "input": input_items,
-            "stream": True,
-            "store": False,
-        }
-
-    transformed = dict(payload)
-    transformed["model"] = _normalize_codex_native_model(transformed.get("model"))
-    transformed["store"] = False
-    transformed["stream"] = True
-    transformed.pop("max_output_tokens", None)
-    transformed["reasoning"] = _normalize_codex_reasoning(transformed.get("reasoning"))
-
-    instructions = transformed.get("instructions")
-    input_value = transformed.get("input")
-    if isinstance(input_value, list):
-        instructions_parts = []
-        normalized_items = []
-        for item in input_value:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role") or "user")
-            content = item.get("content")
-            if role in {"system", "developer"}:
-                if isinstance(content, str) and content.strip():
-                    instructions_parts.append(content.strip())
-                    continue
-            normalized_items.append(_to_codex_input_item(role, content))
-        transformed["input"] = normalized_items
-        if not isinstance(instructions, str) or not instructions.strip():
-            transformed["instructions"] = (
-                "\n\n".join(instructions_parts) if instructions_parts else "You are Codex"
-            )
-    elif isinstance(input_value, str):
-        transformed["input"] = [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": input_value}],
-            }
-        ]
-        if not isinstance(instructions, str) or not instructions.strip():
-            transformed["instructions"] = "You are Codex"
-    elif not isinstance(instructions, str) or not instructions.strip():
-        transformed["instructions"] = "You are Codex"
-    return transformed
-
-
-def _postprocess_models_payload(response_payload: Dict[str, Any], inspection: Any) -> Dict[str, Any]:
-    if getattr(inspection, "transport", None) != TRANSPORT_CODEX_NATIVE:
-        return response_payload
-    models = response_payload.get("models")
-    if not isinstance(models, list):
-        return response_payload
-    updated = dict(response_payload)
-    rewritten = []
-    changed = False
-    for item in models:
-        if not isinstance(item, dict):
-            rewritten.append(item)
+    upstream_api_key_env: str,
+) -> tuple[Dict[str, str], ResolvedClientUpstreamAuth]:
+    headers: Dict[str, str] = {}
+    for key, value in incoming_headers.items():
+        key_text = str(key)
+        lower_key = key_text.lower()
+        if lower_key in REQUEST_STRIP_HEADERS or lower_key.startswith("x-modeio-"):
             continue
-        current = dict(item)
-        if current.get("supports_websockets") is not False:
-            current["supports_websockets"] = False
-            changed = True
-        if current.get("prefer_websockets") is not False:
-            current["prefer_websockets"] = False
-            changed = True
-        rewritten.append(current)
-    if not changed:
-        return response_payload
-    updated["models"] = rewritten
-    return updated
+        headers[key_text] = str(value)
+
+    headers["Content-Type"] = "application/json"
+    resolved = _resolve_client_upstream_auth(
+        route_context=route_context,
+        explicit_incoming_auth=_has_explicit_incoming_auth(incoming_headers),
+        upstream_api_key_env=upstream_api_key_env,
+    )
+
+    if (
+        route_context.client_name == CLIENT_OPENCLAW
+        and resolved.upstream_plan.unsupported_family is not None
+    ):
+        raise _unsupported_family_error(
+            route_context=route_context,
+            resolved=resolved,
+        )
+
+    if not resolved.explicit_incoming_auth:
+        _strip_auth_headers(headers)
+        if resolved.auth_material.resolved_headers:
+            headers.update(resolved.auth_material.resolved_headers)
+        elif resolved.auth_material.authorization:
+            headers["Authorization"] = resolved.auth_material.authorization
+
+    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
+        _ensure_header(headers, ANTHROPIC_VERSION_HEADER, ANTHROPIC_DEFAULT_VERSION)
+    if resolved.auth_material.account_id:
+        headers.setdefault("ChatGPT-Account-Id", resolved.auth_material.account_id)
+    return headers, resolved
+
+
+def _route_context(
+    *,
+    client_name: str,
+    client_provider_name: str | None,
+) -> ClientRouteContext:
+    return ClientRouteContext(
+        client_name=client_name,
+        client_provider_name=client_provider_name,
+    )
+
+
+def _record_failure_if_needed(
+    *,
+    resolved: ResolvedClientUpstreamAuth,
+    route_context: ClientRouteContext,
+    status_code: int,
+) -> None:
+    if resolved.used_managed_fallback or resolved.explicit_incoming_auth:
+        return
+    record_client_native_failure(
+        client_name=route_context.client_name,
+        client_provider_name=route_context.client_provider_name,
+        status_code=status_code,
+    )
 
 
 def forward_upstream_json(
@@ -471,29 +295,31 @@ def forward_upstream_json(
     endpoint_kind: str,
     payload: Dict[str, Any],
     incoming_headers: Dict[str, str],
+    route_context: ClientRouteContext | None = None,
     client_name: str = "unknown",
     client_provider_name: str | None = None,
 ) -> UpstreamJsonResponse:
-    headers, inspection, used_managed_fallback = _build_upstream_headers(
-        incoming_headers,
+    route_context = route_context or _route_context(
         client_name=client_name,
         client_provider_name=client_provider_name,
+    )
+    headers, resolved = _build_upstream_headers(
+        incoming_headers,
+        route_context=route_context,
         endpoint_kind=endpoint_kind,
         upstream_api_key_env=config.upstream_api_key_env,
     )
-    upstream_url = _transport_endpoint_url(
+    strategy = strategy_for_plan(resolved.upstream_plan)
+    upstream_url = strategy.endpoint_url(
         config=config,
         endpoint_kind=endpoint_kind,
-        inspection=inspection,
-        used_managed_fallback=used_managed_fallback,
+        plan=resolved.upstream_plan,
     )
-    request_payload = (
-        _codex_native_payload(endpoint_kind, payload)
-        if _use_codex_native_transport(inspection, used_managed_fallback)
-        and endpoint_kind in {ENDPOINT_RESPONSES, ENDPOINT_CHAT_COMPLETIONS}
-        else payload
+    request_payload = strategy.request_payload(
+        endpoint_kind=endpoint_kind,
+        payload=payload,
+        plan=resolved.upstream_plan,
     )
-    request_payload = _apply_model_override(request_payload, inspection)
     last_exception: httpx.RequestError | None = None
 
     for attempt in range(1 + MAX_RETRIES):
@@ -506,12 +332,11 @@ def forward_upstream_json(
 
                 response_headers = _sanitize_upstream_response_headers(response.headers)
                 if response.status_code >= 400:
-                    if not used_managed_fallback:
-                        record_client_native_failure(
-                            client_name=client_name,
-                            client_provider_name=client_provider_name,
-                            status_code=response.status_code,
-                        )
+                    _record_failure_if_needed(
+                        resolved=resolved,
+                        route_context=route_context,
+                        status_code=response.status_code,
+                    )
                     retryable = response.status_code >= 500
                     mapped_status = response.status_code if response.status_code < 500 else 502
                     raise MiddlewareError(
@@ -574,30 +399,32 @@ def forward_upstream_stream(
     endpoint_kind: str,
     payload: Dict[str, Any],
     incoming_headers: Dict[str, str],
+    route_context: ClientRouteContext | None = None,
     client_name: str = "unknown",
     client_provider_name: str | None = None,
 ) -> StreamingUpstreamResponse:
-    headers, inspection, used_managed_fallback = _build_upstream_headers(
-        incoming_headers,
+    route_context = route_context or _route_context(
         client_name=client_name,
         client_provider_name=client_provider_name,
+    )
+    headers, resolved = _build_upstream_headers(
+        incoming_headers,
+        route_context=route_context,
         endpoint_kind=endpoint_kind,
         upstream_api_key_env=config.upstream_api_key_env,
     )
     headers["Accept"] = "text/event-stream"
-    upstream_url = _transport_endpoint_url(
+    strategy = strategy_for_plan(resolved.upstream_plan)
+    upstream_url = strategy.endpoint_url(
         config=config,
         endpoint_kind=endpoint_kind,
-        inspection=inspection,
-        used_managed_fallback=used_managed_fallback,
+        plan=resolved.upstream_plan,
     )
-    request_payload = (
-        _codex_native_payload(endpoint_kind, payload)
-        if _use_codex_native_transport(inspection, used_managed_fallback)
-        and endpoint_kind in {ENDPOINT_RESPONSES, ENDPOINT_CHAT_COMPLETIONS}
-        else payload
+    request_payload = strategy.request_payload(
+        endpoint_kind=endpoint_kind,
+        payload=payload,
+        plan=resolved.upstream_plan,
     )
-    request_payload = _apply_model_override(request_payload, inspection)
     last_exception: httpx.RequestError | None = None
 
     for attempt in range(1 + MAX_RETRIES):
@@ -627,12 +454,11 @@ def forward_upstream_stream(
             continue
 
         if response.status_code >= 400:
-            if not used_managed_fallback:
-                record_client_native_failure(
-                    client_name=client_name,
-                    client_provider_name=client_provider_name,
-                    status_code=response.status_code,
-                )
+            _record_failure_if_needed(
+                resolved=resolved,
+                route_context=route_context,
+                status_code=response.status_code,
+            )
             retryable = response.status_code >= 500
             mapped_status = response.status_code if response.status_code < 500 else 502
             response_headers = _sanitize_upstream_response_headers(response.headers)
@@ -661,21 +487,25 @@ def forward_upstream_models_json(
     *,
     config: "GatewayRuntimeConfig",
     incoming_headers: Dict[str, str],
+    route_context: ClientRouteContext | None = None,
     client_name: str = "unknown",
     client_provider_name: str | None = None,
     query_params: Dict[str, str] | None = None,
 ) -> UpstreamJsonResponse:
-    headers, inspection, used_managed_fallback = _build_upstream_headers(
-        incoming_headers,
+    route_context = route_context or _route_context(
         client_name=client_name,
         client_provider_name=client_provider_name,
+    )
+    headers, resolved = _build_upstream_headers(
+        incoming_headers,
+        route_context=route_context,
         endpoint_kind=ENDPOINT_RESPONSES,
         upstream_api_key_env=config.upstream_api_key_env,
     )
-    upstream_url = _transport_models_url(
+    strategy = strategy_for_plan(resolved.upstream_plan)
+    upstream_url = strategy.models_url(
         config=config,
-        inspection=inspection,
-        used_managed_fallback=used_managed_fallback,
+        plan=resolved.upstream_plan,
     )
     if query_params:
         upstream_url = f"{upstream_url}?{urlencode(query_params)}"
@@ -693,12 +523,11 @@ def forward_upstream_models_json(
 
     response_headers = _sanitize_upstream_response_headers(response.headers)
     if response.status_code >= 400:
-        if not used_managed_fallback:
-            record_client_native_failure(
-                client_name=client_name,
-                client_provider_name=client_provider_name,
-                status_code=response.status_code,
-            )
+        _record_failure_if_needed(
+            resolved=resolved,
+            route_context=route_context,
+            status_code=response.status_code,
+        )
         retryable = response.status_code >= 500
         mapped_status = response.status_code if response.status_code < 500 else 502
         raise MiddlewareError(
@@ -731,6 +560,9 @@ def forward_upstream_models_json(
         )
 
     return UpstreamJsonResponse(
-        payload=_postprocess_models_payload(response_payload, inspection),
+        payload=strategy.postprocess_models_payload(
+            response_payload,
+            plan=resolved.upstream_plan,
+        ),
         headers=response_headers,
     )

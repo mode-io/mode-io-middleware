@@ -306,3 +306,37 @@
 | What's the goal? | Users with authed harnesses should be able to start middleware naturally without extra provider setup |
 | What have I learned? | OpenClaw normalizes many providers, but still exposes multiple provider API families; the release-grade way to support it is one managed middleware provider per family, not one universal provider |
 | What have I done? | Landed the provider-auth foundation, committed the auth/smoke refactor checkpoint, isolated the OpenClaw native gap, and converted the release strategy into a three-family implementation plan |
+
+### Session: 2026-03-10 15:32 UTC structural refactor implementation
+- Implemented the structural refactor plan in one pass on top of `f91785c`.
+- Runtime/auth work:
+  - added `modeio_middleware/core/request_context.py`
+  - added `modeio_middleware/core/upstream_plan.py`
+  - added `modeio_middleware/core/upstream_strategy.py`
+  - refactored `provider_auth.py`, `client_auth.py`, `upstream_client.py`, `upstream_transport.py`, `engine.py`, and `stream_orchestrator.py` so route context and typed upstream plans flow through the runtime instead of ad hoc metadata-only branching at the call sites
+  - updated OpenAI/Anthropic connectors to use the shared client route context
+- OpenClaw setup work:
+  - split `modeio_middleware/cli/setup_lib/openclaw.py` into:
+    - `openclaw_common.py`
+    - `openclaw_routes.py`
+    - `openclaw_transaction.py`
+  - kept `openclaw.py` as a thin public facade to avoid a broad call-site break
+- Smoke infrastructure work:
+  - split `scripts/smoke_agent_matrix.py` into a thinner CLI entrypoint
+  - moved OpenClaw family selection into `scripts/smoke_matrix/openclaw_family.py`
+  - moved execution helpers into `scripts/smoke_matrix/runner.py`
+- Test cleanup work:
+  - added `tests/helpers/inspection_builder.py`
+  - migrated the most brittle upstream/gateway tests to the builder instead of hand-built inspection objects
+- Validation:
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract`
+    - `55` tests passed
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest tests.unit.test_setup_gateway tests.smoke.test_smoke_client_setup_flows`
+    - `40` tests passed
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest discover tests/smoke -p 'test_*.py'`
+    - `18` tests passed
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.unit.test_setup_gateway tests.integration.test_gateway_contract tests.smoke.test_smoke_agent_matrix_support tests.smoke.test_smoke_client_setup_flows`
+    - `108` tests passed
+- Result:
+  - the structural refactor gate is complete
+  - remaining cleanup is no longer a blocker for continuing product work or opening the next review

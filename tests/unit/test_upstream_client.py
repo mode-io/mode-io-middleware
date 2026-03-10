@@ -4,7 +4,6 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -17,6 +16,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 from modeio_middleware.core.engine import GatewayRuntimeConfig  # noqa: E402
 from modeio_middleware.core.errors import MiddlewareError  # noqa: E402
 from modeio_middleware.core.upstream_client import forward_upstream_json  # noqa: E402
+from tests.helpers.inspection_builder import build_inspection  # noqa: E402
 
 
 class _FakeResponse:
@@ -191,15 +191,13 @@ class TestUpstreamClient(unittest.TestCase):
 
     def test_forward_upstream_json_routes_anthropic_messages_with_x_api_key(self):
         factory = _ClientFactory(_FakeResponse(status_code=200, payload={"type": "message"}))
-        inspection = SimpleNamespace(
-            ready=True,
+        inspection = build_inspection(
             authorization=None,
             resolved_headers={"x-api-key": "sk-anthropic-test"},
             metadata={
                 "apiFamily": "anthropic-messages",
                 "upstreamBaseUrl": "https://api.anthropic.com",
             },
-            transport="openai_compat",
         )
         with patch("modeio_middleware.core.upstream_client.inspect_client_native_auth", return_value=inspection):
             with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
@@ -224,12 +222,9 @@ class TestUpstreamClient(unittest.TestCase):
 
     def test_forward_upstream_json_preserves_explicit_x_api_key_header(self):
         factory = _ClientFactory(_FakeResponse(status_code=200, payload={"type": "message"}))
-        inspection = SimpleNamespace(
+        inspection = build_inspection(
             ready=False,
             authorization=None,
-            resolved_headers={},
-            metadata={},
-            transport="openai_compat",
         )
         with patch("modeio_middleware.core.upstream_client.inspect_client_native_auth", return_value=inspection):
             with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
@@ -252,15 +247,13 @@ class TestUpstreamClient(unittest.TestCase):
 
     def test_forward_upstream_json_preserves_explicit_bearer_auth_for_anthropic_messages(self):
         factory = _ClientFactory(_FakeResponse(status_code=200, payload={"type": "message"}))
-        inspection = SimpleNamespace(
-            ready=True,
+        inspection = build_inspection(
             authorization=None,
             resolved_headers={"x-api-key": "fallback-should-not-win"},
             metadata={
                 "apiFamily": "anthropic-messages",
                 "upstreamBaseUrl": "https://api.anthropic.com",
             },
-            transport="openai_compat",
         )
         with patch("modeio_middleware.core.upstream_client.inspect_client_native_auth", return_value=inspection):
             with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
@@ -286,10 +279,9 @@ class TestUpstreamClient(unittest.TestCase):
         self.assertEqual(sent_headers["anthropic-version"], "2023-06-01")
 
     def test_forward_upstream_json_rejects_deferred_openclaw_family(self):
-        inspection = SimpleNamespace(
+        inspection = build_inspection(
             ready=False,
             authorization=None,
-            resolved_headers={},
             metadata={
                 "providerId": "openai-codex",
                 "apiFamily": "openai-codex-responses",
@@ -299,7 +291,6 @@ class TestUpstreamClient(unittest.TestCase):
                     "openai-completions",
                 ],
             },
-            transport="openai_compat",
         )
         with patch(
             "modeio_middleware.core.upstream_client.inspect_client_native_auth",

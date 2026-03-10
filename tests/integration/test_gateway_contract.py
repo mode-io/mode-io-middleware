@@ -6,7 +6,6 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from unittest import mock
 
 try:
@@ -31,6 +30,7 @@ from helpers.gateway_harness import (  # noqa: E402
     responses_payload,
     start_gateway_pair,
 )
+from helpers.inspection_builder import build_inspection  # noqa: E402
 from helpers.plugin_modules import register_plugin_module  # noqa: E402
 from modeio_middleware.plugins.base import MiddlewarePlugin  # noqa: E402
 
@@ -170,11 +170,9 @@ class TestGatewayContract(unittest.TestCase):
         upstream, gateway_stub = self._start_pair(
             response_factory
         )
-        inspection = SimpleNamespace(
-            ready=True,
+        inspection = build_inspection(
             guaranteed=False,
             authorization="Bearer codex-token",
-            resolved_headers={},
             transport="codex_native",
             metadata={"nativeBaseUrl": f"{upstream.base_url}/codex", "accountId": "acct-1"},
         )
@@ -234,7 +232,14 @@ class TestGatewayContract(unittest.TestCase):
                 )
             )
             try:
-                with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "HOME": temp_dir,
+                        "MODEIO_CODEX_NATIVE_BASE_URL": f"{upstream.base_url}/codex",
+                    },
+                    clear=False,
+                ):
                     status, _headers, payload = post_json(
                         gateway_stub.base_url,
                         "/clients/codex/v1/chat/completions",
@@ -287,13 +292,8 @@ class TestGatewayContract(unittest.TestCase):
         upstream, gateway_stub = self._start_pair(
             lambda _path, payload: completion_payload(payload["model"])
         )
-        inspection = SimpleNamespace(
-            ready=True,
-            guaranteed=True,
+        inspection = build_inspection(
             authorization="Bearer test-token",
-            resolved_headers={},
-            transport="openai_compat",
-            metadata={},
         )
         try:
             with mock.patch(

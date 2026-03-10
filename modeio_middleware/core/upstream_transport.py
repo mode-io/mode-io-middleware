@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from modeio_middleware.core.request_context import ClientRouteContext
 from modeio_middleware.core.upstream_client import (
     forward_upstream_json,
     forward_upstream_models_json,
@@ -21,6 +22,7 @@ class UpstreamTransport:
         endpoint_kind: str,
         payload: Dict[str, Any],
         incoming_headers: Dict[str, str],
+        route_context: ClientRouteContext | None = None,
         client_name: str,
         client_provider_name: str | None = None,
     ) -> Any:
@@ -29,6 +31,7 @@ class UpstreamTransport:
             endpoint_kind=endpoint_kind,
             payload=payload,
             incoming_headers=incoming_headers,
+            route_context=route_context,
             client_name=client_name,
             client_provider_name=client_provider_name,
         )
@@ -39,6 +42,7 @@ class UpstreamTransport:
         endpoint_kind: str,
         payload: Dict[str, Any],
         incoming_headers: Dict[str, str],
+        route_context: ClientRouteContext | None = None,
         client_name: str,
         client_provider_name: str | None = None,
     ) -> Any:
@@ -47,6 +51,7 @@ class UpstreamTransport:
             endpoint_kind=endpoint_kind,
             payload=payload,
             incoming_headers=incoming_headers,
+            route_context=route_context,
             client_name=client_name,
             client_provider_name=client_provider_name,
         )
@@ -55,6 +60,7 @@ class UpstreamTransport:
         self,
         *,
         incoming_headers: Dict[str, str],
+        route_context: ClientRouteContext | None = None,
         client_name: str,
         client_provider_name: str | None = None,
         query_params: Dict[str, str] | None = None,
@@ -62,6 +68,7 @@ class UpstreamTransport:
         return forward_upstream_models_json(
             config=self._config,
             incoming_headers=incoming_headers,
+            route_context=route_context,
             client_name=client_name,
             client_provider_name=client_provider_name,
             query_params=query_params,

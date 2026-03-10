@@ -327,3 +327,22 @@
   - compatibility/barrel alias surfaces
   - legacy managed-provider-only OpenClaw branches that no longer represent the release contract
   - smoke wrapper logic that becomes redundant once Python is the single source of truth
+
+## Structural Refactor Implementation Findings
+- The typed upstream-plan split is viable without a contract break.
+  - `CredentialInspection` can stay as the compatibility facade while `ResolvedCredential`, `ResolvedAuthMaterial`, and `ResolvedUpstreamPlan` carry the real runtime boundary.
+  - This lets existing callers migrate incrementally instead of forcing a repo-wide cutover in one patch.
+- Request-context parsing was a real duplication seam.
+  - Moving client/provider route parsing into `modeio_middleware/core/request_context.py` removed repeated header parsing from connectors and made the transport path easier to reason about.
+- The OpenClaw setup rewrite was worth doing as a file split before any deeper semantics change.
+  - `openclaw.py` dropped from a monolith into a thin facade backed by common helpers, route planning, and transaction-oriented apply/restore helpers.
+  - That immediately removed the worst repeated config/models-cache patch scaffolding.
+- The smoke split also paid off immediately.
+  - `scripts/smoke_agent_matrix.py` is now mostly CLI composition, while family selection and execution logic moved into focused modules.
+  - This is enough to make future smoke work additive instead of forcing more edits into a single 1700-line script.
+- Test maintenance risk was concentrated in inspection-shaped mocks.
+  - A small `build_inspection(...)` helper removed the most brittle `SimpleNamespace` duplication in the upstream/gateway tests.
+  - More fixture consolidation is still useful, but the highest-drift surface is already addressed.
+- The remaining cleanup category is now mostly deletion and consolidation, not architecture discovery.
+  - The main gate is done.
+  - Future cleanup can be targeted by zero-usage proof and normal review, rather than another exploratory design pass.
