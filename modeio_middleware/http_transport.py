@@ -391,9 +391,15 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             *build_monitoring_routes(controller),
             Route(CLAUDE_HOOK_CONNECTOR_PATH, _process_post_request, methods=["POST"]),
             Route("/v1/models", _process_models_request, methods=["GET"]),
+            Route("/v1/messages", _process_post_request, methods=["POST"]),
             Route("/v1/chat/completions", _process_post_request, methods=["POST"]),
             Route("/v1/responses", _process_post_request, methods=["POST"]),
             Route("/clients/{client}/v1/models", _process_models_request, methods=["GET"]),
+            Route(
+                "/clients/{client}/v1/messages",
+                _process_post_request,
+                methods=["POST"],
+            ),
             Route(
                 "/clients/{client}/v1/chat/completions",
                 _process_post_request,
@@ -408,6 +414,11 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
                 "/clients/{client}/{provider}/v1/models",
                 _process_models_request,
                 methods=["GET"],
+            ),
+            Route(
+                "/clients/{client}/{provider}/v1/messages",
+                _process_post_request,
+                methods=["POST"],
             ),
             Route(
                 "/clients/{client}/{provider}/v1/chat/completions",

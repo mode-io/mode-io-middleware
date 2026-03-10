@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 from modeio_middleware.connectors.base import CanonicalInvocation, ConnectorAdapter
+from modeio_middleware.connectors.anthropic_http import AnthropicHttpConnector
 from modeio_middleware.connectors.client_identity import detect_openai_client_name
 from modeio_middleware.connectors.claude_hooks import (
     CLAUDE_HOOK_CONNECTOR_PATH,
@@ -26,6 +27,11 @@ from modeio_middleware.core.services.engine_services import EngineServices
 from modeio_middleware.core.services.telemetry import PluginTelemetry
 from modeio_middleware.core.stream_orchestrator import StreamOrchestrator
 from modeio_middleware.core.upstream_transport import UpstreamTransport
+from modeio_middleware.core.contracts import (
+    ENDPOINT_ANTHROPIC_MESSAGES,
+    ENDPOINT_CHAT_COMPLETIONS,
+    ENDPOINT_RESPONSES,
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,7 @@ class MiddlewareEngine:
         self._plugin_services = self.services.as_plugin_services()
         connectors: tuple[ConnectorAdapter, ...] = (
             ClaudeHookConnector(),
+            AnthropicHttpConnector(),
             OpenAIHttpConnector(),
         )
         self._response_assembler = ResponseAssembler()
@@ -347,11 +354,12 @@ class MiddlewareEngine:
         request_body: Dict[str, Any],
         incoming_headers: Dict[str, str],
     ) -> Union[ProcessResult, StreamProcessResult]:
-        path = (
-            "/v1/chat/completions"
-            if endpoint_kind == "chat_completions"
-            else "/v1/responses"
-        )
+        path_by_endpoint = {
+            ENDPOINT_CHAT_COMPLETIONS: "/v1/chat/completions",
+            ENDPOINT_RESPONSES: "/v1/responses",
+            ENDPOINT_ANTHROPIC_MESSAGES: "/v1/messages",
+        }
+        path = path_by_endpoint.get(endpoint_kind, "/v1/responses")
         return self.process_http_request(
             path=path,
             request_id=request_id,

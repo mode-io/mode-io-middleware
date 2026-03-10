@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -187,6 +188,102 @@ class TestUpstreamClient(unittest.TestCase):
 
         self.assertEqual(error_ctx.exception.code, "MODEIO_UPSTREAM_TIMEOUT")
         self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_forward_upstream_json_routes_anthropic_messages_with_x_api_key(self):
+        factory = _ClientFactory(_FakeResponse(status_code=200, payload={"type": "message"}))
+        inspection = SimpleNamespace(
+            ready=True,
+            authorization=None,
+            resolved_headers={"x-api-key": "sk-anthropic-test"},
+            metadata={
+                "apiFamily": "anthropic-messages",
+                "upstreamBaseUrl": "https://api.anthropic.com",
+            },
+            transport="openai_compat",
+        )
+        with patch("modeio_middleware.core.upstream_client.inspect_client_native_auth", return_value=inspection):
+            with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
+                response = forward_upstream_json(
+                    config=self.config,
+                    endpoint_kind="anthropic_messages",
+                    payload={
+                        "model": "claude-sonnet-4",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    incoming_headers={"Authorization": "Bearer modeio-middleware"},
+                    client_name="openclaw",
+                    client_provider_name="anthropic",
+                )
+
+        self.assertEqual(response.payload, {"type": "message"})
+        sent = factory.instances[0].calls[0]
+        self.assertEqual(sent["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(sent["headers"]["x-api-key"], "sk-anthropic-test")
+        self.assertEqual(sent["headers"]["anthropic-version"], "2023-06-01")
+        self.assertNotIn("Authorization", sent["headers"])
+
+    def test_forward_upstream_json_preserves_explicit_x_api_key_header(self):
+        factory = _ClientFactory(_FakeResponse(status_code=200, payload={"type": "message"}))
+        inspection = SimpleNamespace(
+            ready=False,
+            authorization=None,
+            resolved_headers={},
+            metadata={},
+            transport="openai_compat",
+        )
+        with patch("modeio_middleware.core.upstream_client.inspect_client_native_auth", return_value=inspection):
+            with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
+                response = forward_upstream_json(
+                    config=self.config,
+                    endpoint_kind="anthropic_messages",
+                    payload={
+                        "model": "claude-sonnet-4",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    incoming_headers={"x-api-key": "incoming-anthropic-key"},
+                    client_name="openclaw",
+                    client_provider_name="anthropic",
+                )
+
+        self.assertEqual(response.payload, {"type": "message"})
+        sent_headers = factory.instances[0].calls[0]["headers"]
+        self.assertEqual(sent_headers["x-api-key"], "incoming-anthropic-key")
+        self.assertEqual(sent_headers["anthropic-version"], "2023-06-01")
+
+    def test_forward_upstream_json_preserves_explicit_bearer_auth_for_anthropic_messages(self):
+        factory = _ClientFactory(_FakeResponse(status_code=200, payload={"type": "message"}))
+        inspection = SimpleNamespace(
+            ready=True,
+            authorization=None,
+            resolved_headers={"x-api-key": "fallback-should-not-win"},
+            metadata={
+                "apiFamily": "anthropic-messages",
+                "upstreamBaseUrl": "https://api.anthropic.com",
+            },
+            transport="openai_compat",
+        )
+        with patch("modeio_middleware.core.upstream_client.inspect_client_native_auth", return_value=inspection):
+            with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
+                response = forward_upstream_json(
+                    config=self.config,
+                    endpoint_kind="anthropic_messages",
+                    payload={
+                        "model": "claude-sonnet-4",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    incoming_headers={"Authorization": "Bearer sk-ant-oat-subscription-token"},
+                    client_name="openclaw",
+                    client_provider_name="anthropic",
+                )
+
+        self.assertEqual(response.payload, {"type": "message"})
+        sent_headers = factory.instances[0].calls[0]["headers"]
+        self.assertEqual(
+            sent_headers["Authorization"],
+            "Bearer sk-ant-oat-subscription-token",
+        )
+        self.assertNotIn("x-api-key", sent_headers)
+        self.assertEqual(sent_headers["anthropic-version"], "2023-06-01")
 
 
 if __name__ == "__main__":

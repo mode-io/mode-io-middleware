@@ -89,3 +89,41 @@
 - After fixing transport selection, the exact copied local OpenClaw state now reaches `https://chatgpt.com/backend-api/codex/responses` through middleware, so auth reuse and upstream routing are correct.
 - However, the OpenClaw client still emits empty `payloads` through middleware even though upstream returns success. This shows the remaining bug is on the response adaptation layer: middleware is forwarding Codex-native response events, but OpenClaw expects the shape its own native transport wrapper would produce.
 - Conclusion: the previous rate-limit symptom was setup/middleware-induced, not caused by the user's local OpenClaw config. The remaining support gap is a middleware protocol-translation issue, not auth reuse.
+
+## OpenClaw Practical Release Family Findings
+- OpenClaw already normalizes many providers, but it does not collapse them all into one universal wire contract. Its config and runtime still distinguish multiple provider API families, including `openai-completions`, `openai-responses`, `openai-codex-responses`, and `anthropic-messages`.
+- In OpenClaw config, `api` is configured at the provider level, not the model level. That means one synthetic middleware provider cannot simultaneously represent multiple practical families cleanly.
+- For a release-grade middleware integration, OpenClaw should be treated as an explicit managed-provider client with one synthetic provider per practical family rather than a transparent mirror of the user's current OpenClaw provider/runtime state.
+- The three practical release families are:
+  - `openai-completions` for most API-key and proxy providers (ZenMux, OpenRouter, LiteLLM, vLLM, LM Studio, generic OpenAI-compatible gateways)
+  - `anthropic-messages` for Anthropic-compatible providers (Anthropic API key, MiniMax, Synthetic, Kimi Coding, similar gateways)
+  - `openai-codex-responses` for the Codex-native backend path already supported through the middleware's Codex work
+- Official OpenClaw docs reinforce that provider-family choice matters:
+  - MiniMax prefers `anthropic-messages`, with `openai-completions` only as an optional alternative.
+  - Ollama warns that its OpenAI-compatible path can break tool calling and recommends its native API instead.
+  - Custom providers are configured explicitly via provider entries rather than a hidden universal adapter.
+- Comparable products like Crust scope OpenClaw support to explicit local-provider configuration instead of zero-config native OAuth/profile reuse. That supports the decision to keep the OpenClaw v1 boundary explicit and additive.
+
+## Current Middleware vs OpenClaw Family Gap
+- Current middleware public HTTP surface:
+  - OpenAI-compatible `models`, `chat/completions`, and `responses`
+  - Claude hook connector
+- Current middleware does not yet expose a generic Anthropic Messages HTTP connector, so `anthropic-messages` support is new boundary work rather than a setup-only change.
+- Current middleware already has the hard upstream work for Codex-native traffic, but it is currently presented to OpenClaw through the wrong family boundary (`openai-completions`), which is why response-shape mismatch remains.
+
+## OpenClaw V1 Planning Decision
+- Release-grade OpenClaw support should pivot to family-explicit managed providers:
+  - `modeio-openai`
+  - `modeio-anthropic`
+  - `modeio-codex`
+- OpenClaw native-profile reuse should be retained only as an experimental path until the three managed families are implemented and validated.
+
+## OpenClaw Family Smoke Findings
+- The smoke harness now supports real OpenClaw preserve-provider family runs for the two currently supported families:
+  - `openai-completions`
+  - `anthropic-messages`
+- `scripts/smoke_agent_matrix.py` now resolves family scenarios from copied OpenClaw config/models-cache/auth-profile state, writes per-family sandbox patches, and emits separate reports/artifacts per family.
+- `scripts/smoke_e2e.sh` now seeds family-specific OpenClaw fixtures for setup/uninstall and CLI smoke instead of assuming a synthetic `modeio-middleware/middleware-default` provider.
+- Current live result on this machine:
+  - `anthropic-messages` reaches the intended upstream `/v1/messages` path through the family tap and returns `401`, so the path is real but externally blocked by current auth/account state.
+  - `openai-completions` still returns `401` before the intended family tap sees traffic, even after preferring concrete copied providers over generic `auto` entries. That points to a remaining OpenClaw OpenAI-family auth/routing gap, not just a missing smoke scenario.

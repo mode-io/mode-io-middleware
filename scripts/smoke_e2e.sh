@@ -167,6 +167,67 @@ if not eval(expr, {"payload": payload}):
 PY
 }
 
+seed_openclaw_family_state() {
+  local config_path="$1"
+  local models_cache_path="$2"
+  local family="$3"
+
+  local provider=""
+  local model=""
+  local api=""
+  local base_url=""
+
+  case "$family" in
+    openai-completions)
+      provider="openai"
+      model="gpt-4.1"
+      api="openai-completions"
+      base_url="https://api.openai.com/v1"
+      ;;
+    anthropic-messages)
+      provider="anthropic"
+      model="claude-sonnet-4-6"
+      api="anthropic-messages"
+      base_url="https://api.anthropic.com"
+      ;;
+    *)
+      echo "[smoke] unsupported OpenClaw family seed: $family" >&2
+      exit 1
+      ;;
+  esac
+
+  "$PYTHON_BIN" - "$config_path" "$models_cache_path" "$provider" "$model" "$api" "$base_url" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+models_cache_path = Path(sys.argv[2])
+provider = sys.argv[3]
+model = sys.argv[4]
+api = sys.argv[5]
+base_url = sys.argv[6]
+
+provider_payload = {
+    "api": api,
+    "baseUrl": base_url,
+    "models": [{"id": model, "name": f"Smoke {model}"}],
+}
+config_payload = {
+    "agents": {"defaults": {"model": {"primary": f"{provider}/{model}"}}},
+    "models": {"providers": {provider: provider_payload}},
+}
+cache_payload = {
+    "models": {"providers": {provider: provider_payload}},
+}
+
+config_path.parent.mkdir(parents=True, exist_ok=True)
+models_cache_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(json.dumps(config_payload, indent=2) + "\n", encoding="utf-8")
+models_cache_path.write_text(json.dumps(cache_payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 write_summary() {
   local exit_code="$1"
   local summary_path="${ARTIFACTS_DIR}/summary.json"
@@ -243,8 +304,21 @@ run_python_smoke_suite() {
 }
 
 run_setup_smoke() {
-  local setup_json="$ARTIFACTS_DIR/setup-all.json"
-  local uninstall_json="$ARTIFACTS_DIR/uninstall-all.json"
+  local openai_dir="$ARTIFACTS_DIR/openclaw-openai"
+  local anthropic_dir="$ARTIFACTS_DIR/openclaw-anthropic"
+  local openai_cfg="$openai_dir/openclaw.json"
+  local openai_models="$openai_dir/agents/main/agent/models.json"
+  local anthropic_cfg="$anthropic_dir/openclaw.json"
+  local anthropic_models="$anthropic_dir/agents/main/agent/models.json"
+  local openai_setup_json="$ARTIFACTS_DIR/setup-openclaw-openai.json"
+  local openai_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-openai.json"
+  local anthropic_setup_json="$ARTIFACTS_DIR/setup-openclaw-anthropic.json"
+  local anthropic_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-anthropic.json"
+  local opencode_json="$ARTIFACTS_DIR/opencode.json"
+  local claude_settings_json="$ARTIFACTS_DIR/claude-settings.json"
+
+  seed_openclaw_family_state "$openai_cfg" "$openai_models" "openai-completions"
+  seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models" "anthropic-messages"
 
   log "running setup/uninstall smoke (temp config paths)"
   (
@@ -253,43 +327,77 @@ run_setup_smoke() {
       --json \
       --apply-opencode \
       --create-opencode-config \
-      --opencode-config-path "$ARTIFACTS_DIR/opencode.json" \
+      --opencode-config-path "$opencode_json" \
       --apply-openclaw \
-      --create-openclaw-config \
-      --openclaw-config-path "$ARTIFACTS_DIR/openclaw.json" \
+      --openclaw-config-path "$openai_cfg" \
+      --openclaw-models-cache-path "$openai_models" \
       --apply-claude \
       --create-claude-settings \
-      --claude-settings-path "$ARTIFACTS_DIR/claude-settings.json" \
-      >"$setup_json"
+      --claude-settings-path "$claude_settings_json" \
+      >"$openai_setup_json"
 
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --uninstall \
       --apply-opencode \
-      --opencode-config-path "$ARTIFACTS_DIR/opencode.json" \
+      --opencode-config-path "$opencode_json" \
       --apply-openclaw \
-      --openclaw-config-path "$ARTIFACTS_DIR/openclaw.json" \
+      --openclaw-config-path "$openai_cfg" \
+      --openclaw-models-cache-path "$openai_models" \
       --apply-claude \
-      --claude-settings-path "$ARTIFACTS_DIR/claude-settings.json" \
-      >"$uninstall_json"
+      --claude-settings-path "$claude_settings_json" \
+      >"$openai_uninstall_json"
+
+    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+      --json \
+      --apply-openclaw \
+      --openclaw-config-path "$anthropic_cfg" \
+      --openclaw-models-cache-path "$anthropic_models" \
+      >"$anthropic_setup_json"
+
+    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+      --json \
+      --uninstall \
+      --apply-openclaw \
+      --openclaw-config-path "$anthropic_cfg" \
+      --openclaw-models-cache-path "$anthropic_models" \
+      >"$anthropic_uninstall_json"
   )
 
-  check_json_field "$setup_json" "payload['success'] is True"
-  check_json_field "$setup_json" "payload['opencode']['changed'] is True"
-  check_json_field "$setup_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$setup_json" "payload['claude']['changed'] is True"
+  check_json_field "$openai_setup_json" "payload['success'] is True"
+  check_json_field "$openai_setup_json" "payload['opencode']['changed'] is True"
+  check_json_field "$openai_setup_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$openai_setup_json" "payload['openclaw']['apiFamily'] == 'openai-completions'"
+  check_json_field "$openai_setup_json" "payload['claude']['changed'] is True"
 
-  check_json_field "$uninstall_json" "payload['success'] is True"
-  check_json_field "$uninstall_json" "payload['opencode']['changed'] is True"
-  check_json_field "$uninstall_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$uninstall_json" "payload['claude']['changed'] is True"
+  check_json_field "$openai_uninstall_json" "payload['success'] is True"
+  check_json_field "$openai_uninstall_json" "payload['opencode']['changed'] is True"
+  check_json_field "$openai_uninstall_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$openai_uninstall_json" "payload['claude']['changed'] is True"
+
+  check_json_field "$anthropic_setup_json" "payload['success'] is True"
+  check_json_field "$anthropic_setup_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$anthropic_setup_json" "payload['openclaw']['apiFamily'] == 'anthropic-messages'"
+
+  check_json_field "$anthropic_uninstall_json" "payload['success'] is True"
+  check_json_field "$anthropic_uninstall_json" "payload['openclaw']['changed'] is True"
   setup_smoke_status="passed"
 }
 
 run_openclaw_cli_smoke() {
-  local cfg="$ARTIFACTS_DIR/openclaw-cli.json"
-  local models_json="$ARTIFACTS_DIR/openclaw-models.json"
-  local validate_log="$ARTIFACTS_DIR/openclaw-validate.log"
+  local openai_dir="$ARTIFACTS_DIR/openclaw-cli-openai"
+  local anthropic_dir="$ARTIFACTS_DIR/openclaw-cli-anthropic"
+  local openai_cfg="$openai_dir/openclaw.json"
+  local openai_models_cache="$openai_dir/agents/main/agent/models.json"
+  local anthropic_cfg="$anthropic_dir/openclaw.json"
+  local anthropic_models_cache="$anthropic_dir/agents/main/agent/models.json"
+  local openai_models_json="$ARTIFACTS_DIR/openclaw-openai-models.json"
+  local anthropic_models_json="$ARTIFACTS_DIR/openclaw-anthropic-models.json"
+  local openai_validate_log="$ARTIFACTS_DIR/openclaw-openai-validate.log"
+  local anthropic_validate_log="$ARTIFACTS_DIR/openclaw-anthropic-validate.log"
+
+  seed_openclaw_family_state "$openai_cfg" "$openai_models_cache" "openai-completions"
+  seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models_cache" "anthropic-messages"
 
   log "running OpenClaw config/list smoke using OPENCLAW_CONFIG_PATH=temp"
 
@@ -298,16 +406,42 @@ run_openclaw_cli_smoke() {
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --apply-openclaw \
-      --create-openclaw-config \
-      --openclaw-config-path "$cfg" \
+      --openclaw-config-path "$openai_cfg" \
+      --openclaw-models-cache-path "$openai_models_cache" \
       >/dev/null
 
-    OPENCLAW_CONFIG_PATH="$cfg" openclaw config validate >"$validate_log"
-    OPENCLAW_CONFIG_PATH="$cfg" openclaw models list --json >"$models_json"
+    OPENCLAW_CONFIG_PATH="$openai_cfg" \
+    OPENCLAW_STATE_DIR="$openai_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$openai_models_cache")" \
+    openclaw config validate >"$openai_validate_log"
+
+    OPENCLAW_CONFIG_PATH="$openai_cfg" \
+    OPENCLAW_STATE_DIR="$openai_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$openai_models_cache")" \
+    openclaw models list --json >"$openai_models_json"
+
+    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+      --json \
+      --apply-openclaw \
+      --openclaw-config-path "$anthropic_cfg" \
+      --openclaw-models-cache-path "$anthropic_models_cache" \
+      >/dev/null
+
+    OPENCLAW_CONFIG_PATH="$anthropic_cfg" \
+    OPENCLAW_STATE_DIR="$anthropic_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$anthropic_models_cache")" \
+    openclaw config validate >"$anthropic_validate_log"
+
+    OPENCLAW_CONFIG_PATH="$anthropic_cfg" \
+    OPENCLAW_STATE_DIR="$anthropic_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$anthropic_models_cache")" \
+    openclaw models list --json >"$anthropic_models_json"
   )
 
-  check_json_field "$models_json" "payload['count'] >= 1"
-  check_json_field "$models_json" "any(m.get('key') == 'modeio-middleware/middleware-default' for m in payload['models'])"
+  check_json_field "$openai_models_json" "payload['count'] >= 1"
+  check_json_field "$openai_models_json" "any(m.get('key') == 'openai/gpt-4.1' for m in payload['models'])"
+  check_json_field "$anthropic_models_json" "payload['count'] >= 1"
+  check_json_field "$anthropic_models_json" "any(m.get('key') == 'anthropic/claude-sonnet-4-6' for m in payload['models'])"
   openclaw_cli_status="passed"
 }
 

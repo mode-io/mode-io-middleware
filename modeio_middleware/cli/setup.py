@@ -440,24 +440,19 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
             else default_openclaw_models_cache_path(config_path=config_path)
         )
         if args.uninstall:
+            models_cache_report = uninstall_openclaw_models_cache_file(
+                models_cache_path=models_cache_path,
+                gateway_base_url=gateway_base_url,
+                config_path=config_path,
+                force_remove=args.force_remove_openclaw_provider,
+                auth_mode=args.openclaw_auth_mode,
+            )
             openclaw_report = uninstall_openclaw_config_file(
                 config_path=config_path,
                 gateway_base_url=gateway_base_url,
                 force_remove=args.force_remove_openclaw_provider,
             )
-            openclaw_auth_mode = openclaw_report.get("authMode") or args.openclaw_auth_mode
-            openclaw_native_provider = openclaw_report.get("nativeProvider")
-            openclaw_report["modelsCache"] = uninstall_openclaw_models_cache_file(
-                models_cache_path=models_cache_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_openclaw_provider,
-                auth_mode=str(openclaw_auth_mode),
-                native_provider=(
-                    str(openclaw_native_provider)
-                    if isinstance(openclaw_native_provider, str)
-                    else None
-                ),
-            )
+            openclaw_report["modelsCache"] = models_cache_report
             report["openclaw"] = openclaw_report
         else:
             openclaw_report = apply_openclaw_config_file(
@@ -465,20 +460,13 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
                 gateway_base_url=gateway_base_url,
                 create_if_missing=args.create_openclaw_config,
                 auth_mode=args.openclaw_auth_mode,
+                models_cache_path=models_cache_path,
             )
-            openclaw_auth_mode = openclaw_report.get("authMode") or args.openclaw_auth_mode
-            openclaw_native_provider = openclaw_report.get("nativeProvider")
-            openclaw_route_model_id = openclaw_report.get("routeModelId") or "middleware-default"
             openclaw_report["modelsCache"] = apply_openclaw_models_cache_file(
                 models_cache_path=models_cache_path,
                 gateway_base_url=gateway_base_url,
-                auth_mode=str(openclaw_auth_mode),
-                native_provider=(
-                    str(openclaw_native_provider)
-                    if isinstance(openclaw_native_provider, str)
-                    else None
-                ),
-                route_model_id=str(openclaw_route_model_id),
+                config_path=config_path,
+                auth_mode=str(openclaw_report.get("authMode") or args.openclaw_auth_mode),
             )
             report["openclaw"] = openclaw_report
 
@@ -667,7 +655,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--apply-openclaw",
         action="store_true",
-        help="Apply OpenClaw config update (models.providers + default model routing)",
+        help="Apply OpenClaw config update for the active provider/model route",
     )
     parser.add_argument(
         "--uninstall",
@@ -706,7 +694,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--force-remove-openclaw-provider",
         action="store_true",
         help=(
-            "In uninstall mode, remove OpenClaw modeio-middleware provider even when baseUrl "
+            "In uninstall mode, restore OpenClaw provider routes even when current baseUrl "
             "differs from --gateway-base-url"
         ),
     )
@@ -726,8 +714,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         choices=(OPENCLAW_AUTH_MODE_NATIVE, OPENCLAW_AUTH_MODE_MANAGED),
         default=OPENCLAW_AUTH_MODE_NATIVE,
         help=(
-            "How OpenClaw is routed through middleware: native bridges the current OpenClaw provider/auth "
-            "through a client-scoped middleware path, managed uses the synthetic middleware provider flow"
+            "How OpenClaw is routed through middleware: native preserves the active provider/model identity "
+            "for supported families, managed keeps the legacy synthetic middleware provider flow"
         ),
     )
     parser.add_argument(

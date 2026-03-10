@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 def build_sandbox_paths(root: Path) -> Dict[str, Path]:
@@ -161,6 +161,142 @@ def seed_openclaw_state(real_home: Path, paths: Dict[str, Path]) -> Dict[str, ob
         shutil.copy2(source_auth_profiles, target_agent_dir / "auth-profiles.json")
         report["authProfilesSeeded"] = True
         report["authProfilesPath"] = str(source_auth_profiles)
+
+    return report
+
+
+def _read_json_object(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_json_object(path: Path, payload: Dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _ensure_object(value: Any) -> Dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_openclaw_cache_providers(
+    payload: Dict[str, object],
+    *,
+    create: bool,
+) -> Tuple[Dict[str, object], Dict[str, object], str]:
+    models_obj = payload.get("models")
+    root_providers = payload.get("providers")
+    if isinstance(models_obj, dict):
+        providers = models_obj.get("providers")
+        if isinstance(providers, dict):
+            return models_obj, providers, "models"
+    if isinstance(root_providers, dict):
+        return payload, root_providers, "root"
+    if not create:
+        return payload, {}, "root"
+    models_obj = _ensure_object(models_obj)
+    providers = _ensure_object(models_obj.get("providers"))
+    models_obj["providers"] = providers
+    payload["models"] = models_obj
+    return models_obj, providers, "models"
+
+
+def _normalized_openclaw_model_id(model_ref: str) -> str:
+    return model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+
+
+def configure_openclaw_supported_family(
+    *,
+    config_path: Path,
+    models_cache_path: Path,
+    provider_key: str,
+    model_ref: str,
+    api_family: str,
+    base_url: str,
+    provider_fields: Dict[str, object] | None = None,
+) -> Dict[str, object]:
+    report = {
+        "providerKey": provider_key,
+        "modelRef": model_ref,
+        "apiFamily": api_family,
+        "baseUrl": base_url,
+        "configPath": str(config_path),
+        "modelsCachePath": str(models_cache_path),
+        "configChanged": False,
+        "modelsCacheChanged": False,
+    }
+    normalized_model_id = _normalized_openclaw_model_id(model_ref)
+    extra_fields = dict(provider_fields or {})
+
+    config_payload = _read_json_object(config_path)
+    models_obj = _ensure_object(config_payload.get("models"))
+    providers_obj = _ensure_object(models_obj.get("providers"))
+    provider_obj = _ensure_object(providers_obj.get(provider_key))
+    changed = False
+
+    if provider_obj.get("baseUrl") != base_url:
+        provider_obj["baseUrl"] = base_url
+        changed = True
+    if provider_obj.get("api") != api_family:
+        provider_obj["api"] = api_family
+        changed = True
+    if upsert_openclaw_provider_model(provider_obj, normalized_model_id):
+        changed = True
+    for field_name, field_value in extra_fields.items():
+        if provider_obj.get(field_name) != field_value:
+            provider_obj[field_name] = field_value
+            changed = True
+    providers_obj[provider_key] = provider_obj
+    models_obj["providers"] = providers_obj
+    if models_obj.get("mode") != "merge":
+        models_obj["mode"] = "merge"
+        changed = True
+    config_payload["models"] = models_obj
+
+    agents_obj = _ensure_object(config_payload.get("agents"))
+    defaults_obj = _ensure_object(agents_obj.get("defaults"))
+    model_obj = _ensure_object(defaults_obj.get("model"))
+    if model_obj.get("primary") != model_ref:
+        model_obj["primary"] = model_ref
+        changed = True
+    defaults_obj["model"] = model_obj
+    agents_obj["defaults"] = defaults_obj
+    config_payload["agents"] = agents_obj
+
+    if changed or not config_path.exists():
+        _write_json_object(config_path, config_payload)
+        report["configChanged"] = True
+
+    cache_payload = _read_json_object(models_cache_path)
+    container_obj, cache_providers, provider_parent = _resolve_openclaw_cache_providers(
+        cache_payload,
+        create=True,
+    )
+    cache_provider = _ensure_object(cache_providers.get(provider_key))
+    cache_changed = False
+    if cache_provider.get("baseUrl") != base_url:
+        cache_provider["baseUrl"] = base_url
+        cache_changed = True
+    if cache_provider.get("api") != api_family:
+        cache_provider["api"] = api_family
+        cache_changed = True
+    if upsert_openclaw_provider_model(cache_provider, normalized_model_id):
+        cache_changed = True
+    for field_name, field_value in extra_fields.items():
+        if cache_provider.get(field_name) != field_value:
+            cache_provider[field_name] = field_value
+            cache_changed = True
+    cache_providers[provider_key] = cache_provider
+    if provider_parent == "models":
+        container_obj["providers"] = cache_providers
+        cache_payload["models"] = container_obj
+    else:
+        cache_payload["providers"] = cache_providers
+    if cache_changed or not models_cache_path.exists():
+        _write_json_object(models_cache_path, cache_payload)
+        report["modelsCacheChanged"] = True
 
     return report
 

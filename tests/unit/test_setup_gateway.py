@@ -34,6 +34,7 @@ from modeio_middleware.cli.setup_lib.opencode import (  # noqa: E402
     uninstall_opencode_config_file,
 )
 from modeio_middleware.cli.setup_lib.openclaw import (  # noqa: E402
+    OPENCLAW_AUTH_MODE_MANAGED,
     OPENCLAW_AUTH_MODE_NATIVE,
     OPENCLAW_MODEL_ID,
     OPENCLAW_MODEL_REF,
@@ -252,7 +253,7 @@ class TestSetupGateway(unittest.TestCase):
         updated, changed = apply_openclaw_provider_route(
             {},
             "http://127.0.0.1:8787/v1",
-            auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+            auth_mode=OPENCLAW_AUTH_MODE_MANAGED,
         )
         self.assertTrue(changed)
         provider = updated["models"]["providers"][OPENCLAW_PROVIDER_ID]
@@ -273,7 +274,7 @@ class TestSetupGateway(unittest.TestCase):
                 config_path=path,
                 gateway_base_url="http://127.0.0.1:8787/v1",
                 create_if_missing=True,
-                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+                auth_mode=OPENCLAW_AUTH_MODE_MANAGED,
             )
             self.assertTrue(apply_result["changed"])
             self.assertTrue(path.exists())
@@ -290,13 +291,13 @@ class TestSetupGateway(unittest.TestCase):
 
     def test_apply_and_uninstall_openclaw_models_cache_file(self):
         with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "openclaw.json"
             path = Path(temp_dir) / "agents" / "main" / "agent" / "models.json"
             apply_result = apply_openclaw_models_cache_file(
                 models_cache_path=path,
                 gateway_base_url="http://127.0.0.1:8787/v1",
-                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
-                native_provider=None,
-                route_model_id=OPENCLAW_MODEL_ID,
+                config_path=config_path,
+                auth_mode=OPENCLAW_AUTH_MODE_MANAGED,
             )
             self.assertTrue(apply_result["changed"])
             self.assertTrue(path.exists())
@@ -304,9 +305,9 @@ class TestSetupGateway(unittest.TestCase):
             uninstall_result = uninstall_openclaw_models_cache_file(
                 models_cache_path=path,
                 gateway_base_url="http://127.0.0.1:8787/v1",
+                config_path=config_path,
                 force_remove=False,
-                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
-                native_provider=None,
+                auth_mode=OPENCLAW_AUTH_MODE_MANAGED,
             )
             self.assertTrue(uninstall_result["changed"])
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -317,7 +318,15 @@ class TestSetupGateway(unittest.TestCase):
 
     def test_apply_openclaw_provider_route_native_mode_preserves_provider_context(self):
         source = {
-            "agents": {"defaults": {"model": {"primary": "openai-codex/gpt-5.3-codex"}}}
+            "agents": {"defaults": {"model": {"primary": "openai/gpt-4.1"}}},
+            "models": {
+                "providers": {
+                    "openai": {
+                        "api": "openai-completions",
+                        "baseUrl": "https://api.openai.com/v1",
+                    }
+                }
+            },
         }
         updated, changed = apply_openclaw_provider_route(
             source,
@@ -325,15 +334,44 @@ class TestSetupGateway(unittest.TestCase):
             auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
         )
         self.assertTrue(changed)
-        provider = updated["models"]["providers"][OPENCLAW_PROVIDER_ID]
+        provider = updated["models"]["providers"]["openai"]
         self.assertEqual(
             provider["baseUrl"],
-            "http://127.0.0.1:8787/clients/openclaw/openai-codex/v1",
+            "http://127.0.0.1:8787/clients/openclaw/openai/v1",
         )
-        self.assertEqual(provider["models"][0]["id"], "gpt-5.3-codex")
         self.assertEqual(
             updated["agents"]["defaults"]["model"]["primary"],
-            "modeio-middleware/gpt-5.3-codex",
+            "openai/gpt-4.1",
+        )
+        self.assertNotIn(OPENCLAW_PROVIDER_ID, updated["models"]["providers"])
+
+    def test_apply_openclaw_provider_route_native_mode_preserves_anthropic_provider_context(self):
+        source = {
+            "agents": {"defaults": {"model": {"primary": "anthropic/claude-sonnet-4"}}},
+            "models": {
+                "providers": {
+                    "anthropic": {
+                        "api": "anthropic-messages",
+                        "baseUrl": "https://api.anthropic.com",
+                    }
+                }
+            },
+        }
+        updated, changed = apply_openclaw_provider_route(
+            source,
+            "http://127.0.0.1:8787/v1",
+            auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+        )
+        self.assertTrue(changed)
+        provider = updated["models"]["providers"]["anthropic"]
+        self.assertEqual(
+            provider["baseUrl"],
+            "http://127.0.0.1:8787/clients/openclaw/anthropic",
+        )
+        self.assertEqual(provider["api"], "anthropic-messages")
+        self.assertEqual(
+            updated["agents"]["defaults"]["model"]["primary"],
+            "anthropic/claude-sonnet-4",
         )
 
     def test_apply_and_uninstall_openclaw_config_file_native_mode_restores_primary(self):
@@ -344,9 +382,17 @@ class TestSetupGateway(unittest.TestCase):
                     {
                         "agents": {
                             "defaults": {
-                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                                "model": {"primary": "openai/gpt-4.1"}
                             }
-                        }
+                        },
+                        "models": {
+                            "providers": {
+                                "openai": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://api.openai.com/v1",
+                                }
+                            }
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -369,11 +415,11 @@ class TestSetupGateway(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(
                 payload["agents"]["defaults"]["model"]["primary"],
-                "openai-codex/gpt-5.3-codex",
+                "openai/gpt-4.1",
             )
-            self.assertNotIn(
-                OPENCLAW_PROVIDER_ID,
-                payload.get("models", {}).get("providers", {}),
+            self.assertEqual(
+                payload["models"]["providers"]["openai"]["baseUrl"],
+                "https://api.openai.com/v1",
             )
 
     def test_apply_openclaw_config_file_native_mode_is_idempotent(self):
@@ -384,9 +430,17 @@ class TestSetupGateway(unittest.TestCase):
                     {
                         "agents": {
                             "defaults": {
-                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                                "model": {"primary": "openai/gpt-4.1"}
                             }
-                        }
+                        },
+                        "models": {
+                            "providers": {
+                                "openai": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://api.openai.com/v1",
+                                }
+                            }
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -407,10 +461,10 @@ class TestSetupGateway(unittest.TestCase):
             self.assertEqual(second_apply["authMode"], "native")
 
             payload = json.loads(path.read_text(encoding="utf-8"))
-            provider = payload["models"]["providers"][OPENCLAW_PROVIDER_ID]
+            provider = payload["models"]["providers"]["openai"]
             self.assertEqual(
                 provider["baseUrl"],
-                "http://127.0.0.1:8787/clients/openclaw/openai-codex/v1",
+                "http://127.0.0.1:8787/clients/openclaw/openai/v1",
             )
 
     def test_openclaw_uninstall_mismatch_keeps_restore_sidecar(self):
@@ -421,9 +475,17 @@ class TestSetupGateway(unittest.TestCase):
                     {
                         "agents": {
                             "defaults": {
-                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                                "model": {"primary": "openai/gpt-4.1"}
                             }
-                        }
+                        },
+                        "models": {
+                            "providers": {
+                                "openai": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://api.openai.com/v1",
+                                }
+                            }
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -442,6 +504,25 @@ class TestSetupGateway(unittest.TestCase):
             )
             self.assertFalse(uninstall_result["changed"])
             self.assertTrue(path.with_name("openclaw.json.modeio-route.json").exists())
+
+    def test_openclaw_native_mode_defers_openai_codex_provider(self):
+        source = {
+            "agents": {"defaults": {"model": {"primary": "openai-codex/gpt-5.3-codex"}}},
+            "models": {
+                "providers": {
+                    "openai-codex": {
+                        "baseUrl": "https://chatgpt.com/backend-api/codex",
+                    }
+                }
+            },
+        }
+        updated, changed = apply_openclaw_provider_route(
+            source,
+            "http://127.0.0.1:8787/v1",
+            auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+        )
+        self.assertFalse(changed)
+        self.assertEqual(updated, source)
 
     def test_apply_and_uninstall_claude_settings_file(self):
         with TemporaryDirectory() as temp_dir:

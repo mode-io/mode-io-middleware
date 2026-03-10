@@ -12,7 +12,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -47,18 +47,25 @@ from smoke_matrix.common import (
     write_text as _write_text,
 )
 from smoke_matrix.sandbox import (
-    apply_openclaw_live_model_to_cache as _apply_openclaw_live_model_to_cache,
-    apply_openclaw_live_model_to_config as _apply_openclaw_live_model_to_config,
     build_sandbox_env as _build_sandbox_env,
     build_sandbox_paths as _build_sandbox_paths,
-    rewrite_openclaw_model_for_live as _rewrite_openclaw_model_for_live,
+    configure_openclaw_supported_family as _configure_openclaw_supported_family,
     seed_codex_credentials as _seed_codex_credentials,
     seed_opencode_state as _seed_opencode_state,
     seed_openclaw_state as _seed_openclaw_state,
-    upsert_openclaw_provider_model as _upsert_openclaw_provider_model,
 )
 from smoke_matrix.runtime import prepare_runtime as _prepare_runtime
 
+SUPPORTED_OPENCLAW_FAMILIES = ("openai-completions", "anthropic-messages")
+DEFAULT_OPENCLAW_ANTHROPIC_PROVIDER = "anthropic"
+DEFAULT_OPENCLAW_ANTHROPIC_MODEL = os.environ.get(
+    "OPENCLAW_ANTHROPIC_MODEL",
+    "anthropic/claude-sonnet-4-6",
+)
+DEFAULT_OPENCLAW_ANTHROPIC_BASE_URL = os.environ.get(
+    "OPENCLAW_ANTHROPIC_BASE_URL",
+    "https://api.anthropic.com",
+)
 
 _DEFAULT_UPSTREAM_SELECTION = resolve_live_upstream_selection(env=dict(os.environ))
 DEFAULT_UPSTREAM_BASE_URL = str(
@@ -75,6 +82,298 @@ def _default_repo_root() -> Path:
 
 def _default_artifacts_root() -> Path:
     return default_artifacts_root(Path(__file__))
+
+
+def _read_json_object(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _normalize_openclaw_model_ref(provider_key: str, model_ref: str) -> str:
+    model_text = str(model_ref).strip()
+    if "/" in model_text:
+        prefix, suffix = model_text.split("/", 1)
+        if prefix.strip():
+            return f"{provider_key}/{suffix}"
+    return f"{provider_key}/{model_text}"
+
+
+def _normalize_openclaw_model_id(model_ref: str) -> str:
+    return model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+
+
+def _slug_token_part(text: str) -> str:
+    raw = str(text).strip().lower()
+    normalized = "".join(ch if ch.isalnum() else "_" for ch in raw)
+    return normalized.strip("_") or "openclaw"
+
+
+def _openclaw_auth_profile_providers(paths: Dict[str, Path]) -> set[str]:
+    auth_path = paths["openclaw_models_cache"].parent / "auth-profiles.json"
+    payload = _read_json_object(auth_path)
+    profiles = payload.get("profiles")
+    providers: set[str] = set()
+    if isinstance(profiles, dict):
+        for value in profiles.values():
+            if not isinstance(value, dict):
+                continue
+            provider = value.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                providers.add(provider.strip())
+    return providers
+
+
+def _openclaw_current_primary(config_path: Path) -> tuple[str | None, str | None]:
+    payload = _read_json_object(config_path)
+    agents_obj = payload.get("agents")
+    defaults_obj = agents_obj.get("defaults") if isinstance(agents_obj, dict) else None
+    model_obj = defaults_obj.get("model") if isinstance(defaults_obj, dict) else None
+    primary = model_obj.get("primary") if isinstance(model_obj, dict) else None
+    if isinstance(primary, str) and "/" in primary:
+        provider, model_id = primary.split("/", 1)
+        return provider, model_id
+    return None, None
+
+
+def _collect_openclaw_provider_entries(
+    *,
+    config_path: Path,
+    models_cache_path: Path,
+) -> Dict[str, Dict[str, object]]:
+    entries: Dict[str, Dict[str, object]] = {}
+
+    def merge_provider_map(providers: Any) -> None:
+        if not isinstance(providers, dict):
+            return
+        for provider_key, provider_value in providers.items():
+            if not isinstance(provider_key, str) or not isinstance(provider_value, dict):
+                continue
+            normalized = provider_key.strip().lower().replace("_", "-")
+            entry = entries.setdefault(
+                normalized,
+                {
+                    "providerKey": provider_key,
+                    "apiFamily": None,
+                    "baseUrl": None,
+                    "models": [],
+                    "providerFields": {},
+                },
+            )
+            entry["providerKey"] = entry.get("providerKey") or provider_key
+            api_family = provider_value.get("api")
+            if isinstance(api_family, str) and api_family.strip():
+                entry["apiFamily"] = api_family.strip().lower()
+            base_url = provider_value.get("baseUrl")
+            if isinstance(base_url, str) and base_url.strip():
+                entry["baseUrl"] = base_url.strip()
+            models = provider_value.get("models")
+            if isinstance(models, list) and models:
+                entry["models"] = models
+            for field_name in ("apiKey", "authHeader", "headers"):
+                if field_name in provider_value:
+                    entry_provider_fields = entry.setdefault("providerFields", {})
+                    if isinstance(entry_provider_fields, dict):
+                        entry_provider_fields[field_name] = provider_value.get(field_name)
+
+    config_payload = _read_json_object(config_path)
+    merge_provider_map(
+        ((config_payload.get("models") or {}).get("providers"))
+        if isinstance(config_payload.get("models"), dict)
+        else None
+    )
+
+    cache_payload = _read_json_object(models_cache_path)
+    if isinstance(cache_payload.get("models"), dict):
+        merge_provider_map(cache_payload["models"].get("providers"))
+    merge_provider_map(cache_payload.get("providers"))
+
+    return entries
+
+
+def _parse_openclaw_families(raw: str) -> tuple[str, ...]:
+    parts = [part.strip().lower() for part in str(raw).split(",") if part.strip()]
+    if not parts:
+        raise ValueError("--openclaw-families must include at least one family")
+    invalid = [part for part in parts if part not in SUPPORTED_OPENCLAW_FAMILIES]
+    if invalid:
+        raise ValueError(
+            "unsupported OpenClaw families in --openclaw-families: "
+            + ", ".join(invalid)
+        )
+    deduped: List[str] = []
+    for part in parts:
+        if part not in deduped:
+            deduped.append(part)
+    return tuple(deduped)
+
+
+def _resolve_openclaw_family_scenarios(
+    *,
+    paths: Dict[str, Path],
+    args: argparse.Namespace,
+) -> List[Dict[str, object]]:
+    scenarios: List[Dict[str, object]] = []
+    requested_families = _parse_openclaw_families(args.openclaw_families)
+    auth_providers = _openclaw_auth_profile_providers(paths)
+    provider_entries = _collect_openclaw_provider_entries(
+        config_path=paths["openclaw_config"],
+        models_cache_path=paths["openclaw_models_cache"],
+    )
+    current_provider, current_model_id = _openclaw_current_primary(paths["openclaw_config"])
+
+    def add_skipped(family: str, reason: str) -> None:
+        scenarios.append(
+            {
+                "name": f"openclaw:{family}",
+                "family": family,
+                "skipped": True,
+                "reason": reason,
+            }
+        )
+
+    def model_list_contains(raw_models: object, candidate_model: str) -> bool:
+        if not candidate_model or not isinstance(raw_models, list):
+            return False
+        normalized_full = candidate_model.strip()
+        normalized_id = _normalize_openclaw_model_id(candidate_model)
+        for item in raw_models:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if item_id and (item_id == normalized_full or item_id == normalized_id):
+                return True
+        return False
+
+    def model_list_has_specific_choice(raw_models: object) -> bool:
+        if not isinstance(raw_models, list):
+            return False
+        for item in raw_models:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip().lower()
+            if item_id and item_id not in {"auto", "middleware-default"}:
+                return True
+        return False
+
+    if "openai-completions" in requested_families:
+        selected_entry: Dict[str, object] | None = None
+        requested_model_hint = (
+            args.openclaw_openai_model.strip() if args.openclaw_openai_model else ""
+        )
+        if args.openclaw_openai_provider:
+            selected_entry = provider_entries.get(
+                args.openclaw_openai_provider.strip().lower().replace("_", "-")
+            )
+        elif current_provider:
+            candidate = provider_entries.get(current_provider.strip().lower().replace("_", "-"))
+            if candidate and candidate.get("apiFamily") == "openai-completions":
+                selected_entry = candidate
+        if selected_entry is None:
+            openai_candidates: List[Dict[str, object]] = []
+            for candidate in provider_entries.values():
+                if candidate.get("providerKey") == "modeio-middleware":
+                    continue
+                if candidate.get("apiFamily") != "openai-completions":
+                    continue
+                if not isinstance(candidate.get("baseUrl"), str) or not str(candidate.get("baseUrl")).strip():
+                    continue
+                models = candidate.get("models")
+                if not isinstance(models, list) or not models:
+                    continue
+                openai_candidates.append(candidate)
+            if requested_model_hint:
+                for candidate in openai_candidates:
+                    if model_list_contains(candidate.get("models"), requested_model_hint):
+                        selected_entry = candidate
+                        break
+            if selected_entry is None and requested_model_hint:
+                for candidate in openai_candidates:
+                    if model_list_has_specific_choice(candidate.get("models")):
+                        selected_entry = candidate
+                        break
+            if selected_entry is None:
+                for candidate in openai_candidates:
+                    if model_list_has_specific_choice(candidate.get("models")):
+                        selected_entry = candidate
+                        break
+            if selected_entry is None and openai_candidates:
+                selected_entry = openai_candidates[0]
+
+        if selected_entry is None:
+            add_skipped("openai-completions", "no_openai_provider_configured")
+        else:
+            provider_key = str(selected_entry["providerKey"])
+            raw_models = selected_entry.get("models")
+            chosen_model = args.openclaw_openai_model.strip() if args.openclaw_openai_model else ""
+            if not chosen_model and current_provider == provider_key and current_model_id:
+                chosen_model = current_model_id
+            if not chosen_model and isinstance(raw_models, list):
+                for item in raw_models:
+                    if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+                        chosen_model = item["id"].strip()
+                        break
+            if not chosen_model:
+                chosen_model = _normalize_openclaw_model_id(args.model)
+            model_ref = _normalize_openclaw_model_ref(provider_key, chosen_model)
+            scenarios.append(
+                {
+                    "name": "openclaw:openai-completions",
+                    "family": "openai-completions",
+                    "providerKey": provider_key,
+                    "modelRef": model_ref,
+                    "realBaseUrl": str(selected_entry.get("baseUrl") or "").strip(),
+                    "apiFamily": "openai-completions",
+                    "providerFields": dict(selected_entry.get("providerFields") or {}),
+                    "expectedTapPathFragment": "/chat/completions",
+                    "source": "existing_provider",
+                }
+            )
+
+    if "anthropic-messages" in requested_families:
+        selected_entry = provider_entries.get(
+            args.openclaw_anthropic_provider.strip().lower().replace("_", "-")
+        )
+        provider_key = (
+            str(selected_entry.get("providerKey"))
+            if isinstance(selected_entry, dict) and selected_entry.get("providerKey")
+            else args.openclaw_anthropic_provider.strip()
+        )
+        if not provider_key:
+            provider_key = DEFAULT_OPENCLAW_ANTHROPIC_PROVIDER
+        if selected_entry is None and provider_key not in auth_providers and "anthropic" not in auth_providers:
+            add_skipped("anthropic-messages", "anthropic_auth_profile_missing")
+        else:
+            chosen_model = args.openclaw_anthropic_model.strip() or DEFAULT_OPENCLAW_ANTHROPIC_MODEL
+            model_ref = _normalize_openclaw_model_ref(provider_key, chosen_model)
+            provider_fields = (
+                dict(selected_entry.get("providerFields") or {})
+                if isinstance(selected_entry, dict)
+                else {}
+            )
+            real_base_url = (
+                str(selected_entry.get("baseUrl") or "").strip()
+                if isinstance(selected_entry, dict)
+                else ""
+            )
+            if not real_base_url:
+                real_base_url = args.openclaw_anthropic_base_url.strip()
+            scenarios.append(
+                {
+                    "name": "openclaw:anthropic-messages",
+                    "family": "anthropic-messages",
+                    "providerKey": provider_key,
+                    "modelRef": model_ref,
+                    "realBaseUrl": real_base_url,
+                    "apiFamily": "anthropic-messages",
+                    "providerFields": provider_fields,
+                    "expectedTapPathFragment": "/v1/messages",
+                    "source": "existing_provider" if isinstance(selected_entry, dict) else "synthesized_from_auth_profile",
+                }
+            )
+
+    return scenarios
 
 
 def _run_json_cli_command(
@@ -283,6 +582,7 @@ def _run_agent_check(
     agent: str,
     index: int,
     run_id: str,
+    report_name: str | None,
     model: str,
     claude_model: str,
     repo_root: Path,
@@ -291,9 +591,12 @@ def _run_agent_check(
     timeout_seconds: int,
     claude_settings_path: Optional[Path],
     tap_jsonl_path: Path,
+    expected_tap_path_fragment: str | None = None,
 ) -> Dict[str, object]:
-    token = f"SMOKE_{agent.upper()}_{index}_{run_id.upper()}"
-    codex_message_path = run_dir / f"{agent}-last-message.txt"
+    token_label = _slug_token_part(report_name or agent)
+    token = f"SMOKE_{token_label.upper()}_{index}_{run_id.upper()}"
+    file_slug = _slug_token_part(report_name or agent)
+    codex_message_path = run_dir / f"{file_slug}-last-message.txt"
     command = _build_agent_command(
         agent=agent,
         token=token,
@@ -314,8 +617,8 @@ def _run_agent_check(
         timeout_seconds=timeout_seconds,
     )
 
-    stdout_path = run_dir / f"{agent}.stdout.log"
-    stderr_path = run_dir / f"{agent}.stderr.log"
+    stdout_path = run_dir / f"{file_slug}.stdout.log"
+    stderr_path = run_dir / f"{file_slug}.stderr.log"
     _write_text(stdout_path, str(result["stdout"]))
     _write_text(stderr_path, str(result["stderr"]))
 
@@ -327,6 +630,15 @@ def _run_agent_check(
     new_events = after_events[before_count:]
     tap_window = _tap_window_metrics(new_events)
     tap_token = _tap_token_metrics(new_events, token)
+    matched_paths = [
+        path
+        for path in tap_window.get("paths", [])
+        if isinstance(path, str)
+        and (
+            expected_tap_path_fragment is None
+            or expected_tap_path_fragment in path
+        )
+    ]
     upstream_statuses = []
     for event in new_events:
         if not isinstance(event, dict):
@@ -340,6 +652,10 @@ def _run_agent_check(
         int(result["exitCode"]) == 0
         and int(tap_window["eventCount"]) >= 1
         and int(tap_window["successCount"]) >= 1
+        and (
+            expected_tap_path_fragment is None
+            or bool(matched_paths)
+        )
     )
 
     diagnostic = None
@@ -358,11 +674,22 @@ def _run_agent_check(
             diagnostic = "OpenCode is still on the `openai` provider but this sandbox has no reusable `OPENAI_API_KEY`."
             outcome = "external_blocked"
     elif agent == "openclaw":
+        route_label = (
+            "Anthropic Messages"
+            if expected_tap_path_fragment == "/v1/messages"
+            else "chat completions"
+        )
         if 429 in upstream_statuses:
-            diagnostic = "OpenClaw native bridge reaches upstream chat completions, but the current token/account is rate limited."
+            diagnostic = (
+                f"OpenClaw native bridge reaches upstream {route_label}, "
+                "but the current token/account is rate limited."
+            )
             outcome = "external_blocked"
         elif 401 in upstream_statuses:
-            diagnostic = "OpenClaw native bridge reaches upstream, but the current auth is rejected for this route."
+            diagnostic = (
+                f"OpenClaw native bridge reaches upstream {route_label}, "
+                "but the current auth is rejected for this route."
+            )
             outcome = "external_blocked"
 
     if transport_check_ok:
@@ -374,6 +701,7 @@ def _run_agent_check(
 
     return {
         "name": agent,
+        "reportName": report_name or agent,
         "token": token,
         "command": command,
         "exitCode": result["exitCode"],
@@ -387,12 +715,189 @@ def _run_agent_check(
             "window": tap_window,
             "token": tap_token,
             "upstreamStatuses": upstream_statuses,
+            "matchedPaths": matched_paths,
         },
         "diagnostic": diagnostic,
         "ok": transport_check_ok,
         "outcome": outcome,
         "productOk": product_ok,
     }
+
+
+def _run_openclaw_family_checks(
+    *,
+    setup_command: Sequence[str],
+    repo_root: Path,
+    env: Dict[str, str],
+    gateway_base_url: str,
+    openclaw_config_path: Path,
+    openclaw_models_cache_path: Path,
+    run_dir: Path,
+    run_id: str,
+    timeout_seconds: int,
+    gateway_host: str,
+    scenarios: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    reports: List[Dict[str, object]] = []
+    for index, scenario in enumerate(scenarios, start=1):
+        if bool(scenario.get("skipped")):
+            reports.append(
+                {
+                    "name": "openclaw",
+                    "reportName": str(scenario.get("name") or f"openclaw:{index}"),
+                    "family": scenario.get("family"),
+                    "ok": True,
+                    "outcome": "skipped",
+                    "productOk": True,
+                    "diagnostic": str(scenario.get("reason") or "scenario skipped"),
+                    "tap": {"window": {"eventCount": 0, "successCount": 0, "paths": []}},
+                }
+            )
+            continue
+
+        family = str(scenario.get("family") or "")
+        provider_key = str(scenario.get("providerKey") or "")
+        real_base_url = str(scenario.get("realBaseUrl") or "").strip()
+        if not provider_key or not real_base_url:
+            reports.append(
+                {
+                    "name": "openclaw",
+                    "reportName": str(scenario.get("name") or f"openclaw:{index}"),
+                    "family": family,
+                    "ok": False,
+                    "outcome": "product_failed",
+                    "productOk": False,
+                    "diagnostic": "OpenClaw family scenario is missing provider or upstream base URL.",
+                    "tap": {"window": {"eventCount": 0, "successCount": 0, "paths": []}},
+                }
+            )
+            continue
+
+        family_slug = _slug_token_part(str(scenario.get("name") or family))
+        tap_jsonl_path = run_dir / f"{family_slug}-tap-exchanges.jsonl"
+        tap_stdout_path = run_dir / f"{family_slug}-tap.log"
+        tap_port = _free_port()
+        family_tap_base_url = f"http://{gateway_host}:{tap_port}"
+        tap_command = [
+            sys.executable,
+            str(repo_root / "scripts" / "upstream_tap_proxy.py"),
+            "--host",
+            gateway_host,
+            "--port",
+            str(tap_port),
+            "--target-base-url",
+            real_base_url,
+            "--log-jsonl",
+            str(tap_jsonl_path),
+        ]
+        tap_process: Optional[subprocess.Popen] = None
+        tap_log_handle = None
+        try:
+            tap_process, tap_log_handle = _start_logged_process(
+                command=tap_command,
+                cwd=repo_root,
+                env=env,
+                log_path=tap_stdout_path,
+            )
+            if not _wait_for_url(
+                f"{family_tap_base_url}/healthz",
+                timeout_seconds=max(10, min(timeout_seconds, 40)),
+            ):
+                raise RuntimeError(
+                    f"OpenClaw family tap proxy failed to become healthy for {family}"
+                )
+
+            family_base_url = (
+                family_tap_base_url
+                if family == "anthropic-messages"
+                else f"{family_tap_base_url}/v1"
+            )
+            scenario_patch = _configure_openclaw_supported_family(
+                config_path=openclaw_config_path,
+                models_cache_path=openclaw_models_cache_path,
+                provider_key=provider_key,
+                model_ref=str(scenario.get("modelRef") or ""),
+                api_family=family,
+                base_url=family_base_url,
+                provider_fields=dict(scenario.get("providerFields") or {}),
+            )
+            scenario_patch_path = run_dir / f"{family_slug}-scenario.json"
+            _write_json(scenario_patch_path, scenario_patch)
+
+            setup_payload, setup_result = _run_json_cli_command(
+                command=[
+                    *setup_command,
+                    "--json",
+                    "--apply-openclaw",
+                    "--openclaw-config-path",
+                    str(openclaw_config_path),
+                    "--openclaw-models-cache-path",
+                    str(openclaw_models_cache_path),
+                    "--openclaw-auth-mode",
+                    "native",
+                    "--gateway-base-url",
+                    gateway_base_url,
+                ],
+                cwd=repo_root,
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+            if int(setup_result["exitCode"]) != 0 or not setup_payload.get("success"):
+                raise RuntimeError(
+                    f"openclaw family setup failed for {family}: exit={setup_result['exitCode']} payload={setup_payload}"
+                )
+
+            agent_report = _run_agent_check(
+                agent="openclaw",
+                index=index,
+                run_id=run_id,
+                report_name=str(scenario.get("name") or f"openclaw:{family}"),
+                model=str(scenario.get("modelRef") or ""),
+                claude_model="",
+                repo_root=repo_root,
+                run_dir=run_dir,
+                env=env,
+                timeout_seconds=timeout_seconds,
+                claude_settings_path=None,
+                tap_jsonl_path=tap_jsonl_path,
+                expected_tap_path_fragment=str(
+                    scenario.get("expectedTapPathFragment") or ""
+                )
+                or None,
+            )
+            agent_report["family"] = family
+            agent_report["providerKey"] = provider_key
+            agent_report["modelRef"] = scenario.get("modelRef")
+            agent_report["realBaseUrl"] = real_base_url
+            agent_report["tap"]["logPath"] = str(tap_jsonl_path)
+            agent_report["tap"]["stdoutPath"] = str(tap_stdout_path)
+            agent_report["scenarioPatch"] = scenario_patch
+            agent_report["setup"] = setup_payload.get("openclaw")
+            reports.append(agent_report)
+        except Exception as error:
+            reports.append(
+                {
+                    "name": "openclaw",
+                    "reportName": str(scenario.get("name") or f"openclaw:{family}"),
+                    "family": family,
+                    "providerKey": provider_key,
+                    "modelRef": scenario.get("modelRef"),
+                    "realBaseUrl": real_base_url,
+                    "ok": False,
+                    "outcome": "product_failed",
+                    "productOk": False,
+                    "diagnostic": str(error),
+                    "tap": {
+                        "window": {"eventCount": 0, "successCount": 0, "paths": []},
+                        "logPath": str(tap_jsonl_path),
+                        "stdoutPath": str(tap_stdout_path),
+                    },
+                }
+            )
+        finally:
+            _stop_process(tap_process)
+            _close_handle(tap_log_handle)
+    return reports
 
 
 def _request_with_bytes(
@@ -664,6 +1169,39 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="OpenAI-compatible model name used for codex/opencode/openclaw smoke prompts",
     )
     parser.add_argument(
+        "--openclaw-families",
+        default="openai-completions,anthropic-messages",
+        help=(
+            "Comma-separated OpenClaw families to exercise when openclaw is requested "
+            f"({', '.join(SUPPORTED_OPENCLAW_FAMILIES)})"
+        ),
+    )
+    parser.add_argument(
+        "--openclaw-openai-provider",
+        default="",
+        help="Optional OpenClaw provider id to force for the openai-completions family",
+    )
+    parser.add_argument(
+        "--openclaw-openai-model",
+        default="",
+        help="Optional OpenClaw model id/ref to force for the openai-completions family",
+    )
+    parser.add_argument(
+        "--openclaw-anthropic-provider",
+        default=DEFAULT_OPENCLAW_ANTHROPIC_PROVIDER,
+        help="OpenClaw provider id used for the anthropic-messages family",
+    )
+    parser.add_argument(
+        "--openclaw-anthropic-model",
+        default=DEFAULT_OPENCLAW_ANTHROPIC_MODEL,
+        help="OpenClaw model id/ref used for the anthropic-messages family",
+    )
+    parser.add_argument(
+        "--openclaw-anthropic-base-url",
+        default=DEFAULT_OPENCLAW_ANTHROPIC_BASE_URL,
+        help="Upstream base URL used when synthesizing the OpenClaw anthropic family provider",
+    )
+    parser.add_argument(
         "--claude-model",
         default="sonnet",
         help="Claude model alias/name used for claude smoke prompts",
@@ -787,6 +1325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "claudeHookTap": None,
         "doctor": None,
         "setup": None,
+        "openclawFamilyScenarios": [],
         "gatewayChecks": [],
         "agents": [],
         "error": None,
@@ -817,6 +1356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         agents = _parse_agents(args.agents)
         needs_claude = "claude" in agents
         needs_openai_agents = any(agent != "claude" for agent in agents)
+        needs_managed_gateway_checks = any(agent in {"codex", "opencode"} for agent in agents)
         report["mode"] = (
             "live-agents"
             if needs_claude and needs_openai_agents
@@ -874,6 +1414,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["sandbox"]["seededOpenCode"] = seeded_opencode
         report["sandbox"]["seededOpenClaw"] = seeded_openclaw
         report["sandbox"]["claudeUsesHostAuthContext"] = needs_claude
+
+        openclaw_family_scenarios: List[Dict[str, object]] = []
+        if "openclaw" in agents:
+            openclaw_family_scenarios = _resolve_openclaw_family_scenarios(
+                paths=paths,
+                args=args,
+            )
+            report["openclawFamilyScenarios"] = [
+                {
+                    key: scenario.get(key)
+                    for key in (
+                        "name",
+                        "family",
+                        "providerKey",
+                        "modelRef",
+                        "realBaseUrl",
+                        "apiFamily",
+                        "expectedTapPathFragment",
+                        "source",
+                        "skipped",
+                        "reason",
+                    )
+                    if key in scenario
+                }
+                for scenario in openclaw_family_scenarios
+            ]
 
         gateway_port = args.gateway_port if args.gateway_port > 0 else _free_port()
         tap_port = args.tap_port if args.tap_port > 0 else _free_port()
@@ -1068,19 +1634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["setup"] = setup_payload
         _write_json(setup_payload_path, setup_payload)
 
-        if needs_openai_agents and str(setup_payload.get("openclaw", {}).get("authMode") or "") != "native":
-            report["openclawLiveModelPatch"] = _rewrite_openclaw_model_for_live(
-                config_path=paths["openclaw_config"],
-                models_cache_path=paths["openclaw_models_cache"],
-                model_id=args.model,
-            )
-        else:
-            report["openclawLiveModelPatch"] = {
-                "skipped": True,
-                "reason": "native-auth OpenClaw smoke uses the copied local provider/model without live-model override",
-            }
-
-        if needs_openai_agents and bool(upstream_selection.get("ready")):
+        if needs_managed_gateway_checks and bool(upstream_selection.get("ready")):
             gateway_check_base_url = f"{gateway_root_url}/clients/codex/v1"
             report["gatewayChecks"] = list(
                 _run_gateway_smoke_checks(
@@ -1094,7 +1648,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                 )
             )
-        elif needs_openai_agents:
+        elif needs_managed_gateway_checks:
             report["gatewayChecks"] = [
                 {
                     "name": "managed-upstream-gateway-checks",
@@ -1103,13 +1657,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "reason": "native-auth-only run; generic /responses gateway probes require an explicit reusable managed upstream",
                 }
             ]
+        else:
+            report["gatewayChecks"] = [
+                {
+                    "name": "managed-upstream-gateway-checks",
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "agent subset does not use the generic managed OpenAI-compatible gateway probes",
+                }
+            ]
 
         for index, agent in enumerate(agents, start=1):
+            if agent == "openclaw":
+                report["agents"].extend(
+                    _run_openclaw_family_checks(
+                        setup_command=runtime.setup_command,
+                        repo_root=repo_root,
+                        env=env,
+                        gateway_base_url=gateway_base_url,
+                        openclaw_config_path=paths["openclaw_config"],
+                        openclaw_models_cache_path=paths["openclaw_models_cache"],
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        timeout_seconds=args.command_timeout_seconds,
+                        gateway_host=args.gateway_host,
+                        scenarios=openclaw_family_scenarios,
+                    )
+                )
+                continue
+
             report["agents"].append(
                 _run_agent_check(
                     agent=agent,
                     index=index,
                     run_id=run_id,
+                    report_name=None,
                     model=args.model,
                     claude_model=args.claude_model,
                     repo_root=repo_root,
@@ -1136,7 +1718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         gateway_checks_ok = True
-        if needs_openai_agents and bool(upstream_selection.get("ready")):
+        if needs_managed_gateway_checks and bool(upstream_selection.get("ready")):
             gateway_checks_ok = all(
                 bool(item.get("productOk", item.get("ok")))
                 for item in report.get("gatewayChecks", [])
@@ -1173,7 +1755,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         success_count = window.get("successCount") if isinstance(window, dict) else None
         print(
             "[smoke-agent-matrix] "
-            f"{agent_report.get('name')}: ok={agent_report.get('ok')} outcome={agent_report.get('outcome')} "
+            f"{agent_report.get('reportName') or agent_report.get('name')}: "
+            f"ok={agent_report.get('ok')} outcome={agent_report.get('outcome')} "
             f"exit={agent_report.get('exitCode')} tapEvents={event_count} tap2xx={success_count}"
         )
 

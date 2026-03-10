@@ -41,13 +41,32 @@ class TestSmokeClientSetupFlows(unittest.TestCase):
                 models_cache = (
                     Path(temp_dir) / "agents" / "main" / "agent" / "models.json"
                 )
+                openclaw_config.write_text(
+                    json.dumps(
+                        {
+                            "agents": {
+                                "defaults": {
+                                    "model": {"primary": "openai/gpt-4.1"}
+                                }
+                            },
+                            "models": {
+                                "providers": {
+                                    "openai": {
+                                        "api": "openai-completions",
+                                        "baseUrl": "https://api.openai.com/v1",
+                                    }
+                                }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 gateway_base_url = f"{gateway.base_url}/v1"
 
                 apply_code, apply_payload = _run_setup_json(
                     [
                         "--json",
                         "--apply-openclaw",
-                        "--create-openclaw-config",
                         "--openclaw-config-path",
                         str(openclaw_config),
                         "--openclaw-models-cache-path",
@@ -58,21 +77,28 @@ class TestSmokeClientSetupFlows(unittest.TestCase):
                 )
                 self.assertEqual(apply_code, 0)
                 self.assertTrue(apply_payload["success"])
+                self.assertTrue(apply_payload["openclaw"]["supported"])
+                self.assertEqual(
+                    apply_payload["openclaw"]["apiFamily"],
+                    "openai-completions",
+                )
 
                 config_payload = json.loads(openclaw_config.read_text(encoding="utf-8"))
-                provider = config_payload["models"]["providers"]["modeio-middleware"]
+                provider = config_payload["models"]["providers"]["openai"]
                 self.assertEqual(
                     provider["baseUrl"],
-                    f"{gateway.base_url}/clients/openclaw/v1",
+                    f"{gateway.base_url}/clients/openclaw/openai/v1",
                 )
                 self.assertEqual(
                     config_payload["agents"]["defaults"]["model"]["primary"],
-                    "modeio-middleware/middleware-default",
+                    "openai/gpt-4.1",
                 )
 
                 models_payload = json.loads(models_cache.read_text(encoding="utf-8"))
-                self.assertIn(
-                    "modeio-middleware", models_payload["models"]["providers"]
+                self.assertIn("openai", models_payload["models"]["providers"])
+                self.assertEqual(
+                    models_payload["models"]["providers"]["openai"]["baseUrl"],
+                    f"{gateway.base_url}/clients/openclaw/openai/v1",
                 )
 
                 uninstall_code, uninstall_payload = _run_setup_json(
@@ -92,14 +118,14 @@ class TestSmokeClientSetupFlows(unittest.TestCase):
                 self.assertTrue(uninstall_payload["success"])
 
                 config_after = json.loads(openclaw_config.read_text(encoding="utf-8"))
-                self.assertNotIn(
-                    "modeio-middleware",
-                    config_after.get("models", {}).get("providers", {}),
+                self.assertEqual(
+                    config_after["models"]["providers"]["openai"]["baseUrl"],
+                    "https://api.openai.com/v1",
                 )
                 models_after = json.loads(models_cache.read_text(encoding="utf-8"))
-                self.assertNotIn(
-                    "modeio-middleware",
+                self.assertEqual(
                     models_after.get("models", {}).get("providers", {}),
+                    {},
                 )
         finally:
             if gateway is not None:

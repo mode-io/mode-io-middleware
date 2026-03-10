@@ -8,7 +8,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Pattern, Sequence, Tuple
 
-from modeio_middleware.core.contracts import ENDPOINT_CHAT_COMPLETIONS, ENDPOINT_RESPONSES
+from modeio_middleware.core.contracts import (
+    ENDPOINT_ANTHROPIC_MESSAGES,
+    ENDPOINT_CHAT_COMPLETIONS,
+    ENDPOINT_RESPONSES,
+)
 
 TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 
@@ -395,7 +399,7 @@ def shield_request_body(
     entries: List[Dict[str, str]] = []
     counters: Dict[str, int] = {}
 
-    if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
+    if endpoint_kind in {ENDPOINT_CHAT_COMPLETIONS, ENDPOINT_ANTHROPIC_MESSAGES}:
         updated_body, redaction_count = _shield_chat_request_body(
             body,
             request_id=request_id,

@@ -104,9 +104,9 @@ class TestClientAuth(unittest.TestCase):
                 json.dumps(
                     {
                         "profiles": {
-                            "openai-codex:default": {
-                                "provider": "openai-codex",
-                                "access": "eyJhbGciOi-openclaw",
+                            "openai:default": {
+                                "provider": "openai",
+                                "apiKey": "sk-openclaw-openai",
                             }
                         }
                     }
@@ -118,10 +118,10 @@ class TestClientAuth(unittest.TestCase):
                 authorization = resolve_client_upstream_authorization(
                     {"Authorization": "Bearer modeio-middleware"},
                     client_name=CLIENT_OPENCLAW,
-                    client_provider_name="openai-codex",
+                    client_provider_name="openai",
                 )
 
-        self.assertEqual(authorization, "Bearer eyJhbGciOi-openclaw")
+        self.assertEqual(authorization, "Bearer sk-openclaw-openai")
 
     def test_opencode_bridge_uses_configured_openai_api_key(self):
         with TemporaryDirectory() as temp_dir:
@@ -277,9 +277,9 @@ class TestClientAuth(unittest.TestCase):
                 json.dumps(
                     {
                         "profiles": {
-                            "openai-codex:default": {
-                                "provider": "openai-codex",
-                                "access": "eyJhbGciOi-openclaw",
+                            "openai:default": {
+                                "provider": "openai",
+                                "apiKey": "sk-openclaw-openai",
                             }
                         }
                     }
@@ -288,13 +288,188 @@ class TestClientAuth(unittest.TestCase):
             )
 
             with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
-                inspection = inspect_openclaw_native_auth("openai-codex")
+                inspection = inspect_openclaw_native_auth("openai")
 
         self.assertTrue(inspection["ready"])
-        self.assertEqual(inspection["providerId"], "openai-codex")
+        self.assertEqual(inspection["providerId"], "openai")
         self.assertEqual(inspection["strategy"], "auth-profile")
         self.assertEqual(inspection["transport"], "openai_compat")
         self.assertNotIn("authorization", inspection)
+
+    def test_openclaw_inspection_prefers_current_provider_models_cache_before_fallback(self):
+        with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
+            agent_dir = state_dir / "agents" / "main" / "agent"
+            agent_dir.mkdir(parents=True)
+            (agent_dir / "auth-profiles.json").write_text(
+                json.dumps({"profiles": {}}),
+                encoding="utf-8",
+            )
+            (agent_dir / "models.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "zenmux": {
+                                "api": "openai-completions",
+                                "baseUrl": "http://127.0.0.1:8787/clients/openclaw/zenmux/v1",
+                                "apiKey": "sk-zenmux-current",
+                                "models": [{"id": "openai/gpt-5.3-codex"}],
+                            },
+                            "openrouter": {
+                                "api": "openai-completions",
+                                "baseUrl": "https://openrouter.ai/api/v1",
+                                "apiKey": "sk-openrouter-fallback",
+                                "models": [{"id": "auto"}],
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (state_dir / "openclaw.json.modeio-route.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "zenmux": {
+                                "providerId": "zenmux",
+                                "providerKey": "zenmux",
+                                "apiFamily": "openai-completions",
+                                "originalBaseUrl": "http://127.0.0.1:50908/v1",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                inspection = inspect_openclaw_native_auth("zenmux")
+
+        self.assertTrue(inspection["ready"])
+        self.assertEqual(inspection["providerId"], "zenmux")
+        self.assertEqual(inspection["strategy"], "models-cache")
+        self.assertEqual(inspection["authSource"], "models-cache:zenmux")
+        self.assertEqual(inspection["upstreamBaseUrl"], "http://127.0.0.1:50908/v1")
+
+    def test_openclaw_models_cache_lookup_normalizes_provider_key(self):
+        resolver = CredentialResolver()
+        with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
+            agent_dir = state_dir / "agents" / "main" / "agent"
+            agent_dir.mkdir(parents=True)
+            (state_dir / "openclaw.json").write_text(
+                json.dumps(
+                    {
+                        "agents": {"defaults": {"model": {"primary": "zenmux-proxy/gpt-5.3-codex"}}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (agent_dir / "models.json").write_text(
+                json.dumps(
+                    {
+                        "models": {
+                            "providers": {
+                                "zenmux_proxy": {
+                                    "api": "openai-completions",
+                                    "apiKey": "sk-zenmux-proxy",
+                                    "baseUrl": "http://127.0.0.1:8787/clients/openclaw/zenmux-proxy/v1",
+                                    "models": [{"id": "gpt-5.3-codex"}],
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (state_dir / "openclaw.json.modeio-route.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "zenmux-proxy": {
+                                "providerId": "zenmux-proxy",
+                                "apiFamily": "openai-completions",
+                                "originalBaseUrl": "http://127.0.0.1:50908/v1",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                inspection = resolver.inspect(
+                    client_name=CLIENT_OPENCLAW,
+                    provider_name="zenmux-proxy",
+                )
+
+        self.assertTrue(inspection.ready)
+        self.assertEqual(inspection.provider_id, "zenmux-proxy")
+        self.assertEqual(inspection.strategy, "models-cache")
+        self.assertEqual(inspection.auth_source, "models-cache:zenmux-proxy")
+        self.assertEqual(
+            inspection.metadata.get("upstreamBaseUrl"),
+            "http://127.0.0.1:50908/v1",
+        )
+
+    def test_openclaw_anthropic_inspection_uses_anthropic_family(self):
+        with TemporaryDirectory() as temp_dir:
+            agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
+            agent_dir.mkdir(parents=True)
+            (agent_dir / "auth-profiles.json").write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "anthropic:default": {
+                                "provider": "anthropic",
+                                "apiKey": "sk-anthropic-openclaw",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                inspection = inspect_openclaw_native_auth("anthropic")
+
+        self.assertTrue(inspection["ready"])
+        self.assertEqual(inspection["providerId"], "anthropic")
+        self.assertEqual(inspection["apiFamily"], "anthropic-messages")
+        self.assertEqual(inspection["strategy"], "auth-profile")
+        self.assertEqual(inspection["transport"], "openai_compat")
+        self.assertNotIn("authorization", inspection)
+
+    def test_openclaw_anthropic_oauth_token_preserves_bearer_auth(self):
+        resolver = CredentialResolver()
+        with TemporaryDirectory() as temp_dir:
+            agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
+            agent_dir.mkdir(parents=True)
+            (agent_dir / "auth-profiles.json").write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "anthropic:manual": {
+                                "provider": "anthropic",
+                                "token": "sk-ant-oat-subscription-token",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                inspection = resolver.inspect(
+                    client_name=CLIENT_OPENCLAW,
+                    provider_name="anthropic",
+                )
+
+        self.assertTrue(inspection.ready)
+        self.assertEqual(inspection.provider_id, "anthropic")
+        self.assertEqual(inspection.auth_kind, "token")
+        self.assertEqual(inspection.authorization, "Bearer sk-ant-oat-subscription-token")
+        self.assertEqual(inspection.resolved_headers, {})
 
     def test_openclaw_selection_resolver_skips_profile_in_cooldown(self):
         health = CredentialHealthStore()

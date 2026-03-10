@@ -11,6 +11,7 @@ from modeio_middleware.core.profiles import normalize_profile_name
 
 ENDPOINT_CHAT_COMPLETIONS = "chat_completions"
 ENDPOINT_RESPONSES = "responses"
+ENDPOINT_ANTHROPIC_MESSAGES = "anthropic_messages"
 
 HOOK_ACTION_ALLOW = "allow"
 HOOK_ACTION_MODIFY = "modify"
@@ -92,11 +93,34 @@ def validate_responses_payload(body: Dict[str, Any]) -> bool:
     return _normalize_stream_flag(body)
 
 
+def validate_anthropic_messages_payload(body: Dict[str, Any]) -> bool:
+    if not isinstance(body, dict):
+        raise MiddlewareError(
+            400,
+            "MODEIO_VALIDATION_ERROR",
+            "request body must be a JSON object",
+        )
+
+    _require_non_empty_string(body, "model")
+
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise MiddlewareError(
+            400,
+            "MODEIO_VALIDATION_ERROR",
+            "field 'messages' must be a non-empty array",
+        )
+
+    return _normalize_stream_flag(body)
+
+
 def validate_endpoint_payload(endpoint_kind: str, body: Dict[str, Any]) -> bool:
     if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
         return validate_chat_payload(body)
     if endpoint_kind == ENDPOINT_RESPONSES:
         return validate_responses_payload(body)
+    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
+        return validate_anthropic_messages_payload(body)
     raise MiddlewareError(
         500,
         "MODEIO_INTERNAL_ERROR",

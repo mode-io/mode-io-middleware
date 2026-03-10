@@ -14,7 +14,11 @@ from modeio_middleware.core.client_auth import (
     inspect_client_native_auth,
     record_client_native_failure,
 )
-from modeio_middleware.core.contracts import ENDPOINT_CHAT_COMPLETIONS, ENDPOINT_RESPONSES
+from modeio_middleware.core.contracts import (
+    ENDPOINT_ANTHROPIC_MESSAGES,
+    ENDPOINT_CHAT_COMPLETIONS,
+    ENDPOINT_RESPONSES,
+)
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.provider_auth import TRANSPORT_CODEX_NATIVE
 
@@ -43,6 +47,13 @@ RESPONSE_STRIP_HEADERS = HOP_BY_HOP_HEADERS | {
     "content-length",
     "content-type",
 }
+AUTH_HEADER_NAMES = {
+    "authorization",
+    "x-api-key",
+    "api-key",
+}
+ANTHROPIC_VERSION_HEADER = "anthropic-version"
+ANTHROPIC_DEFAULT_VERSION = "2023-06-01"
 
 
 @dataclass(frozen=True)
@@ -84,6 +95,7 @@ def _build_upstream_headers(
     *,
     client_name: str,
     client_provider_name: str | None,
+    endpoint_kind: str,
     upstream_api_key_env: str,
 ) -> tuple[Dict[str, str], Any, bool]:
     headers: Dict[str, str] = {}
@@ -99,28 +111,34 @@ def _build_upstream_headers(
         client_name=client_name,
         client_provider_name=client_provider_name,
     )
-    incoming_authorization = None
+    explicit_incoming_auth = False
     for key, value in incoming_headers.items():
-        if key.lower() == "authorization":
-            incoming_authorization = str(value)
-            break
-    explicit_incoming_auth = bool(
-        incoming_authorization
-        and incoming_authorization.strip().lower()
-        not in {"bearer modeio-middleware", "modeio-middleware"}
-    )
-    if explicit_incoming_auth:
-        authorization = incoming_authorization
-    else:
-        authorization = inspection.authorization if inspection.ready else None
+        lower_key = key.lower()
+        if lower_key not in AUTH_HEADER_NAMES:
+            continue
+        if _looks_like_placeholder(str(value)):
+            continue
+        explicit_incoming_auth = True
+        break
+
+    authorization = None
+    if not explicit_incoming_auth and inspection.ready:
+        _strip_auth_headers(headers)
+        if inspection.resolved_headers:
+            headers.update(inspection.resolved_headers)
+        elif inspection.authorization:
+            authorization = inspection.authorization
 
     fallback_key = os.environ.get(upstream_api_key_env, "").strip()
     used_managed_fallback = False
     if fallback_key and not explicit_incoming_auth and not inspection.ready:
+        _strip_auth_headers(headers)
         authorization = f"Bearer {fallback_key}"
         used_managed_fallback = True
     if authorization:
         headers["Authorization"] = authorization
+    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
+        _ensure_header(headers, ANTHROPIC_VERSION_HEADER, ANTHROPIC_DEFAULT_VERSION)
     account_id = inspection.metadata.get("accountId") if isinstance(inspection.metadata, dict) else None
     if isinstance(account_id, str) and account_id.strip():
         headers.setdefault("ChatGPT-Account-Id", account_id.strip())
@@ -145,6 +163,11 @@ def _resolve_upstream_url(config: "GatewayRuntimeConfig", endpoint_kind: str) ->
         return config.upstream_chat_completions_url
     if endpoint_kind == ENDPOINT_RESPONSES:
         return config.upstream_responses_url
+    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
+        return _derive_endpoint_url(
+            config.upstream_responses_url,
+            endpoint_kind=endpoint_kind,
+        )
     raise MiddlewareError(
         500,
         "MODEIO_INTERNAL_ERROR",
@@ -170,6 +193,58 @@ def _resolve_models_url(config: "GatewayRuntimeConfig") -> str:
     )
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized in {"bearer modeio-middleware", "modeio-middleware"}
+
+
+def _strip_auth_headers(headers: Dict[str, str]) -> None:
+    for key in list(headers.keys()):
+        if key.lower() in AUTH_HEADER_NAMES:
+            headers.pop(key, None)
+
+
+def _ensure_header(headers: Dict[str, str], name: str, value: str) -> None:
+    target = name.lower()
+    for key in headers:
+        if key.lower() == target:
+            return
+    headers[name] = value
+
+
+def _derive_endpoint_url(base_url: str, *, endpoint_kind: str) -> str:
+    normalized_base = str(base_url).rstrip("/")
+    for suffix in ("/chat/completions", "/responses", "/models", "/v1/messages"):
+        if normalized_base.endswith(suffix):
+            normalized_base = normalized_base[: -len(suffix)]
+            break
+    if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
+        return f"{normalized_base}/chat/completions"
+    if endpoint_kind == ENDPOINT_RESPONSES:
+        return f"{normalized_base}/responses"
+    if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
+        if normalized_base.endswith("/v1"):
+            return f"{normalized_base}/messages"
+        return f"{normalized_base}/v1/messages"
+    raise MiddlewareError(
+        500,
+        "MODEIO_INTERNAL_ERROR",
+        f"unsupported endpoint kind '{endpoint_kind}'",
+        retryable=False,
+    )
+
+
+def _derive_models_url(base_url: str, *, api_family: str | None = None) -> str:
+    normalized_base = str(base_url).rstrip("/")
+    for suffix in ("/chat/completions", "/responses", "/models", "/v1/messages"):
+        if normalized_base.endswith(suffix):
+            normalized_base = normalized_base[: -len(suffix)]
+            break
+    if api_family == "anthropic-messages" and not normalized_base.endswith("/v1"):
+        return f"{normalized_base}/v1/models"
+    return f"{normalized_base}/models"
+
+
 def _transport_endpoint_url(
     *,
     config: "GatewayRuntimeConfig",
@@ -178,13 +253,12 @@ def _transport_endpoint_url(
     used_managed_fallback: bool,
 ) -> str:
     metadata = getattr(inspection, "metadata", None)
-    override_base = metadata.get("overrideBaseUrl") if isinstance(metadata, dict) else None
+    api_family = metadata.get("apiFamily") if isinstance(metadata, dict) else None
+    override_base = None
+    if isinstance(metadata, dict):
+        override_base = metadata.get("upstreamBaseUrl") or metadata.get("overrideBaseUrl")
     if isinstance(override_base, str) and override_base.strip() and not used_managed_fallback:
-        normalized_base = override_base.rstrip("/")
-        if endpoint_kind == ENDPOINT_RESPONSES:
-            return f"{normalized_base}/responses"
-        if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
-            return f"{normalized_base}/chat/completions"
+        return _derive_endpoint_url(override_base, endpoint_kind=endpoint_kind)
     if _use_codex_native_transport(inspection, used_managed_fallback):
         base_url = metadata.get("nativeBaseUrl") if isinstance(metadata, dict) else None
         if isinstance(base_url, str) and base_url.strip():
@@ -192,6 +266,8 @@ def _transport_endpoint_url(
             if endpoint_kind == ENDPOINT_RESPONSES:
                 return f"{normalized_base}/responses"
             if endpoint_kind == ENDPOINT_CHAT_COMPLETIONS:
+                return f"{normalized_base}/responses"
+            if endpoint_kind == ENDPOINT_ANTHROPIC_MESSAGES:
                 return f"{normalized_base}/responses"
     return _resolve_upstream_url(config, endpoint_kind)
 
@@ -203,9 +279,12 @@ def _transport_models_url(
     used_managed_fallback: bool,
 ) -> str:
     metadata = getattr(inspection, "metadata", None)
-    override_base = metadata.get("overrideBaseUrl") if isinstance(metadata, dict) else None
+    api_family = metadata.get("apiFamily") if isinstance(metadata, dict) else None
+    override_base = None
+    if isinstance(metadata, dict):
+        override_base = metadata.get("upstreamBaseUrl") or metadata.get("overrideBaseUrl")
     if isinstance(override_base, str) and override_base.strip() and not used_managed_fallback:
-        return override_base.rstrip("/") + "/models"
+        return _derive_models_url(override_base, api_family=api_family)
     if _use_codex_native_transport(inspection, used_managed_fallback):
         base_url = metadata.get("nativeBaseUrl") if isinstance(metadata, dict) else None
         if isinstance(base_url, str) and base_url.strip():
@@ -371,6 +450,7 @@ def forward_upstream_json(
         incoming_headers,
         client_name=client_name,
         client_provider_name=client_provider_name,
+        endpoint_kind=endpoint_kind,
         upstream_api_key_env=config.upstream_api_key_env,
     )
     upstream_url = _transport_endpoint_url(
@@ -473,6 +553,7 @@ def forward_upstream_stream(
         incoming_headers,
         client_name=client_name,
         client_provider_name=client_provider_name,
+        endpoint_kind=endpoint_kind,
         upstream_api_key_env=config.upstream_api_key_env,
     )
     headers["Accept"] = "text/event-stream"
@@ -560,6 +641,7 @@ def forward_upstream_models_json(
         incoming_headers,
         client_name=client_name,
         client_provider_name=client_provider_name,
+        endpoint_kind=ENDPOINT_RESPONSES,
         upstream_api_key_env=config.upstream_api_key_env,
     )
     upstream_url = _transport_models_url(

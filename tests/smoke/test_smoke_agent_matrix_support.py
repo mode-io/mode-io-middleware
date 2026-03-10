@@ -13,6 +13,10 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from smoke_agent_matrix import parse_args  # noqa: E402
+from smoke_agent_matrix import (  # noqa: E402
+    _parse_openclaw_families,
+    _resolve_openclaw_family_scenarios,
+)
 from smoke_matrix.agents import build_agent_command  # noqa: E402
 from smoke_matrix.common import (  # noqa: E402
     default_repo_root,
@@ -20,7 +24,10 @@ from smoke_matrix.common import (  # noqa: E402
     default_upstream_model,
     parse_agents,
 )
-from smoke_matrix.sandbox import build_sandbox_paths  # noqa: E402
+from smoke_matrix.sandbox import (  # noqa: E402
+    build_sandbox_paths,
+    configure_openclaw_supported_family,
+)
 
 
 class TestSmokeAgentMatrixSupport(unittest.TestCase):
@@ -80,6 +87,19 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(args.model, "gpt-4o-mini")
         self.assertEqual(args.install_mode, "repo")
         self.assertEqual(args.install_target, "")
+        self.assertEqual(
+            args.openclaw_families,
+            "openai-completions,anthropic-messages",
+        )
+        self.assertEqual(args.openclaw_anthropic_provider, "anthropic")
+        self.assertEqual(
+            args.openclaw_anthropic_model,
+            "anthropic/claude-sonnet-4-6",
+        )
+        self.assertEqual(
+            args.openclaw_anthropic_base_url,
+            "https://api.anthropic.com",
+        )
 
     def test_parse_args_accepts_wheel_install_mode(self):
         args = parse_args(
@@ -152,6 +172,206 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
 
         self.assertEqual(args.upstream_base_url, "https://example.test/v1")
         self.assertEqual(args.model, "example-model")
+
+    def test_parse_openclaw_families_rejects_invalid_values(self):
+        with self.assertRaises(ValueError):
+            _parse_openclaw_families("openai-completions,unsupported-family")
+
+    def test_resolve_openclaw_family_scenarios_prefers_matching_openai_provider(self):
+        with TemporaryDirectory() as temp_dir:
+            paths = build_sandbox_paths(Path(temp_dir))
+            paths["openclaw_config"].parent.mkdir(parents=True, exist_ok=True)
+            paths["openclaw_models_cache"].parent.mkdir(parents=True, exist_ok=True)
+            paths["openclaw_config"].write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            paths["openclaw_models_cache"].write_text(
+                json.dumps(
+                    {
+                        "models": {
+                            "providers": {
+                                "openrouter": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://openrouter.ai/api/v1",
+                                    "models": [{"id": "auto", "name": "Auto"}],
+                                },
+                                "zenmux": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://zenmux.ai/api/v1",
+                                    "models": [
+                                        {
+                                            "id": "openai/gpt-5.3-codex",
+                                            "name": "GPT 5.3 Codex",
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            auth_profiles_path = paths["openclaw_models_cache"].parent / "auth-profiles.json"
+            auth_profiles_path.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "anthropic:manual": {
+                                "provider": "anthropic",
+                                "type": "manual",
+                                "token": "redacted-for-test",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            args = parse_args(
+                [
+                    "--model",
+                    "openai/gpt-5.4",
+                    "--openclaw-openai-model",
+                    "openai/gpt-5.3-codex",
+                ]
+            )
+            scenarios = _resolve_openclaw_family_scenarios(paths=paths, args=args)
+
+            openai_scenario = next(
+                item for item in scenarios if item.get("family") == "openai-completions"
+            )
+            self.assertEqual(openai_scenario["providerKey"], "zenmux")
+            self.assertEqual(openai_scenario["modelRef"], "zenmux/gpt-5.3-codex")
+            self.assertEqual(
+                openai_scenario["realBaseUrl"],
+                "https://zenmux.ai/api/v1",
+            )
+            self.assertEqual(openai_scenario["source"], "existing_provider")
+
+            anthropic_scenario = next(
+                item for item in scenarios if item.get("family") == "anthropic-messages"
+            )
+            self.assertEqual(anthropic_scenario["providerKey"], "anthropic")
+            self.assertEqual(
+                anthropic_scenario["modelRef"],
+                "anthropic/claude-sonnet-4-6",
+            )
+            self.assertEqual(
+                anthropic_scenario["realBaseUrl"],
+                "https://api.anthropic.com",
+            )
+            self.assertEqual(
+                anthropic_scenario["source"],
+                "synthesized_from_auth_profile",
+            )
+
+    def test_resolve_openclaw_family_scenarios_prefers_specific_openai_provider_over_auto(self):
+        with TemporaryDirectory() as temp_dir:
+            paths = build_sandbox_paths(Path(temp_dir))
+            paths["openclaw_config"].parent.mkdir(parents=True, exist_ok=True)
+            paths["openclaw_models_cache"].parent.mkdir(parents=True, exist_ok=True)
+            paths["openclaw_config"].write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            paths["openclaw_models_cache"].write_text(
+                json.dumps(
+                    {
+                        "models": {
+                            "providers": {
+                                "openrouter": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://openrouter.ai/api/v1",
+                                    "models": [{"id": "auto", "name": "Auto"}],
+                                },
+                                "zenmux": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://zenmux.ai/api/v1",
+                                    "models": [
+                                        {
+                                            "id": "openai/gpt-5.3-codex",
+                                            "name": "GPT 5.3 Codex",
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            auth_profiles_path = paths["openclaw_models_cache"].parent / "auth-profiles.json"
+            auth_profiles_path.write_text(
+                json.dumps({"profiles": {}}),
+                encoding="utf-8",
+            )
+
+            scenarios = _resolve_openclaw_family_scenarios(
+                paths=paths,
+                args=parse_args([]),
+            )
+
+            openai_scenario = next(
+                item for item in scenarios if item.get("family") == "openai-completions"
+            )
+            self.assertEqual(openai_scenario["providerKey"], "zenmux")
+            self.assertEqual(
+                openai_scenario["realBaseUrl"],
+                "https://zenmux.ai/api/v1",
+            )
+
+    def test_configure_openclaw_supported_family_updates_config_and_cache(self):
+        with TemporaryDirectory() as temp_dir:
+            paths = build_sandbox_paths(Path(temp_dir))
+            result = configure_openclaw_supported_family(
+                config_path=paths["openclaw_config"],
+                models_cache_path=paths["openclaw_models_cache"],
+                provider_key="anthropic",
+                model_ref="anthropic/claude-sonnet-4-6",
+                api_family="anthropic-messages",
+                base_url="http://127.0.0.1:8787",
+                provider_fields={"authHeader": False},
+            )
+
+            self.assertTrue(result["configChanged"])
+            self.assertTrue(result["modelsCacheChanged"])
+
+            config_payload = json.loads(paths["openclaw_config"].read_text(encoding="utf-8"))
+            self.assertEqual(
+                config_payload["agents"]["defaults"]["model"]["primary"],
+                "anthropic/claude-sonnet-4-6",
+            )
+            provider = config_payload["models"]["providers"]["anthropic"]
+            self.assertEqual(provider["baseUrl"], "http://127.0.0.1:8787")
+            self.assertEqual(provider["api"], "anthropic-messages")
+            self.assertEqual(provider["authHeader"], False)
+            self.assertEqual(provider["models"][0]["id"], "claude-sonnet-4-6")
+
+            cache_payload = json.loads(
+                paths["openclaw_models_cache"].read_text(encoding="utf-8")
+            )
+            cache_provider = cache_payload["models"]["providers"]["anthropic"]
+            self.assertEqual(cache_provider["baseUrl"], "http://127.0.0.1:8787")
+            self.assertEqual(cache_provider["api"], "anthropic-messages")
+            self.assertEqual(cache_provider["authHeader"], False)
+            self.assertEqual(cache_provider["models"][0]["id"], "claude-sonnet-4-6")
 
 
 if __name__ == "__main__":
