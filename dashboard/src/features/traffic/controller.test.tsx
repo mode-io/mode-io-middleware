@@ -5,14 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { modeioMonitoringRoutes } from "../../apiRoutes";
 import { createDashboardQueryClient } from "../../queryClient";
+import { jsonResponse } from "../../test/fixtures";
 import { useTrafficMonitorState } from "./controller";
-
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 function wrapper() {
   const queryClient = createDashboardQueryClient();

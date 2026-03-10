@@ -150,17 +150,13 @@ function PluginCard({
 
       <div className="plugin-card__meta">
         <span className={`plugin-state plugin-state--${row.stateKind}`}>{row.stateKind === "enabled" ? copy.plugins.stateEnabled : row.stateKind === "attention" ? copy.plugins.stateAttention : copy.plugins.stateDisabled}</span>
-        <span className="plugin-card__meta-chip mono">{fmtPluginMode(row.working.effectiveMode, locale)}</span>
-        <span className="plugin-card__meta-chip mono">{row.plugin.hooks.join(", ") || copy.plugins.none}</span>
-        <span className="plugin-card__meta-chip mono">{fmtPluginSource(row.plugin.sourceKind, locale)}</span>
-        {row.plugin.declaredCapabilities.canPatch ? <span className="plugin-card__meta-chip mono">{copy.plugins.capabilityPatch}</span> : null}
-        {row.plugin.declaredCapabilities.canBlock ? <span className="plugin-card__meta-chip mono">{copy.plugins.capabilityBlock}</span> : null}
       </div>
 
-      <div className="plugin-card__footer">
-        <span className="plugin-card__usage mono">{copy.plugins.calls}: {row.plugin.stats.calls}</span>
-        {issue ? <span className="plugin-card__issue">{copy.plugins.issue}: {issue}</span> : null}
-      </div>
+      {issue ? (
+        <div className="plugin-card__footer">
+          <span className="plugin-card__issue">{copy.plugins.issue}: {issue}</span>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -194,13 +190,14 @@ function PluginSection({
   onDisable: (pluginName: string) => void;
   onMove: (pluginName: string, direction: -1 | 1) => void;
 }) {
+  if (rows.length === 0) return null;
+
   return (
     <section className="plugin-group">
       <div className="plugin-group__header">
         <strong className="plugin-group__title">{title}</strong>
         <span className="plugin-group__count mono">{rows.length}</span>
       </div>
-      {rows.length === 0 ? <div className="plugin-group__empty">{emptyText}</div> : null}
       <div className="plugin-group__list">
         {rows.map((row) => (
           <PluginCard

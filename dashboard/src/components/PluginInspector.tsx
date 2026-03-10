@@ -4,6 +4,7 @@ import { buildPluginInspectorActionState } from "../features/plugins/actionState
 import { fmtBoolean, fmtPluginMode, fmtPluginSource, fmtPluginValidation, getCopy } from "../i18n";
 import type { PluginWorkingState } from "../pluginManagement";
 import type { Locale, PluginInventoryItem, PluginProfileOverride } from "../types";
+import { Select } from "./Select";
 
 interface PluginInspectorProps {
   locale: Locale;
@@ -188,9 +189,6 @@ export function PluginInspector({
               {copy.plugins.enable}
             </button>
           )}
-          <button className="btn" onClick={onSave} type="button" disabled={readOnly || saving || !dirty || invalid}>
-            {saving ? copy.plugins.saving : copy.plugins.save}
-          </button>
         </div>
       </div>
 
@@ -208,26 +206,22 @@ export function PluginInspector({
               <span className={`plugin-health plugin-health--${plugin.validation.status}`}>{fmtPluginValidation(plugin.validation.status, locale)}</span>
             </div>
           </div>
-          <div className={`plugin-callout plugin-callout--${calloutTone({ invalid, requiresReview: workingState.requiresReview, enabled: workingState.enabled })}`}>
-            <div className="plugin-callout__title">{callout?.title}</div>
-            <div className="plugin-callout__detail">{callout?.detail}</div>
-          </div>
+          {(invalid || workingState.requiresReview) ? (
+            <div className={`plugin-callout plugin-callout--${calloutTone({ invalid, requiresReview: workingState.requiresReview, enabled: workingState.enabled })}`}>
+              <div className="plugin-callout__title">{callout?.title}</div>
+              <div className="plugin-callout__detail">{callout?.detail}</div>
+            </div>
+          ) : null}
           {dirty ? <div className="plugin-draft-note mono">{copy.plugins.pendingChanges}</div> : null}
         </section>
 
         <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.overview}</div>
+          <div className="plugin-section__title">{copy.plugins.details}</div>
           <div className="plugin-field-grid">
             <Field label={copy.plugins.description} value={plugin.description || copy.plugins.none} />
             <Field label={copy.plugins.version} value={plugin.version || copy.plugins.none} />
             <Field label={copy.plugins.hooks} value={plugin.hooks.join(", ") || copy.plugins.none} />
             <Field label={copy.plugins.source} value={fmtPluginSource(plugin.sourceKind, locale)} />
-          </div>
-        </section>
-
-        <section className="plugin-section">
-          <div className="plugin-section__title">{copy.plugins.profileState}</div>
-          <div className="plugin-field-grid">
             <Field label={copy.plugins.selectedProfile} value={workingState.enabled ? copy.plugins.enabledForProfile : copy.plugins.disabledForProfile} />
             <Field label={copy.plugins.chainPosition} value={workingState.position != null ? String(workingState.position + 1) : copy.plugins.none} />
             <Field label={copy.plugins.mode} value={fmtPluginMode(workingState.effectiveMode, locale)} />
@@ -237,52 +231,62 @@ export function PluginInspector({
 
         <section className="plugin-section">
           <div className="plugin-section__title">{copy.plugins.quickSettings}</div>
-          <div className="plugin-settings-grid">
-            <label className="filter-field">
+          <div className="plugin-settings-list">
+            <div className="filter-field">
               <span className="filter-field__label">{copy.plugins.mode}</span>
-              <select value={workingState.effectiveMode} aria-label={copy.plugins.mode} disabled={readOnly} onChange={(event) => onUpdate({ mode: event.target.value as PluginProfileOverride["mode"] })}>
-                <option value="observe">{fmtPluginMode("observe", locale)}</option>
-                <option value="assist">{fmtPluginMode("assist", locale)}</option>
-                <option value="enforce">{fmtPluginMode("enforce", locale)}</option>
-              </select>
+              <Select
+                value={workingState.effectiveMode}
+                options={[
+                  { value: "observe", label: fmtPluginMode("observe", locale) },
+                  { value: "assist", label: fmtPluginMode("assist", locale) },
+                  { value: "enforce", label: fmtPluginMode("enforce", locale) },
+                ]}
+                onChange={(val) => onUpdate({ mode: val as PluginProfileOverride["mode"] })}
+                aria-label={copy.plugins.mode}
+                disabled={readOnly}
+              />
               <span className="plugin-settings__hint">{copy.plugins.modeHint}</span>
-            </label>
+            </div>
 
-            <label className={`plugin-checkbox${!plugin.declaredCapabilities.canPatch ? " plugin-checkbox--disabled" : ""}`}>
-              <input
-                type="checkbox"
-                aria-label={copy.plugins.canPatch}
-                checked={workingState.effectiveCapabilitiesGrant.can_patch}
-                disabled={readOnly || !plugin.declaredCapabilities.canPatch}
-                onChange={(event) => onUpdate({
-                  capabilities_grant: {
-                    ...workingState.effectiveCapabilitiesGrant,
-                    can_patch: event.target.checked,
-                  },
-                })}
-              />
-              <span>{copy.plugins.canPatch}</span>
-              <small>{copy.plugins.patchHint}</small>
-            </label>
+            <div className="plugin-caps-row">
+              <label className={`plugin-cap-toggle${!plugin.declaredCapabilities.canPatch ? " plugin-cap-toggle--disabled" : ""}`}>
+                <input
+                  type="checkbox"
+                  aria-label={copy.plugins.canPatch}
+                  checked={workingState.effectiveCapabilitiesGrant.can_patch}
+                  disabled={readOnly || !plugin.declaredCapabilities.canPatch}
+                  onChange={(event) => onUpdate({
+                    capabilities_grant: {
+                      ...workingState.effectiveCapabilitiesGrant,
+                      can_patch: event.target.checked,
+                    },
+                  })}
+                />
+                <span>{copy.plugins.canPatch}</span>
+              </label>
+              <label className={`plugin-cap-toggle${!plugin.declaredCapabilities.canBlock ? " plugin-cap-toggle--disabled" : ""}`}>
+                <input
+                  type="checkbox"
+                  aria-label={copy.plugins.canBlock}
+                  checked={workingState.effectiveCapabilitiesGrant.can_block}
+                  disabled={readOnly || !plugin.declaredCapabilities.canBlock}
+                  onChange={(event) => onUpdate({
+                    capabilities_grant: {
+                      ...workingState.effectiveCapabilitiesGrant,
+                      can_block: event.target.checked,
+                    },
+                  })}
+                />
+                <span>{copy.plugins.canBlock}</span>
+              </label>
+            </div>
+          </div>
+        </section>
 
-            <label className={`plugin-checkbox${!plugin.declaredCapabilities.canBlock ? " plugin-checkbox--disabled" : ""}`}>
-              <input
-                type="checkbox"
-                aria-label={copy.plugins.canBlock}
-                checked={workingState.effectiveCapabilitiesGrant.can_block}
-                disabled={readOnly || !plugin.declaredCapabilities.canBlock}
-                onChange={(event) => onUpdate({
-                  capabilities_grant: {
-                    ...workingState.effectiveCapabilitiesGrant,
-                    can_block: event.target.checked,
-                  },
-                })}
-              />
-              <span>{copy.plugins.canBlock}</span>
-              <small>{copy.plugins.blockHint}</small>
-            </label>
-
-            <label className="filter-field">
+        <details className="plugin-details" open={dirty || invalid}>
+          <summary className="plugin-details__summary">{copy.plugins.advanced}</summary>
+          <div className="plugin-details__body">
+            <label className="filter-field filter-field--padded">
               <span className="filter-field__label">{copy.plugins.poolSize}</span>
               <input
                 className="input input--numeric"
@@ -307,12 +311,6 @@ export function PluginInspector({
                 }}
               />
             </label>
-          </div>
-        </section>
-
-        <details className="plugin-details" open={dirty || invalid}>
-          <summary className="plugin-details__summary">{copy.plugins.advanced}</summary>
-          <div className="plugin-details__body">
             <div className="plugin-timeout-panel">
               <div className="plugin-timeout-panel__title">{copy.plugins.timeoutOverride}</div>
               <TimeoutFields

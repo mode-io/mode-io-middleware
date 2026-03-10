@@ -1,6 +1,7 @@
 import { fmtFilterMatchCount, getCopy } from "../i18n";
 import { FILTER_OPTIONS, formatFilterChip, formatFilterValue, hasActiveFilters, resetFilters, setFilterValue } from "../monitorFilters";
 import type { Locale, MonitorFilterKey, MonitorFilters } from "../types";
+import { Select } from "./Select";
 
 interface TraceFiltersProps {
   filters: MonitorFilters;
@@ -27,20 +28,18 @@ export function TraceFilters({ filters, locale, visibleCount, onFiltersChange }:
         {FILTER_FIELDS.map((key) => {
           const value = filters[key];
           return (
-            <label key={key} className={`filter-field${value !== "all" ? " filter-field--active" : ""}`}>
+            <div key={key} className={`filter-field${value !== "all" ? " filter-field--active" : ""}`}>
               <span className="filter-field__label">{fieldLabels[key]}</span>
-                <select
-                  value={value}
-                  onChange={(event) => onFiltersChange(setFilterValue(filters, key, event.target.value as MonitorFilters[typeof key]))}
-                  aria-label={fieldLabels[key]}
-                >
-                {FILTER_OPTIONS[key].map((option) => (
-                  <option key={option} value={option}>
-                    {formatFilterValue(key, option, locale)}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <Select
+                value={value}
+                options={FILTER_OPTIONS[key].map((option) => ({
+                  value: option,
+                  label: formatFilterValue(key, option, locale),
+                }))}
+                onChange={(nextValue) => onFiltersChange(setFilterValue(filters, key, nextValue as MonitorFilters[typeof key]))}
+                aria-label={fieldLabels[key]}
+              />
+            </div>
           );
         })}
       </div>
