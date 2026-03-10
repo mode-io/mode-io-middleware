@@ -13,7 +13,8 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from modeio_middleware.core.engine import GatewayRuntimeConfig  # noqa: E402
-from modeio_middleware.http_transport import create_app  # noqa: E402
+from modeio_middleware.core.errors import MiddlewareError  # noqa: E402
+from modeio_middleware.http_transport import create_app, create_server  # noqa: E402
 
 
 class TestHttpTransport(unittest.TestCase):
@@ -64,6 +65,37 @@ class TestHttpTransport(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "MODEIO_VALIDATION_ERROR")
         self._assert_contract_headers(response)
+
+    def test_create_server_rejects_non_loopback_host_without_remote_admin_opt_in(self):
+        config = GatewayRuntimeConfig(
+            upstream_chat_completions_url="https://upstream.example/v1/chat/completions",
+            upstream_responses_url="https://upstream.example/v1/responses",
+            upstream_timeout_seconds=5,
+            upstream_api_key_env="MODEIO_TEST_UPSTREAM_KEY",
+            plugins={},
+            profiles={"dev": {"on_plugin_error": "warn", "plugins": []}},
+        )
+
+        with self.assertRaises(MiddlewareError) as error_ctx:
+            create_server("0.0.0.0", 0, config)
+
+        self.assertEqual(error_ctx.exception.code, "MODEIO_REMOTE_ADMIN_DISABLED")
+
+    def test_create_server_allows_non_loopback_host_when_opted_in(self):
+        config = GatewayRuntimeConfig(
+            upstream_chat_completions_url="https://upstream.example/v1/chat/completions",
+            upstream_responses_url="https://upstream.example/v1/responses",
+            upstream_timeout_seconds=5,
+            upstream_api_key_env="MODEIO_TEST_UPSTREAM_KEY",
+            plugins={},
+            profiles={"dev": {"on_plugin_error": "warn", "plugins": []}},
+        )
+
+        server = create_server("0.0.0.0", 0, config, allow_remote_admin=True)
+        try:
+            self.assertIsNotNone(server.server_address)
+        finally:
+            server.server_close()
 
 
 if __name__ == "__main__":

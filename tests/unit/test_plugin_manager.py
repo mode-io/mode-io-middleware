@@ -72,6 +72,36 @@ class _InvalidActionPlugin(MiddlewarePlugin):
         return {"action": "defer", "message": "removed action"}
 
 
+class _StubLease:
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.released = False
+
+    def release(self):
+        self.released = True
+
+
+class _StubRuntime:
+    def invoke(self, _hook_name, _hook_input):
+        return {"action": "pass"}
+
+
+class _FailingRuntimeManager:
+    def __init__(self):
+        self.calls = 0
+        self.first_lease = None
+
+    def acquire(self, _spec):
+        self.calls += 1
+        if self.calls == 1:
+            self.first_lease = _StubLease(_StubRuntime())
+            return self.first_lease
+        raise RuntimeError("runtime pool exhausted")
+
+    def shutdown(self):
+        return
+
+
 class TestPluginManager(unittest.TestCase):
     def setUp(self):
         register_plugin_module("modeio_middleware.tests.plugins.modify", _ModifyPlugin)
@@ -135,9 +165,32 @@ class TestPluginManager(unittest.TestCase):
         )
 
         first_active = manager.resolve_active_plugins(["modify"], {})
+        manager.shutdown_active_plugins(first_active)
         second_active = manager.resolve_active_plugins(["modify"], {})
 
         self.assertIs(first_active[0].runtime, second_active[0].runtime)
+
+    def test_resolve_active_plugins_releases_prior_leases_when_later_acquire_fails(self):
+        runtime_manager = _FailingRuntimeManager()
+        manager = PluginManager(
+            {
+                "modify": {
+                    "enabled": True,
+                    "module": "modeio_middleware.tests.plugins.modify",
+                },
+                "block": {
+                    "enabled": True,
+                    "module": "modeio_middleware.tests.plugins.block",
+                },
+            },
+            runtime_manager=runtime_manager,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "runtime pool exhausted"):
+            manager.resolve_active_plugins(["modify", "block"], {})
+
+        self.assertIsNotNone(runtime_manager.first_lease)
+        self.assertTrue(runtime_manager.first_lease.released)
 
     def test_apply_pre_request_downgrades_modify_when_connector_disallows_patch(self):
         manager = PluginManager(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 import time
 from typing import Any, Dict, Iterator, TYPE_CHECKING
@@ -16,13 +17,36 @@ if TYPE_CHECKING:
 
 MAX_RETRIES = 2
 RETRY_BACKOFF = 1.0
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+REQUEST_STRIP_HEADERS = HOP_BY_HOP_HEADERS | {"content-length", "host"}
+RESPONSE_STRIP_HEADERS = HOP_BY_HOP_HEADERS | {
+    "content-encoding",
+    "content-length",
+    "content-type",
+}
+
+
+@dataclass(frozen=True)
+class UpstreamJsonResponse:
+    payload: Dict[str, Any]
+    headers: Dict[str, str]
 
 
 class StreamingUpstreamResponse:
     def __init__(self, *, client: httpx.Client, response: httpx.Response):
         self._client = client
         self._response = response
-        self.headers = dict(response.headers.items())
+        self.content_type = str(response.headers.get("Content-Type", "")).strip()
+        self.headers = _sanitize_upstream_response_headers(response.headers)
 
     def iter_lines(self) -> Iterator[str]:
         for line in self._response.iter_lines():
@@ -50,8 +74,16 @@ def _build_upstream_headers(
     *,
     upstream_api_key_env: str,
 ) -> Dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    authorization = incoming_headers.get("authorization") or incoming_headers.get("Authorization")
+    headers: Dict[str, str] = {}
+    for key, value in incoming_headers.items():
+        key_text = str(key)
+        lower_key = key_text.lower()
+        if lower_key in REQUEST_STRIP_HEADERS or lower_key.startswith("x-modeio-"):
+            continue
+        headers[key_text] = str(value)
+
+    headers["Content-Type"] = "application/json"
+    authorization = headers.get("authorization") or headers.get("Authorization")
     if not authorization:
         fallback_key = os.environ.get(upstream_api_key_env, "").strip()
         if fallback_key:
@@ -59,6 +91,19 @@ def _build_upstream_headers(
     if authorization:
         headers["Authorization"] = authorization
     return headers
+
+
+def _sanitize_upstream_response_headers(
+    headers: httpx.Headers | Dict[str, str],
+) -> Dict[str, str]:
+    sanitized: Dict[str, str] = {}
+    for key, value in headers.items():
+        key_text = str(key)
+        lower_key = key_text.lower()
+        if lower_key in RESPONSE_STRIP_HEADERS or lower_key.startswith("x-modeio-"):
+            continue
+        sanitized[key_text] = str(value)
+    return sanitized
 
 
 def _resolve_upstream_url(config: "GatewayRuntimeConfig", endpoint_kind: str) -> str:
@@ -80,7 +125,7 @@ def forward_upstream_json(
     endpoint_kind: str,
     payload: Dict[str, Any],
     incoming_headers: Dict[str, str],
-) -> Dict[str, Any]:
+) -> UpstreamJsonResponse:
     headers = _build_upstream_headers(
         incoming_headers,
         upstream_api_key_env=config.upstream_api_key_env,
@@ -96,6 +141,7 @@ def forward_upstream_json(
                     time.sleep(RETRY_BACKOFF * (2**attempt))
                     continue
 
+                response_headers = _sanitize_upstream_response_headers(response.headers)
                 if response.status_code >= 400:
                     retryable = response.status_code >= 500
                     mapped_status = response.status_code if response.status_code < 500 else 502
@@ -105,6 +151,7 @@ def forward_upstream_json(
                         f"upstream returned status {response.status_code}",
                         retryable=retryable,
                         details={"upstreamStatus": response.status_code},
+                        headers=response_headers,
                     )
 
                 try:
@@ -115,6 +162,7 @@ def forward_upstream_json(
                         "MODEIO_UPSTREAM_INVALID_JSON",
                         "upstream response is not valid JSON",
                         retryable=False,
+                        headers=response_headers,
                     ) from error
 
                 if not isinstance(response_payload, dict):
@@ -123,8 +171,12 @@ def forward_upstream_json(
                         "MODEIO_UPSTREAM_INVALID_JSON",
                         "upstream response root must be an object",
                         retryable=False,
+                        headers=response_headers,
                     )
-                return response_payload
+                return UpstreamJsonResponse(
+                    payload=response_payload,
+                    headers=response_headers,
+                )
         except MiddlewareError:
             raise
         except httpx.RequestError as error:
@@ -189,6 +241,7 @@ def forward_upstream_stream(
         if response.status_code >= 400:
             retryable = response.status_code >= 500
             mapped_status = response.status_code if response.status_code < 500 else 502
+            response_headers = _sanitize_upstream_response_headers(response.headers)
             response.close()
             client.close()
             raise MiddlewareError(
@@ -197,6 +250,7 @@ def forward_upstream_stream(
                 f"upstream returned status {response.status_code}",
                 retryable=retryable,
                 details={"upstreamStatus": response.status_code},
+                headers=response_headers,
             )
 
         return StreamingUpstreamResponse(client=client, response=response)

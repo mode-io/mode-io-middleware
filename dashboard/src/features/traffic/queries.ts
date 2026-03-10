@@ -23,7 +23,7 @@ export function buildEventsUrl(filters: MonitorFilters): string {
   if (filters.lifecycle !== "all") {
     params.set("lifecycle", filters.lifecycle);
   }
-  return `/modeio/api/events?${params.toString()}`;
+  return `/modeio/api/v1/events?${params.toString()}`;
 }
 
 export function buildEventsQueryKey(filters: MonitorFilters) {
@@ -44,14 +44,14 @@ export function useTrafficEventsQuery(filters: MonitorFilters) {
 export function useTrafficStatsQuery() {
   return useQuery({
     queryKey: [TRAFFIC_STATS_QUERY_KEY],
-    queryFn: () => fetchJson<StatsSnapshot>("/modeio/api/stats"),
+    queryFn: () => fetchJson<StatsSnapshot>("/modeio/api/v1/stats"),
   });
 }
 
 export function useTrafficDetailQuery(requestId: string | null, enabled: boolean) {
   return useQuery({
     queryKey: buildDetailQueryKey(requestId),
-    queryFn: () => fetchJson<EventDetail>(`/modeio/api/events/${requestId}`),
+    queryFn: () => fetchJson<EventDetail>(`/modeio/api/v1/events/${requestId}`),
     enabled,
   });
 }

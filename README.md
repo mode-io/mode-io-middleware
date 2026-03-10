@@ -43,10 +43,15 @@ Monitoring and ops routes:
 
 - `GET /healthz`
 - `GET /modeio/dashboard`
-- `GET /modeio/api/events`
-- `GET /modeio/api/events/{request_id}`
-- `GET /modeio/api/stats`
-- `GET /modeio/api/events/live`
+- `GET /modeio/api/v1/events`
+- `GET /modeio/api/v1/events/{request_id}`
+- `GET /modeio/api/v1/stats`
+- `GET /modeio/api/v1/events/live`
+
+Admin routes:
+
+- `GET /modeio/admin/v1/plugins`
+- `PUT /modeio/admin/v1/profiles/{profile}/plugins`
 
 ## Install
 
@@ -132,9 +137,11 @@ It is designed for day-to-day operators and troubleshooting workflows. Out of th
 - filter traces by status, source, and endpoint
 - switch between English and Chinese, plus day and night themes
 
-If you want raw data or to wire your own tooling around it, use the monitoring APIs under `/modeio/api/*`.
+If you want raw data or to wire your own tooling around it, use the versioned monitoring APIs under `/modeio/api/v1/*`.
 
-For frontend editing, `npm run dev` inside `dashboard/` serves the Vite app on `http://127.0.0.1:4173/modeio/dashboard/` and proxies `/modeio/api/*`, `/v1`, `/connectors/*`, and `/healthz` to `127.0.0.1:8787` by default. That means the canonical gateway still owns the live middleware state while the dev server handles hot-reload UI work.
+Plugin inventory and mutation live under `/modeio/admin/v1/*`. The gateway keeps admin routes on loopback by default; binding a non-loopback host now requires `--allow-remote-admin`.
+
+For frontend editing, `npm run dev` inside `dashboard/` serves the Vite app on `http://127.0.0.1:4173/modeio/dashboard/` and proxies `/modeio/api/*`, `/modeio/admin/*`, `/v1`, `/connectors/*`, and `/healthz` to `127.0.0.1:8787` by default. That means the canonical gateway still owns the live middleware state while the dev server handles hot-reload UI work.
 
 ## Plugin workflow
 

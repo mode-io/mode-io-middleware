@@ -186,10 +186,17 @@ def post_stream(base_url: str, path: str, payload: Dict[str, Any]):
 
 
 class UpstreamStub:
-    def __init__(self, response_factory, status: int = 200, stream_factory=None):
+    def __init__(
+        self,
+        response_factory,
+        status: int = 200,
+        stream_factory=None,
+        response_headers: Dict[str, str] | None = None,
+    ):
         self.response_factory = response_factory
         self.status = status
         self.stream_factory = stream_factory
+        self.response_headers = dict(response_headers or {})
         self.requests = []
         self._server = None
         self._thread = None
@@ -243,6 +250,8 @@ class UpstreamStub:
 
                 self.send_response(owner.status)
                 self.send_header("Content-Type", "application/json")
+                for header_name, header_value in owner.response_headers.items():
+                    self.send_header(header_name, header_value)
                 self.send_header("Content-Length", str(len(response_body)))
                 self.end_headers()
                 self.wfile.write(response_body)
@@ -324,12 +333,16 @@ def start_gateway_pair(
     *,
     status: int = 200,
     stream_factory=None,
+    response_headers: Dict[str, str] | None = None,
     plugins=None,
     profiles=None,
     config_path=None,
 ):
     upstream = UpstreamStub(
-        response_factory=response_factory, status=status, stream_factory=stream_factory
+        response_factory=response_factory,
+        status=status,
+        stream_factory=stream_factory,
+        response_headers=response_headers,
     )
     upstream.start()
     gateway_stub = GatewayStub(

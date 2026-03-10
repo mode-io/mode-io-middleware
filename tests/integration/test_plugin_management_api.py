@@ -179,7 +179,7 @@ class TestPluginManagementApi(unittest.TestCase):
             try:
                 status, _headers, inventory = http_get_json(
                     gateway_stub.base_url,
-                    "/modeio/api/plugins",
+                    "/modeio/admin/v1/plugins",
                 )
                 self.assertEqual(status, 200)
                 self.assertTrue(inventory["runtime"]["configWritable"])
@@ -196,7 +196,7 @@ class TestPluginManagementApi(unittest.TestCase):
 
                 status, _headers, update = put_json(
                     gateway_stub.base_url,
-                    "/modeio/api/profiles/dev/plugins",
+                    "/modeio/admin/v1/profiles/dev/plugins",
                     {
                         "expectedGeneration": inventory["runtime"]["generation"],
                         "pluginOrder": ["catalog/rewrite"],
@@ -246,7 +246,7 @@ class TestPluginManagementApi(unittest.TestCase):
 
                 status, _headers, refreshed = http_get_json(
                     gateway_stub.base_url,
-                    "/modeio/api/plugins",
+                    "/modeio/admin/v1/plugins",
                 )
                 self.assertEqual(status, 200)
                 rewrite = next(
@@ -274,14 +274,14 @@ class TestPluginManagementApi(unittest.TestCase):
             )
             try:
                 status, _headers, inventory = http_get_json(
-                    gateway_stub.base_url, "/modeio/api/plugins"
+                    gateway_stub.base_url, "/modeio/admin/v1/plugins"
                 )
                 self.assertEqual(status, 200)
                 generation = inventory["runtime"]["generation"]
 
                 status, _headers, bad = put_json(
                     gateway_stub.base_url,
-                    "/modeio/api/profiles/dev/plugins",
+                    "/modeio/admin/v1/profiles/dev/plugins",
                     {
                         "expectedGeneration": generation,
                         "pluginOrder": ["missing/plugin"],
@@ -293,7 +293,7 @@ class TestPluginManagementApi(unittest.TestCase):
 
                 status, _headers, update = put_json(
                     gateway_stub.base_url,
-                    "/modeio/api/profiles/dev/plugins",
+                    "/modeio/admin/v1/profiles/dev/plugins",
                     {
                         "expectedGeneration": generation,
                         "pluginOrder": ["catalog/rewrite"],
@@ -304,7 +304,7 @@ class TestPluginManagementApi(unittest.TestCase):
 
                 status, _headers, stale = put_json(
                     gateway_stub.base_url,
-                    "/modeio/api/profiles/dev/plugins",
+                    "/modeio/admin/v1/profiles/dev/plugins",
                     {
                         "expectedGeneration": generation,
                         "pluginOrder": [],
@@ -313,6 +313,15 @@ class TestPluginManagementApi(unittest.TestCase):
                 )
                 self.assertEqual(status, 409)
                 self.assertEqual(stale["error"]["code"], "MODEIO_GENERATION_CONFLICT")
+
+                status, _headers, legacy_inventory = http_get_json(
+                    gateway_stub.base_url, "/modeio/api/plugins"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    legacy_inventory["runtime"]["generation"],
+                    update["generation"],
+                )
             finally:
                 gateway_stub.stop()
                 upstream.stop()

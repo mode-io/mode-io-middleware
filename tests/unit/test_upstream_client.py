@@ -75,16 +75,22 @@ class TestUpstreamClient(unittest.TestCase):
         factory = _ClientFactory(_FakeResponse(status_code=200, payload={"ok": True}))
         with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
             with patch.dict(os.environ, {"MODEIO_TEST_UPSTREAM_KEY": "fallback-secret"}, clear=False):
-                payload = forward_upstream_json(
+                response = forward_upstream_json(
                     config=self.config,
                     endpoint_kind="chat_completions",
                     payload={"model": "gpt-test"},
-                    incoming_headers={"Authorization": "Bearer incoming-secret"},
+                    incoming_headers={
+                        "Authorization": "Bearer incoming-secret",
+                        "OpenAI-Organization": "org_test",
+                        "x-modeio-debug": "drop-me",
+                    },
                 )
 
-        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(response.payload, {"ok": True})
         sent_headers = factory.instances[0].calls[0]["headers"]
         self.assertEqual(sent_headers["Authorization"], "Bearer incoming-secret")
+        self.assertEqual(sent_headers["OpenAI-Organization"], "org_test")
+        self.assertNotIn("x-modeio-debug", sent_headers)
 
     def test_forward_upstream_json_retries_retryable_status_then_succeeds(self):
         factory = _ClientFactory(
@@ -93,16 +99,44 @@ class TestUpstreamClient(unittest.TestCase):
         )
         with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
             with patch("modeio_middleware.core.upstream_client.time.sleep") as sleep_mock:
-                payload = forward_upstream_json(
+                response = forward_upstream_json(
                     config=self.config,
                     endpoint_kind="chat_completions",
                     payload={"model": "gpt-test"},
                     incoming_headers={},
                 )
 
-        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(response.payload, {"ok": True})
         self.assertEqual(len(factory.instances), 2)
         sleep_mock.assert_called_once()
+
+    def test_forward_upstream_json_returns_sanitized_response_headers(self):
+        factory = _ClientFactory(
+            _FakeResponse(
+                status_code=200,
+                payload={"ok": True},
+                headers={
+                    "openai-request-id": "req_123",
+                    "x-ratelimit-limit-requests": "1000",
+                    "Content-Length": "999",
+                    "Transfer-Encoding": "chunked",
+                    "x-modeio-upstream": "drop-me",
+                },
+            )
+        )
+        with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
+            response = forward_upstream_json(
+                config=self.config,
+                endpoint_kind="chat_completions",
+                payload={"model": "gpt-test"},
+                incoming_headers={},
+            )
+
+        self.assertEqual(response.headers["openai-request-id"], "req_123")
+        self.assertEqual(response.headers["x-ratelimit-limit-requests"], "1000")
+        self.assertNotIn("Content-Length", response.headers)
+        self.assertNotIn("Transfer-Encoding", response.headers)
+        self.assertNotIn("x-modeio-upstream", response.headers)
 
     def test_forward_upstream_json_rejects_non_object_json(self):
         factory = _ClientFactory(_FakeResponse(status_code=200, payload=["not", "an", "object"]))
@@ -116,6 +150,27 @@ class TestUpstreamClient(unittest.TestCase):
                 )
 
         self.assertEqual(error_ctx.exception.code, "MODEIO_UPSTREAM_INVALID_JSON")
+
+    def test_forward_upstream_json_preserves_response_headers_on_upstream_error(self):
+        factory = _ClientFactory(
+            _FakeResponse(
+                status_code=429,
+                payload={"error": "rate limited"},
+                headers={"retry-after": "3", "openai-request-id": "req_429"},
+            )
+        )
+        with patch("modeio_middleware.core.upstream_client.httpx.Client", side_effect=factory):
+            with self.assertRaises(MiddlewareError) as error_ctx:
+                forward_upstream_json(
+                    config=self.config,
+                    endpoint_kind="chat_completions",
+                    payload={"model": "gpt-test"},
+                    incoming_headers={},
+                )
+
+        self.assertEqual(error_ctx.exception.status, 429)
+        self.assertEqual(error_ctx.exception.headers["retry-after"], "3")
+        self.assertEqual(error_ctx.exception.headers["openai-request-id"], "req_429")
 
     def test_forward_upstream_json_retries_timeout_exception_then_raises(self):
         timeout_error = httpx.ReadTimeout("timed out")

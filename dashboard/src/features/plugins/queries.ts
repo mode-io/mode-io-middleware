@@ -6,7 +6,7 @@ import type { PluginInventoryResponse, PluginProfileOverride, PluginUpdateRespon
 export const PLUGIN_INVENTORY_QUERY_KEY = ["plugins", "inventory"] as const;
 
 export async function fetchPluginInventory() {
-  return fetchJson<PluginInventoryResponse>("/modeio/api/plugins");
+  return fetchJson<PluginInventoryResponse>("/modeio/admin/v1/plugins");
 }
 
 export interface UpdateProfilePluginsInput {
@@ -17,7 +17,7 @@ export interface UpdateProfilePluginsInput {
 }
 
 export async function updateProfilePlugins(payload: UpdateProfilePluginsInput) {
-  return putJson<PluginUpdateResponse>(`/modeio/api/profiles/${payload.profileName}/plugins`, {
+  return putJson<PluginUpdateResponse>(`/modeio/admin/v1/profiles/${payload.profileName}/plugins`, {
     expectedGeneration: payload.expectedGeneration,
     pluginOrder: payload.pluginOrder,
     pluginOverrides: payload.pluginOverrides,

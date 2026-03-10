@@ -14,6 +14,7 @@ class MiddlewareError(RuntimeError):
         *,
         retryable: bool = False,
         details: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ):
         super().__init__(message)
         self.status = int(status)
@@ -21,3 +22,4 @@ class MiddlewareError(RuntimeError):
         self.message = str(message)
         self.retryable = bool(retryable)
         self.details = details
+        self.headers = dict(headers) if headers else None

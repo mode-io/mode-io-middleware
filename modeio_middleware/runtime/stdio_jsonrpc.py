@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from modeio_middleware.core.hook_envelope import HookEnvelope
 from modeio_middleware.protocol.jsonpatch import apply_json_patch
 from modeio_middleware.protocol.manifest import PluginManifest
 from modeio_middleware.protocol.messages import (
@@ -95,7 +96,14 @@ class StdioJsonRpcRuntime(PluginRuntime):
             return [self._to_jsonable(item) for item in value]
         return str(value)
 
-    def _build_protocol_input(self, hook_input: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_protocol_input(
+        self, hook_input: HookEnvelope | Dict[str, Any]
+    ) -> Dict[str, Any]:
+        raw_input = (
+            hook_input.to_protocol_input()
+            if isinstance(hook_input, HookEnvelope)
+            else hook_input
+        )
         allowed_keys = {
             "request_id",
             "endpoint_kind",
@@ -117,11 +125,16 @@ class StdioJsonRpcRuntime(PluginRuntime):
         }
         return {
             key: self._to_jsonable(value)
-            for key, value in hook_input.items()
+            for key, value in raw_input.items()
             if key in allowed_keys
         }
 
-    def _apply_patch(self, hook_name: str, hook_input: Dict[str, Any], decision: Dict[str, Any]) -> Dict[str, Any]:
+    def _apply_patch(
+        self,
+        hook_name: str,
+        hook_input: HookEnvelope | Dict[str, Any],
+        decision: Dict[str, Any],
+    ) -> Dict[str, Any]:
         raw_ops = decision.get("patches")
         if not isinstance(raw_ops, list):
             raise ValueError(f"plugin '{self.plugin_name}' patch action requires 'patches' array")
@@ -135,7 +148,12 @@ class StdioJsonRpcRuntime(PluginRuntime):
         if target not in {"request_body", "response_body", "event"}:
             raise ValueError(f"plugin '{self.plugin_name}' returned unsupported patch target '{target}'")
 
-        base_value = hook_input.get(target)
+        base_input = (
+            hook_input.to_protocol_input()
+            if isinstance(hook_input, HookEnvelope)
+            else hook_input
+        )
+        base_value = base_input.get(target)
         if not isinstance(base_value, dict):
             raise ValueError(f"plugin '{self.plugin_name}' patch target '{target}' must be an object")
 
@@ -145,7 +163,7 @@ class StdioJsonRpcRuntime(PluginRuntime):
         normalized[target] = patched_value
         return normalized
 
-    def invoke(self, hook_name: str, hook_input: Dict[str, Any]) -> Any:
+    def invoke(self, hook_name: str, hook_input: HookEnvelope | Dict[str, Any]) -> Any:
         protocol_hook_name = to_protocol_hook_name(hook_name)
         protocol_input = self._build_protocol_input(hook_input)
         result = self._supervisor.call(

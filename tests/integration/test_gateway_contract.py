@@ -83,6 +83,53 @@ class TestGatewayContract(unittest.TestCase):
             gateway_stub.stop()
             upstream.stop()
 
+    def test_gateway_preserves_safe_upstream_metadata_headers(self):
+        upstream, gateway_stub = start_gateway_pair(
+            lambda _path, payload: completion_payload(payload["messages"][0]["content"]),
+            response_headers={
+                "openai-request-id": "req_upstream_123",
+                "x-ratelimit-limit-requests": "1000",
+                "x-modeio-upstream": "drop-me",
+            },
+        )
+        try:
+            status, headers, payload = post_json(
+                gateway_stub.base_url,
+                "/v1/chat/completions",
+                {
+                    "model": "gpt-test",
+                    "messages": [{"role": "user", "content": "hello passthrough"}],
+                },
+                headers={
+                    "Authorization": "Bearer incoming-secret",
+                    "OpenAI-Organization": "org_test",
+                    "x-modeio-request-id": "drop-me",
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                payload["choices"][0]["message"]["content"],
+                "hello passthrough",
+            )
+            self.assertEqual(
+                upstream.requests[-1]["headers"]["Authorization"],
+                "Bearer incoming-secret",
+            )
+            upstream_request_headers = {
+                key.lower(): value for key, value in upstream.requests[-1]["headers"].items()
+            }
+            self.assertEqual(
+                upstream_request_headers["openai-organization"],
+                "org_test",
+            )
+            self.assertNotIn("x-modeio-request-id", upstream_request_headers)
+            self.assertEqual(headers["openai-request-id"], "req_upstream_123")
+            self.assertEqual(headers["x-ratelimit-limit-requests"], "1000")
+            self.assertNotIn("x-modeio-upstream", headers)
+        finally:
+            gateway_stub.stop()
+            upstream.stop()
+
     def test_responses_modeio_metadata_not_forwarded_to_upstream(self):
         upstream, gateway_stub = self._start_pair(
             lambda _path, payload: responses_payload(str(payload.get("input", "")))

@@ -6,6 +6,7 @@ import importlib
 from typing import Any, Dict
 
 from modeio_middleware.core.errors import MiddlewareError
+from modeio_middleware.core.hook_envelope import HookEnvelope
 from modeio_middleware.plugins.base import MiddlewarePlugin
 from modeio_middleware.runtime.base import PluginRuntime
 
@@ -48,8 +49,10 @@ class LegacyInprocessRuntime(PluginRuntime):
             )
         return plugin
 
-    def invoke(self, hook_name: str, hook_input: Dict[str, Any]) -> Any:
+    def invoke(self, hook_name: str, hook_input: HookEnvelope | Dict[str, Any]) -> Any:
         hook = getattr(self._plugin, hook_name, None)
         if not callable(hook):
             raise ValueError(f"plugin '{self.plugin_name}' missing hook '{hook_name}'")
+        if isinstance(hook_input, HookEnvelope):
+            return hook(hook_input.to_inprocess_input())
         return hook(hook_input)

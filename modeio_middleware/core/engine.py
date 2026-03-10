@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from modeio_middleware.connectors.base import CanonicalInvocation, ConnectorAdapter
 from modeio_middleware.connectors.claude_hooks import (
@@ -13,24 +13,18 @@ from modeio_middleware.connectors.claude_hooks import (
 )
 from modeio_middleware.connectors.openai_http import OpenAIHttpConnector
 from modeio_middleware.core.errors import MiddlewareError
-from modeio_middleware.core.http_contract import contract_headers, error_payload
+from modeio_middleware.core.invocation_router import InvocationRouter
 from modeio_middleware.core.observability.service import build_request_journal_service
 from modeio_middleware.core.pipeline_session import PipelineSession
-from modeio_middleware.core.plugin_manager import ActivePlugin, PluginManager
-from modeio_middleware.core.profiles import (
-    DEFAULT_PROFILE,
-    resolve_plugin_error_policy,
-    resolve_profile,
-    resolve_profile_plugin_overrides,
-    resolve_profile_plugins,
-)
+from modeio_middleware.core.pipeline_orchestrator import PipelineOrchestrator
+from modeio_middleware.core.plugin_manager import PluginManager
+from modeio_middleware.core.profiles import DEFAULT_PROFILE
+from modeio_middleware.core.response_assembler import ResponseAssembler
+from modeio_middleware.core.response_models import ProcessResult, StreamProcessResult
 from modeio_middleware.core.services.engine_services import EngineServices
 from modeio_middleware.core.services.telemetry import PluginTelemetry
-from modeio_middleware.core.stream_relay import iter_transformed_sse_stream
-from modeio_middleware.core.upstream_client import (
-    forward_upstream_json,
-    forward_upstream_stream,
-)
+from modeio_middleware.core.stream_orchestrator import StreamOrchestrator
+from modeio_middleware.core.upstream_transport import UpstreamTransport
 
 
 @dataclass(frozen=True)
@@ -46,21 +40,6 @@ class GatewayRuntimeConfig:
     service_config: Dict[str, Any] = None  # type: ignore[assignment]
     config_base_dir: str = ""
     config_path: str = ""
-
-
-@dataclass
-class ProcessResult:
-    status: int
-    payload: Dict[str, Any]
-    headers: Dict[str, str]
-
-
-@dataclass
-class StreamProcessResult:
-    status: int
-    headers: Dict[str, str]
-    stream: Optional[Iterable[bytes]] = None
-    payload: Optional[Dict[str, Any]] = None
 
 
 def _build_runtime_services(service_config: Optional[Dict[str, Any]]) -> EngineServices:
@@ -89,9 +68,28 @@ class MiddlewareEngine:
         )
         self.services = _build_runtime_services(runtime_config.service_config)
         self._plugin_services = self.services.as_plugin_services()
-        self._connectors: tuple[ConnectorAdapter, ...] = (
+        connectors: tuple[ConnectorAdapter, ...] = (
             ClaudeHookConnector(),
             OpenAIHttpConnector(),
+        )
+        self._response_assembler = ResponseAssembler()
+        self._invocation_router = InvocationRouter(
+            connectors=connectors,
+            default_profile=runtime_config.default_profile,
+            upstream_chat_completions_url=runtime_config.upstream_chat_completions_url,
+            upstream_responses_url=runtime_config.upstream_responses_url,
+        )
+        self._pipeline = PipelineOrchestrator(
+            config=runtime_config,
+            plugin_manager=self.plugin_manager,
+        )
+        self._upstream_transport = UpstreamTransport(config=runtime_config)
+        self._stream_orchestrator = StreamOrchestrator(
+            plugin_manager=self.plugin_manager,
+            upstream_transport=self._upstream_transport,
+            response_assembler=self._response_assembler,
+            plugin_services=self._plugin_services,
+            request_journal=self.services.request_journal,
         )
 
     def _journal_start(self, invocation: CanonicalInvocation) -> None:
@@ -124,101 +122,39 @@ class MiddlewareEngine:
             block_message=error.message if blocked else None,
         )
 
-    def _resolve_plugin_runtime(
-        self,
-        *,
-        profile: str,
-        on_plugin_error_override: Optional[str],
-        plugin_overrides: Dict[str, Dict[str, Any]],
-    ) -> tuple[str, List[ActivePlugin]]:
-        profile_config = resolve_profile(self.config.profiles or {}, profile)
-        on_plugin_error = resolve_plugin_error_policy(
-            profile_config, on_plugin_error_override
-        )
-        plugin_order = resolve_profile_plugins(profile_config)
-        profile_overrides = resolve_profile_plugin_overrides(profile_config)
-        active_plugins = self.plugin_manager.resolve_active_plugins(
-            plugin_order,
-            request_plugin_overrides=plugin_overrides,
-            profile_plugin_overrides=profile_overrides,
-        )
-        return on_plugin_error, active_plugins
-
-    def _resolve_connector(self, path: str) -> ConnectorAdapter:
-        for connector in self._connectors:
-            if connector.matches(path):
-                return connector
-        raise MiddlewareError(
-            404,
-            "MODEIO_ROUTE_NOT_FOUND",
-            "route not found",
-            retryable=False,
-        )
-
     def _new_session(self, *, request_id: str) -> PipelineSession:
-        return PipelineSession(
-            request_id=request_id, profile=self.config.default_profile
-        )
+        return self._pipeline.new_session(request_id=request_id)
 
     def _session_headers(self, session: PipelineSession) -> Dict[str, str]:
-        return contract_headers(
-            session.request_id,
-            profile=session.profile,
-            pre_actions=session.pre_actions,
-            post_actions=session.post_actions,
-            degraded=session.degraded,
-            upstream_called=session.upstream_called,
-        )
+        return self._response_assembler.session_headers(session)
+
+    def _response_headers(
+        self,
+        session: PipelineSession,
+        base_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        return self._response_assembler.response_headers(session, base_headers)
 
     def _error_process_result(
         self, session: PipelineSession, error: MiddlewareError
     ) -> ProcessResult:
-        payload = error_payload(
-            session.request_id,
-            error.code,
-            error.message,
-            retryable=error.retryable,
-            details=error.details,
-        )
-        headers = self._session_headers(session)
-        return ProcessResult(status=error.status, payload=payload, headers=headers)
+        return self._response_assembler.error_result(session, error)
 
     def _shutdown_session_plugins(self, session: PipelineSession) -> None:
-        if session.plugins_released:
-            return
-        self.plugin_manager.shutdown_active_plugins(session.active_plugins)
-        session.plugins_released = True
-
-    def _build_request_context(self, invocation: CanonicalInvocation) -> Dict[str, Any]:
-        return {
-            "endpoint_kind": invocation.endpoint_kind,
-            "default_profile": self.config.default_profile,
-            "upstream_chat_completions_url": self.config.upstream_chat_completions_url,
-            "upstream_responses_url": self.config.upstream_responses_url,
-            "client_name": invocation.client_name,
-            **invocation.connector_context,
-        }
+        self._pipeline.shutdown_session_plugins(session)
 
     def _start_invocation(
         self,
         invocation: CanonicalInvocation,
     ) -> tuple[PipelineSession, str, Dict[str, Any], Dict[str, Any]]:
-        session = self._new_session(request_id=invocation.request_id)
-        session.profile = invocation.profile
-        on_plugin_error, session.active_plugins = self._resolve_plugin_runtime(
-            profile=session.profile,
-            on_plugin_error_override=invocation.on_plugin_error,
-            plugin_overrides=invocation.plugin_overrides,
+        session, on_plugin_error, shared_state = self._pipeline.start_invocation(
+            invocation
         )
-        shared_state: Dict[str, Any] = {}
-        request_context = self._build_request_context(invocation)
+        request_context = self._invocation_router.build_request_context(invocation)
         return session, on_plugin_error, shared_state, request_context
 
     def _release_stream_plugins(self, session: PipelineSession) -> None:
-        if session.plugins_released:
-            return
-        self.plugin_manager.shutdown_active_plugins(session.active_plugins)
-        session.plugins_released = True
+        self._pipeline.release_stream_plugins(session)
 
     def shutdown(self) -> None:
         self.plugin_manager.shutdown()
@@ -232,13 +168,11 @@ class MiddlewareEngine:
         incoming_headers: Dict[str, str],
     ) -> Union[ProcessResult, StreamProcessResult]:
         try:
-            connector = self._resolve_connector(path)
-            invocation = connector.parse(
+            invocation = self._invocation_router.parse_http_request(
+                path=path,
                 request_id=request_id,
                 payload=payload,
                 incoming_headers=incoming_headers,
-                default_profile=self.config.default_profile,
-                path=path,
             )
             self._journal_start(invocation)
         except MiddlewareError as error:
@@ -320,7 +254,7 @@ class MiddlewareEngine:
                 "preFindings": pre_result.findings,
             }
             if invocation.stream:
-                stream_result = self._process_stream_request(
+                stream_result = self._stream_orchestrator.process(
                     endpoint_kind=invocation.endpoint_kind,
                     session=session,
                     on_plugin_error=on_plugin_error,
@@ -329,6 +263,7 @@ class MiddlewareEngine:
                     upstream_payload=pre_result.body,
                     upstream_headers=pre_result.headers,
                     connector_capabilities=connector_capabilities,
+                    on_finish=lambda: self._finish_stream_request(session),
                 )
                 streaming_response = isinstance(stream_result, StreamProcessResult)
                 return stream_result
@@ -336,8 +271,7 @@ class MiddlewareEngine:
             if journal is not None:
                 journal.mark_upstream_start(request_id=session.request_id)
             session.upstream_called = True
-            upstream_payload = forward_upstream_json(
-                config=self.config,
+            upstream_response = self._upstream_transport.forward_json(
                 endpoint_kind=invocation.endpoint_kind,
                 payload=pre_result.body,
                 incoming_headers=pre_result.headers,
@@ -345,7 +279,7 @@ class MiddlewareEngine:
             if journal is not None:
                 journal.record_upstream_result(
                     request_id=session.request_id,
-                    response_body=upstream_payload,
+                    response_body=upstream_response.payload,
                 )
 
             post_result = self.plugin_manager.apply_post_response(
@@ -354,8 +288,8 @@ class MiddlewareEngine:
                 endpoint_kind=invocation.endpoint_kind,
                 profile=session.profile,
                 request_context=response_request_context,
-                response_body=upstream_payload,
-                response_headers={},
+                response_body=upstream_response.payload,
+                response_headers=upstream_response.headers,
                 shared_state=shared_state,
                 on_plugin_error=on_plugin_error,
                 services=self._plugin_services,
@@ -382,7 +316,7 @@ class MiddlewareEngine:
                     details={"phase": "post_response"},
                 )
 
-            headers = self._session_headers(session)
+            headers = self._response_headers(session, post_result.headers)
             if journal is not None:
                 journal.finish_success(request_id=session.request_id)
             return ProcessResult(status=200, payload=post_result.body, headers=headers)
@@ -528,117 +462,6 @@ class MiddlewareEngine:
             return self._error_process_result(session, error)
         finally:
             self._shutdown_session_plugins(session)
-
-    def _process_stream_request(
-        self,
-        *,
-        endpoint_kind: str,
-        session: PipelineSession,
-        on_plugin_error: str,
-        shared_state: Dict[str, Any],
-        request_context: Dict[str, Any],
-        upstream_payload: Dict[str, Any],
-        upstream_headers: Dict[str, str],
-        connector_capabilities: Dict[str, bool],
-    ) -> Union[ProcessResult, StreamProcessResult]:
-        journal = self.services.request_journal
-        if journal is not None:
-            journal.mark_upstream_start(request_id=session.request_id)
-        upstream_response = forward_upstream_stream(
-            config=self.config,
-            endpoint_kind=endpoint_kind,
-            payload=upstream_payload,
-            incoming_headers=upstream_headers,
-        )
-        if journal is not None:
-            journal.record_upstream_result(
-                request_id=session.request_id, response_body=None
-            )
-
-        post_start_result = self.plugin_manager.apply_post_stream_start(
-            session.active_plugins,
-            request_id=session.request_id,
-            endpoint_kind=endpoint_kind,
-            profile=session.profile,
-            request_context=request_context,
-            response_context={},
-            shared_state=shared_state,
-            on_plugin_error=on_plugin_error,
-            services=self._plugin_services,
-            connector_capabilities=connector_capabilities,
-        )
-        session.degraded.extend(post_start_result.degraded)
-        session.post_actions = list(post_start_result.actions)
-        if journal is not None:
-            journal.record_post_result(
-                request_id=session.request_id,
-                effective_response_body=None,
-                post_actions=list(post_start_result.actions) or ["stream"],
-                degraded=list(post_start_result.degraded),
-                findings=list(post_start_result.findings),
-                blocked=post_start_result.blocked,
-                block_message=post_start_result.block_message,
-            )
-
-        if post_start_result.blocked:
-            upstream_response.close()
-            session.upstream_called = True
-            if journal is not None:
-                journal.finish_error(
-                    request_id=session.request_id,
-                    error_code="MODEIO_PLUGIN_BLOCKED",
-                    error_message=post_start_result.block_message,
-                    blocked=True,
-                    block_message=post_start_result.block_message,
-                )
-            return self._error_process_result(
-                session,
-                MiddlewareError(
-                    403,
-                    "MODEIO_PLUGIN_BLOCKED",
-                    post_start_result.block_message,
-                    retryable=False,
-                    details={"phase": "post_stream_start"},
-                ),
-            )
-
-        post_actions_seed = list(post_start_result.actions)
-        session.post_actions = post_actions_seed or ["stream"]
-        session.upstream_called = True
-        headers = contract_headers(
-            session.request_id,
-            profile=session.profile,
-            pre_actions=session.pre_actions,
-            post_actions=session.post_actions,
-            degraded=session.degraded,
-            upstream_called=session.upstream_called,
-        )
-        headers["Content-Type"] = upstream_response.headers.get(
-            "Content-Type", "text/event-stream"
-        )
-        headers["Cache-Control"] = "no-cache"
-        headers["x-modeio-streaming"] = "true"
-
-        return StreamProcessResult(
-            status=200,
-            headers=headers,
-            stream=iter_transformed_sse_stream(
-                upstream_response=upstream_response,
-                plugin_manager=self.plugin_manager,
-                active_plugins=session.active_plugins,
-                request_id=session.request_id,
-                endpoint_kind=endpoint_kind,
-                profile=session.profile,
-                request_context=request_context,
-                shared_state=shared_state,
-                on_plugin_error=on_plugin_error,
-                degraded=session.degraded,
-                services=self._plugin_services,
-                connector_capabilities=connector_capabilities,
-                on_finish=lambda: self._finish_stream_request(session),
-            ),
-            payload=None,
-        )
 
     def _finish_stream_request(self, session: PipelineSession) -> None:
         journal = self.services.request_journal
