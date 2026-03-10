@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+from modeio_middleware.cli.setup_lib.upstream import (
+    OPENAI_DEFAULT_MODEL,
+    OPENAI_UPSTREAM_BASE_URL,
+    resolve_live_upstream_selection,
+)
+
 SUPPORTED_AGENTS = ("codex", "opencode", "openclaw", "claude")
-OPENAI_UPSTREAM_BASE_URL = "https://api.openai.com/v1"
-OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
-ZENMUX_UPSTREAM_BASE_URL = "https://zenmux.ai/api/v1"
-ZENMUX_DEFAULT_MODEL = "openai/gpt-5.3-codex"
-UPSTREAM_KEY_FALLBACK_ENVS = ("ZENMUX_API_KEY", "OPENAI_API_KEY")
 
 
 def utc_stamp() -> str:
@@ -56,34 +57,34 @@ def parse_agents(raw: str) -> Tuple[str, ...]:
 def resolve_upstream_api_key(
     env: Dict[str, str], preferred_env: str
 ) -> Tuple[str, str]:
-    preferred_value = env.get(preferred_env, "").strip()
-    if preferred_value:
-        return preferred_value, preferred_env
+    selection = resolve_live_upstream_selection(
+        preferred_env=preferred_env,
+        env=env,
+    )
+    api_key = selection.get("apiKey")
+    api_key_env = selection.get("apiKeyEnv")
+    if isinstance(api_key, str) and api_key and isinstance(api_key_env, str) and api_key_env:
+        return api_key, api_key_env
 
-    for candidate in UPSTREAM_KEY_FALLBACK_ENVS:
-        value = env.get(candidate, "").strip()
-        if value:
-            return value, candidate
-
-    searched = [preferred_env, *UPSTREAM_KEY_FALLBACK_ENVS]
-    raise RuntimeError("missing upstream API key. Set one of: " + ", ".join(searched))
+    raise RuntimeError(
+        "missing reusable live upstream. Set MODEIO_GATEWAY_UPSTREAM_BASE_URL/MODEL with a key, "
+        "or provide a reusable OpenCode/OpenClaw config, or set OPENAI_API_KEY."
+    )
 
 
 def default_upstream_base_url(env: Dict[str, str]) -> str:
-    explicit = env.get("MODEIO_GATEWAY_UPSTREAM_BASE_URL", "").strip()
-    if explicit:
-        return explicit
-    if env.get("ZENMUX_API_KEY", "").strip():
-        return ZENMUX_UPSTREAM_BASE_URL
+    selection = resolve_live_upstream_selection(env=env)
+    base_url = selection.get("baseUrl")
+    if isinstance(base_url, str) and base_url:
+        return base_url
     return OPENAI_UPSTREAM_BASE_URL
 
 
 def default_upstream_model(env: Dict[str, str]) -> str:
-    explicit = env.get("MODEIO_GATEWAY_UPSTREAM_MODEL", "").strip()
-    if explicit:
-        return explicit
-    if default_upstream_base_url(env) == ZENMUX_UPSTREAM_BASE_URL:
-        return ZENMUX_DEFAULT_MODEL
+    selection = resolve_live_upstream_selection(env=env)
+    model = selection.get("model")
+    if isinstance(model, str) and model:
+        return model
     return OPENAI_DEFAULT_MODEL
 
 

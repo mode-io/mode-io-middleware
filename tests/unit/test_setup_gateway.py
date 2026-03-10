@@ -34,6 +34,7 @@ from modeio_middleware.cli.setup_lib.opencode import (  # noqa: E402
     uninstall_opencode_config_file,
 )
 from modeio_middleware.cli.setup_lib.openclaw import (  # noqa: E402
+    OPENCLAW_AUTH_MODE_NATIVE,
     OPENCLAW_MODEL_ID,
     OPENCLAW_MODEL_REF,
     OPENCLAW_PROVIDER_ID,
@@ -44,6 +45,11 @@ from modeio_middleware.cli.setup_lib.openclaw import (  # noqa: E402
     default_openclaw_models_cache_path,
     uninstall_openclaw_config_file,
     uninstall_openclaw_models_cache_file,
+)
+from modeio_middleware.cli.setup_lib.upstream import (  # noqa: E402
+    OPENAI_DEFAULT_MODEL,
+    OPENAI_UPSTREAM_BASE_URL,
+    resolve_live_upstream_selection,
 )
 
 
@@ -119,11 +125,11 @@ class TestSetupGateway(unittest.TestCase):
         url = "http://127.0.0.1:8787/v1"
         self.assertEqual(
             setup_gateway._codex_env_command("bash", url),
-            'export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"',
+            'export OPENAI_BASE_URL="http://127.0.0.1:8787/clients/codex/v1"',
         )
         self.assertEqual(
             setup_gateway._codex_env_command("powershell", url),
-            '$env:OPENAI_BASE_URL = "http://127.0.0.1:8787/v1"',
+            '$env:OPENAI_BASE_URL = "http://127.0.0.1:8787/clients/codex/v1"',
         )
 
     def test_codex_unset_command_variants(self):
@@ -154,7 +160,45 @@ class TestSetupGateway(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(
             updated["provider"]["openai"]["options"]["baseURL"],
-            "http://127.0.0.1:8787/v1",
+            "http://127.0.0.1:8787/clients/opencode/openai/v1",
+        )
+        self.assertEqual(
+            updated["provider"]["openai"]["options"]["apiKey"],
+            "secret",
+        )
+
+    def test_apply_opencode_base_url_injects_placeholder_when_api_key_missing(self):
+        source = {
+            "model": "openai/gpt-4o-mini",
+            "provider": {
+                "openai": {
+                    "options": {}
+                }
+            },
+        }
+        updated, changed = apply_opencode_base_url(source, "http://127.0.0.1:8787/v1")
+        self.assertTrue(changed)
+        self.assertEqual(
+            updated["provider"]["openai"]["options"]["apiKey"],
+            "modeio-middleware",
+        )
+
+    def test_apply_opencode_base_url_tracks_current_provider(self):
+        source = {
+            "model": "openrouter/anthropic/claude-sonnet-4",
+            "provider": {
+                "openrouter": {
+                    "options": {
+                        "apiKey": "secret",
+                    }
+                }
+            },
+        }
+        updated, changed = apply_opencode_base_url(source, "http://127.0.0.1:8787/v1")
+        self.assertTrue(changed)
+        self.assertEqual(
+            updated["provider"]["openrouter"]["options"]["baseURL"],
+            "http://127.0.0.1:8787/clients/opencode/openrouter/v1",
         )
 
     def test_apply_and_uninstall_opencode_config_file(self):
@@ -208,10 +252,11 @@ class TestSetupGateway(unittest.TestCase):
         updated, changed = apply_openclaw_provider_route(
             {},
             "http://127.0.0.1:8787/v1",
+            auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
         )
         self.assertTrue(changed)
         provider = updated["models"]["providers"][OPENCLAW_PROVIDER_ID]
-        self.assertEqual(provider["baseUrl"], "http://127.0.0.1:8787/v1")
+        self.assertEqual(provider["baseUrl"], "http://127.0.0.1:8787/clients/openclaw/v1")
         self.assertEqual(provider["api"], "openai-completions")
         self.assertEqual(provider["apiKey"], "modeio-middleware")
         self.assertFalse(provider["authHeader"])
@@ -228,6 +273,7 @@ class TestSetupGateway(unittest.TestCase):
                 config_path=path,
                 gateway_base_url="http://127.0.0.1:8787/v1",
                 create_if_missing=True,
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
             )
             self.assertTrue(apply_result["changed"])
             self.assertTrue(path.exists())
@@ -248,6 +294,9 @@ class TestSetupGateway(unittest.TestCase):
             apply_result = apply_openclaw_models_cache_file(
                 models_cache_path=path,
                 gateway_base_url="http://127.0.0.1:8787/v1",
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+                native_provider=None,
+                route_model_id=OPENCLAW_MODEL_ID,
             )
             self.assertTrue(apply_result["changed"])
             self.assertTrue(path.exists())
@@ -256,6 +305,8 @@ class TestSetupGateway(unittest.TestCase):
                 models_cache_path=path,
                 gateway_base_url="http://127.0.0.1:8787/v1",
                 force_remove=False,
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+                native_provider=None,
             )
             self.assertTrue(uninstall_result["changed"])
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -263,6 +314,134 @@ class TestSetupGateway(unittest.TestCase):
                 OPENCLAW_PROVIDER_ID,
                 payload.get("models", {}).get("providers", {}),
             )
+
+    def test_apply_openclaw_provider_route_native_mode_preserves_provider_context(self):
+        source = {
+            "agents": {"defaults": {"model": {"primary": "openai-codex/gpt-5.3-codex"}}}
+        }
+        updated, changed = apply_openclaw_provider_route(
+            source,
+            "http://127.0.0.1:8787/v1",
+            auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+        )
+        self.assertTrue(changed)
+        provider = updated["models"]["providers"][OPENCLAW_PROVIDER_ID]
+        self.assertEqual(
+            provider["baseUrl"],
+            "http://127.0.0.1:8787/clients/openclaw/openai-codex/v1",
+        )
+        self.assertEqual(provider["models"][0]["id"], "gpt-5.3-codex")
+        self.assertEqual(
+            updated["agents"]["defaults"]["model"]["primary"],
+            "modeio-middleware/gpt-5.3-codex",
+        )
+
+    def test_apply_and_uninstall_openclaw_config_file_native_mode_restores_primary(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "openclaw.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            apply_result = apply_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=False,
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+            )
+            self.assertEqual(apply_result["authMode"], "native")
+            uninstall_result = uninstall_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                force_remove=False,
+            )
+            self.assertTrue(uninstall_result["changed"])
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["agents"]["defaults"]["model"]["primary"],
+                "openai-codex/gpt-5.3-codex",
+            )
+            self.assertNotIn(
+                OPENCLAW_PROVIDER_ID,
+                payload.get("models", {}).get("providers", {}),
+            )
+
+    def test_apply_openclaw_config_file_native_mode_is_idempotent(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "openclaw.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            apply_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=False,
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+            )
+            second_apply = apply_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=False,
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+            )
+            self.assertEqual(second_apply["authMode"], "native")
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            provider = payload["models"]["providers"][OPENCLAW_PROVIDER_ID]
+            self.assertEqual(
+                provider["baseUrl"],
+                "http://127.0.0.1:8787/clients/openclaw/openai-codex/v1",
+            )
+
+    def test_openclaw_uninstall_mismatch_keeps_restore_sidecar(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "openclaw.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            apply_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=False,
+                auth_mode=OPENCLAW_AUTH_MODE_NATIVE,
+            )
+            uninstall_result = uninstall_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:9999/v1",
+                force_remove=False,
+            )
+            self.assertFalse(uninstall_result["changed"])
+            self.assertTrue(path.with_name("openclaw.json.modeio-route.json").exists())
 
     def test_apply_and_uninstall_claude_settings_file(self):
         with TemporaryDirectory() as temp_dir:
@@ -374,6 +553,9 @@ class TestSetupGateway(unittest.TestCase):
         self.assertEqual(payload["mode"], "doctor")
         self.assertTrue(payload["upstreamApiKey"]["present"])
         self.assertTrue(payload["codex"]["authPresent"])
+        self.assertIn("nativeClients", payload)
+        self.assertIn("codex", payload["nativeClients"])
+        self.assertNotIn("authorization", payload["nativeClients"]["codex"])
         self.assertGreaterEqual(len(payload["checks"]), 2)
 
     def test_main_json_doctor_fails_when_required_command_missing(self):
@@ -392,25 +574,185 @@ class TestSetupGateway(unittest.TestCase):
             payload["checks"][0]["missing"],
         )
 
-    def test_main_json_doctor_accepts_zenmux_key_fallback(self):
+    def test_main_json_doctor_does_not_silently_pick_zenmux_without_config(self):
+        with TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HOME": temp_dir,
+                    "ZENMUX_API_KEY": "sk-zenmux-test",
+                },
+                clear=True,
+            ):
+                code, payload = self._run_main_json(
+                    [
+                        "--doctor",
+                        "--require-upstream-api-key",
+                        "--upstream-api-key-env",
+                        "MODEIO_GATEWAY_UPSTREAM_API_KEY",
+                    ]
+                )
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["checks"][0]["resolvedSource"], None)
+
+    def test_resolve_live_upstream_selection_prefers_openai_env_over_bare_zenmux_key(self):
+        with TemporaryDirectory() as temp_dir:
+            selection = resolve_live_upstream_selection(
+                env={
+                    "HOME": temp_dir,
+                    "OPENAI_API_KEY": "sk-openai-test",
+                    "ZENMUX_API_KEY": "sk-zenmux-test",
+                }
+            )
+        self.assertTrue(selection["ready"])
+        self.assertEqual(selection["source"], "openai_env")
+        self.assertEqual(selection["baseUrl"], OPENAI_UPSTREAM_BASE_URL)
+        self.assertEqual(selection["model"], OPENAI_DEFAULT_MODEL)
+        self.assertEqual(selection["apiKeyEnv"], "OPENAI_API_KEY")
+
+    def test_resolve_live_upstream_selection_reuses_opencode_config(self):
+        with TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            config_path = home / ".config" / "opencode" / "opencode.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "provider-model",
+                        "provider": {
+                            "openai": {
+                                "options": {
+                                    "baseURL": "https://provider.example/v1",
+                                    "apiKey": "cfg-secret",
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            selection = resolve_live_upstream_selection(
+                env={
+                    "HOME": temp_dir,
+                }
+            )
+
+        self.assertTrue(selection["ready"])
+        self.assertEqual(selection["source"], "opencode_config")
+        self.assertEqual(selection["baseUrl"], "https://provider.example/v1")
+        self.assertEqual(selection["model"], "provider-model")
+        self.assertEqual(selection["apiKeySource"], "config:provider.openai.options.apiKey")
+
+    def test_main_json_doctor_accepts_reusable_opencode_upstream(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / ".config" / "opencode" / "opencode.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "provider-model",
+                        "provider": {
+                            "openai": {
+                                "options": {
+                                    "baseURL": "https://provider.example/v1",
+                                    "apiKey": "cfg-secret",
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=True):
+                code, payload = self._run_main_json(
+                    [
+                        "--doctor",
+                        "--require-upstream-api-key",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["liveUpstream"]["source"], "opencode_config")
+        self.assertEqual(payload["checks"][0]["resolvedSource"], "opencode_config")
+
+    def test_resolve_live_upstream_selection_reuses_openclaw_config(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / ".openclaw" / "openclaw.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "models": {
+                            "providers": {
+                                "remote-provider": {
+                                    "baseUrl": "https://provider.example/v1",
+                                    "apiKey": "cfg-secret",
+                                }
+                            }
+                        },
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "remote-provider/provider-model"}
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            selection = resolve_live_upstream_selection(
+                env={
+                    "HOME": temp_dir,
+                }
+            )
+
+        self.assertTrue(selection["ready"])
+        self.assertEqual(selection["source"], "openclaw_config")
+        self.assertEqual(selection["baseUrl"], "https://provider.example/v1")
+        self.assertEqual(selection["model"], "provider-model")
+
+    def test_main_json_doctor_accepts_zenmux_key_fallback_from_reused_config(self):
         with mock.patch.dict(
             os.environ,
             {
                 "ZENMUX_API_KEY": "sk-zenmux-test",
+                "HOME": "/tmp/unused-home",
             },
-            clear=False,
+            clear=True,
         ):
-            code, payload = self._run_main_json(
-                [
-                    "--doctor",
-                    "--require-upstream-api-key",
-                    "--upstream-api-key-env",
-                    "MODEIO_GATEWAY_UPSTREAM_API_KEY",
-                ]
-            )
+            with TemporaryDirectory() as temp_dir:
+                config_path = Path(temp_dir) / "opencode.json"
+                config_path.write_text(
+                    json.dumps(
+                        {
+                            "model": "openai/gpt-5.3-codex",
+                            "provider": {
+                                "openai": {
+                                    "options": {
+                                        "baseURL": "https://zenmux.ai/api/v1"
+                                    }
+                                }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                code, payload = self._run_main_json(
+                    [
+                        "--doctor",
+                        "--require-upstream-api-key",
+                        "--opencode-config-path",
+                        str(config_path),
+                    ]
+                )
         self.assertEqual(code, 0)
         self.assertTrue(payload["success"])
-        self.assertEqual(payload["upstreamApiKey"]["env"], "ZENMUX_API_KEY")
+        self.assertEqual(payload["liveUpstream"]["source"], "opencode_config")
+        self.assertEqual(payload["liveUpstream"]["apiKeyEnv"], "ZENMUX_API_KEY")
 
     def test_main_json_doctor_validation_error_for_mutating_flags(self):
         code, payload = self._run_main_json(["--doctor", "--apply-opencode"])

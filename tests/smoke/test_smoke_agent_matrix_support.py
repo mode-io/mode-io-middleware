@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import json
 import sys
 import unittest
+from tempfile import TemporaryDirectory
 from unittest import mock
 from pathlib import Path
 
@@ -90,10 +92,38 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         script_path = REPO_ROOT / "scripts" / "smoke_agent_matrix.py"
         self.assertEqual(default_repo_root(script_path), REPO_ROOT)
 
-    def test_zenmux_env_defaults_select_matching_base_url_and_model(self):
-        env = {"ZENMUX_API_KEY": "sk-test"}
-        self.assertEqual(default_upstream_base_url(env), "https://zenmux.ai/api/v1")
-        self.assertEqual(default_upstream_model(env), "openai/gpt-5.3-codex")
+    def test_bare_zenmux_env_does_not_silently_change_defaults(self):
+        with TemporaryDirectory() as temp_dir:
+            env = {"HOME": temp_dir, "ZENMUX_API_KEY": "sk-test"}
+            self.assertEqual(default_upstream_base_url(env), "https://api.openai.com/v1")
+            self.assertEqual(default_upstream_model(env), "gpt-4o-mini")
+
+    def test_opencode_config_defaults_drive_live_upstream_choice(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = (
+                Path(temp_dir) / ".config" / "opencode" / "opencode.json"
+            )
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "provider-model",
+                        "provider": {
+                            "openai": {
+                                "options": {
+                                    "baseURL": "https://provider.example/v1",
+                                    "apiKey": "cfg-secret",
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            env = {"HOME": temp_dir}
+            self.assertEqual(default_upstream_base_url(env), "https://provider.example/v1")
+            self.assertEqual(default_upstream_model(env), "provider-model")
 
     def test_parse_args_uses_environment_defaults_for_live_smoke(self):
         with mock.patch.dict(

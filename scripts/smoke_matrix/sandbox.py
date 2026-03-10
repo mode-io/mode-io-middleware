@@ -29,7 +29,7 @@ def build_sandbox_env(
     paths: Dict[str, Path],
     *,
     gateway_base_url: str,
-    upstream_api_key: str,
+    upstream_api_key: str = "",
 ) -> Dict[str, str]:
     allowlist = (
         "PATH",
@@ -43,29 +43,38 @@ def build_sandbox_env(
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
+        "OPENAI_API_KEY",
+        "OPENCODE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ZENMUX_API_KEY",
+        "OPENROUTER_API_KEY",
+        "MINIMAX_API_KEY",
     )
     env = {
         key: value
         for key, value in parent_env.items()
         if key in allowlist and isinstance(value, str) and value
     }
+    gateway_root_url = (
+        gateway_base_url[:-3] if gateway_base_url.endswith("/v1") else gateway_base_url
+    )
     env.update(
         {
             "HOME": str(paths["home"]),
             "XDG_CONFIG_HOME": str(paths["xdg_config"]),
             "XDG_STATE_HOME": str(paths["xdg_state"]),
             "XDG_CACHE_HOME": str(paths["xdg_cache"]),
-            "OPENAI_BASE_URL": gateway_base_url,
-            "OPENAI_API_KEY": parent_env.get("OPENAI_API_KEY", "").strip() or upstream_api_key,
+            "OPENAI_BASE_URL": f"{gateway_root_url}/clients/codex/v1",
             "OPENCLAW_CONFIG_PATH": str(paths["openclaw_config"]),
             "OPENCLAW_STATE_DIR": str(paths["openclaw_state"]),
             "OPENCLAW_AGENT_DIR": str(paths["openclaw_models_cache"].parent),
             "PI_CODING_AGENT_DIR": str(paths["openclaw_models_cache"].parent),
-            "MODEIO_GATEWAY_UPSTREAM_API_KEY": upstream_api_key,
-            "MODEIO_TAP_UPSTREAM_API_KEY": upstream_api_key,
             "PYTHONUNBUFFERED": "1",
         }
     )
+    if upstream_api_key:
+        env["MODEIO_GATEWAY_UPSTREAM_API_KEY"] = upstream_api_key
+        env["MODEIO_TAP_UPSTREAM_API_KEY"] = upstream_api_key
     return env
 
 
@@ -82,14 +91,87 @@ def seed_codex_credentials(real_home: Path, sandbox_home: Path) -> List[str]:
             continue
         dst = target_root / relative
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        dst.symlink_to(src)
         seeded.append(relative)
     return seeded
 
 
+def seed_opencode_state(real_home: Path, paths: Dict[str, Path]) -> Dict[str, object]:
+    report: Dict[str, object] = {
+        "configSeeded": False,
+        "cacheLinked": False,
+        "stateLinked": False,
+    }
+    source_config = real_home / ".config" / "opencode" / "opencode.json"
+    if source_config.exists():
+        target_config = paths["opencode_config"]
+        target_config.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_config, target_config)
+        report["configSeeded"] = True
+        report["configPath"] = str(source_config)
+
+    source_cache = real_home / ".cache" / "opencode"
+    target_cache = paths["xdg_cache"] / "opencode"
+    if source_cache.exists() and not target_cache.exists():
+        target_cache.parent.mkdir(parents=True, exist_ok=True)
+        target_cache.symlink_to(source_cache, target_is_directory=True)
+        report["cacheLinked"] = True
+        report["cachePath"] = str(source_cache)
+
+    source_state = real_home / ".local" / "state" / "opencode"
+    target_state = paths["xdg_state"] / "opencode"
+    if source_state.exists() and not target_state.exists():
+        target_state.parent.mkdir(parents=True, exist_ok=True)
+        target_state.symlink_to(source_state, target_is_directory=True)
+        report["stateLinked"] = True
+        report["statePath"] = str(source_state)
+
+    return report
+
+
+def seed_openclaw_state(real_home: Path, paths: Dict[str, Path]) -> Dict[str, object]:
+    report: Dict[str, object] = {
+        "configSeeded": False,
+        "modelsSeeded": False,
+        "authProfilesSeeded": False,
+    }
+    source_root = real_home / ".openclaw"
+    source_config = source_root / "openclaw.json"
+    if source_config.exists():
+        target_config = paths["openclaw_config"]
+        target_config.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_config, target_config)
+        report["configSeeded"] = True
+        report["configPath"] = str(source_config)
+
+    source_agent_dir = source_root / "agents" / "main" / "agent"
+    target_agent_dir = paths["openclaw_models_cache"].parent
+    target_agent_dir.mkdir(parents=True, exist_ok=True)
+
+    source_models = source_agent_dir / "models.json"
+    if source_models.exists():
+        shutil.copy2(source_models, paths["openclaw_models_cache"])
+        report["modelsSeeded"] = True
+        report["modelsPath"] = str(source_models)
+
+    source_auth_profiles = source_agent_dir / "auth-profiles.json"
+    if source_auth_profiles.exists():
+        shutil.copy2(source_auth_profiles, target_agent_dir / "auth-profiles.json")
+        report["authProfilesSeeded"] = True
+        report["authProfilesPath"] = str(source_auth_profiles)
+
+    return report
+
+
 def upsert_openclaw_provider_model(provider_obj: Dict[str, object], model_id: str) -> bool:
     changed = False
-    desired_model = {"id": model_id, "name": f"Live Smoke {model_id}"}
+    normalized_model_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
+    desired_model = {
+        "id": normalized_model_id,
+        "name": f"Live Smoke {normalized_model_id}",
+    }
 
     raw_models = provider_obj.get("models")
     if not isinstance(raw_models, list):
@@ -104,7 +186,7 @@ def upsert_openclaw_provider_model(provider_obj: Dict[str, object], model_id: st
             continue
 
         item_id = item.get("id")
-        if item_id == model_id:
+        if item_id == normalized_model_id:
             found = True
             if item.get("name") != desired_model["name"]:
                 item = dict(item)
@@ -129,6 +211,7 @@ def upsert_openclaw_provider_model(provider_obj: Dict[str, object], model_id: st
 
 def apply_openclaw_live_model_to_config(payload: Dict[str, object], model_id: str) -> bool:
     changed = False
+    normalized_model_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
     models_obj = payload.get("models")
     if not isinstance(models_obj, dict):
         return changed
@@ -141,10 +224,10 @@ def apply_openclaw_live_model_to_config(payload: Dict[str, object], model_id: st
     if not isinstance(provider_obj, dict):
         return changed
 
-    if upsert_openclaw_provider_model(provider_obj, model_id):
+    if upsert_openclaw_provider_model(provider_obj, normalized_model_id):
         changed = True
 
-    target_ref = f"modeio-middleware/{model_id}"
+    target_ref = f"modeio-middleware/{normalized_model_id}"
 
     agents_obj = payload.get("agents")
     if not isinstance(agents_obj, dict):
@@ -225,6 +308,39 @@ def apply_openclaw_live_model_to_cache(payload: Dict[str, object], model_id: str
     return changed
 
 
+def sync_openclaw_cache_provider(
+    payload: Dict[str, object],
+    provider_settings: Dict[str, object],
+) -> bool:
+    changed = False
+    providers_obj = None
+
+    models_obj = payload.get("models")
+    if isinstance(models_obj, dict):
+        candidate = models_obj.get("providers")
+        if isinstance(candidate, dict):
+            providers_obj = candidate
+
+    if providers_obj is None:
+        candidate = payload.get("providers")
+        if isinstance(candidate, dict):
+            providers_obj = candidate
+
+    if not isinstance(providers_obj, dict):
+        return changed
+
+    provider_obj = providers_obj.get("modeio-middleware")
+    if not isinstance(provider_obj, dict):
+        return changed
+
+    for key in ("baseUrl", "api", "apiKey", "authHeader"):
+        value = provider_settings.get(key)
+        if provider_obj.get(key) != value:
+            provider_obj[key] = value
+            changed = True
+    return changed
+
+
 def rewrite_openclaw_model_for_live(
     *,
     config_path: Path,
@@ -239,16 +355,31 @@ def rewrite_openclaw_model_for_live(
         "modelsCacheChanged": False,
     }
 
+    provider_settings: Dict[str, object] = {}
+
     if config_path.exists():
         payload = json.loads(config_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict) and apply_openclaw_live_model_to_config(payload, model_id):
-            config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-            report["configChanged"] = True
+        if isinstance(payload, dict):
+            if apply_openclaw_live_model_to_config(payload, model_id):
+                config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                report["configChanged"] = True
+            models_obj = payload.get("models")
+            providers_obj = models_obj.get("providers") if isinstance(models_obj, dict) else None
+            provider_obj = providers_obj.get("modeio-middleware") if isinstance(providers_obj, dict) else None
+            if isinstance(provider_obj, dict):
+                provider_settings = {
+                    key: provider_obj.get(key)
+                    for key in ("baseUrl", "api", "apiKey", "authHeader")
+                }
 
     if models_cache_path.exists():
         payload = json.loads(models_cache_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict) and apply_openclaw_live_model_to_cache(payload, model_id):
-            models_cache_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-            report["modelsCacheChanged"] = True
+        if isinstance(payload, dict):
+            changed = apply_openclaw_live_model_to_cache(payload, model_id)
+            if provider_settings:
+                changed = sync_openclaw_cache_provider(payload, provider_settings) or changed
+            if changed:
+                models_cache_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                report["modelsCacheChanged"] = True
 
     return report

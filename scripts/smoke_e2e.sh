@@ -31,7 +31,8 @@ if [[ -d "${REPO_ROOT}/.venv/bin" ]]; then
 fi
 
 run_live=0
-run_live_agents=0
+run_live_openai_agents=0
+run_live_claude=0
 live_agents_install_mode="repo"
 live_agents_install_target=""
 live_agents_keep_sandbox=0
@@ -44,14 +45,18 @@ setup_smoke_status="not_run"
 openclaw_cli_status="not_run"
 offline_gateway_status="not_run"
 live_gateway_status="not_run"
+live_openai_agent_matrix_status="not_run"
+live_claude_agent_matrix_status="not_run"
 live_agent_matrix_status="not_run"
 
 usage() {
   cat <<'EOF' >&2
-Usage: smoke_e2e.sh [--live] [--live-agents] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH]
+Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH]
 
   --live                Run a generic live gateway smoke against a real upstream
-  --live-agents         Run the full live agent matrix (local/self-hosted only)
+  --live-agents         Run both live agent paths: OpenAI-compatible clients and Claude hooks
+  --live-openai-agents  Run only Codex/OpenCode/OpenClaw live smoke through OpenAI-compatible middleware routes
+  --live-claude         Run only Claude hook live smoke (no upstream model provider required)
   --install-mode MODE   Runtime install mode for the middleware under test: repo|wheel|path|git
   --install-target VAL  Optional wheel/path/git target used with --install-mode
   --keep-sandbox        Keep the live-agent temp HOME/XDG sandbox for debugging
@@ -65,7 +70,14 @@ while [[ $# -gt 0 ]]; do
       run_live=1
       ;;
     --live-agents)
-      run_live_agents=1
+      run_live_openai_agents=1
+      run_live_claude=1
+      ;;
+    --live-openai-agents)
+      run_live_openai_agents=1
+      ;;
+    --live-claude)
+      run_live_claude=1
       ;;
     --install-mode)
       if [[ $# -lt 2 ]]; then
@@ -117,28 +129,27 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
-resolve_upstream_base_url() {
-  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-}" ]]; then
-    printf '%s\n' "${MODEIO_GATEWAY_UPSTREAM_BASE_URL}"
-    return
-  fi
-  if [[ -n "${ZENMUX_API_KEY:-}" ]]; then
-    printf '%s\n' "https://zenmux.ai/api/v1"
-    return
-  fi
-  printf '%s\n' "https://api.openai.com/v1"
-}
+resolve_live_upstream_fields() {
+  "$PYTHON_BIN" - "$REPO_ROOT" <<'PY'
+import sys
+from pathlib import Path
 
-resolve_upstream_model() {
-  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_MODEL:-}" ]]; then
-    printf '%s\n' "${MODEIO_GATEWAY_UPSTREAM_MODEL}"
-    return
-  fi
-  if [[ "$(resolve_upstream_base_url)" == "https://zenmux.ai/api/v1" ]]; then
-    printf '%s\n' "openai/gpt-5.3-codex"
-    return
-  fi
-  printf '%s\n' "gpt-4o-mini"
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root))
+
+from modeio_middleware.cli.setup_lib.upstream import resolve_live_upstream_selection
+
+selection = resolve_live_upstream_selection()
+if not selection.get("ready"):
+    raise SystemExit(
+        "[smoke] missing reusable live upstream for openai-compatible smoke "
+        f"(source={selection.get('source')} base={selection.get('baseUrl')} model={selection.get('model')}). "
+        "Set MODEIO_GATEWAY_UPSTREAM_BASE_URL/MODEL with a key, reuse an existing remote OpenCode/OpenClaw config, or set OPENAI_API_KEY."
+    )
+
+for key in ("baseUrl", "model", "apiKey", "source", "provider"):
+    print(selection.get(key) or "")
+PY
 }
 
 check_json_field() {
@@ -166,6 +177,8 @@ write_summary() {
   OPENCLAW_CLI_STATUS="$openclaw_cli_status" \
   OFFLINE_GATEWAY_STATUS="$offline_gateway_status" \
   LIVE_GATEWAY_STATUS="$live_gateway_status" \
+  LIVE_OPENAI_AGENT_MATRIX_STATUS="$live_openai_agent_matrix_status" \
+  LIVE_CLAUDE_AGENT_MATRIX_STATUS="$live_claude_agent_matrix_status" \
   LIVE_AGENT_MATRIX_STATUS="$live_agent_matrix_status" \
   LIVE_AGENT_MATRIX_MODE="$live_agents_install_mode" \
   "$PYTHON_BIN" - "$summary_path" <<'PY'
@@ -183,6 +196,8 @@ payload = {
         "openclawCliSmoke": os.environ["OPENCLAW_CLI_STATUS"],
         "offlineGatewaySmoke": os.environ["OFFLINE_GATEWAY_STATUS"],
         "liveGatewaySmoke": os.environ["LIVE_GATEWAY_STATUS"],
+        "liveOpenAIAgentSmoke": os.environ["LIVE_OPENAI_AGENT_MATRIX_STATUS"],
+        "liveClaudeSmoke": os.environ["LIVE_CLAUDE_AGENT_MATRIX_STATUS"],
         "liveAgentMatrixSmoke": os.environ["LIVE_AGENT_MATRIX_STATUS"],
     },
     "liveAgentMatrixMode": os.environ["LIVE_AGENT_MATRIX_MODE"],
@@ -542,21 +557,32 @@ PY
 
 run_live_gateway_smoke() {
   local gateway_port=18787
-  local upstream_base_url="$(resolve_upstream_base_url)"
-  local upstream_model="$(resolve_upstream_model)"
+  local resolved_output=""
+  local resolved=()
+  if ! resolved_output="$(resolve_live_upstream_fields)"; then
+    live_gateway_status="failed"
+    return 1
+  fi
+  mapfile -t resolved <<< "$resolved_output"
+  local upstream_base_url="${resolved[0]}"
+  local upstream_model="${resolved[1]}"
+  local upstream_api_key="${resolved[2]}"
+  local upstream_source="${resolved[3]}"
+  local upstream_provider="${resolved[4]}"
   local stdout_log="$ARTIFACTS_DIR/live-gateway.stdout.log"
   local stderr_log="$ARTIFACTS_DIR/live-gateway.stderr.log"
+  local response_headers="$ARTIFACTS_DIR/live-gateway.headers.txt"
+  local response_body="$ARTIFACTS_DIR/live-gateway-response.json"
+  local http_code=""
 
-  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${ZENMUX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "[smoke] --live requires MODEIO_GATEWAY_UPSTREAM_API_KEY, ZENMUX_API_KEY, or OPENAI_API_KEY" >&2
-    exit 1
-  fi
+  log "running live gateway smoke against real upstream (source=${upstream_source} provider=${upstream_provider})"
+  live_gateway_status="failed"
 
-  log "running live gateway smoke against real upstream"
-
+  local rc=0
   (
     cd "$REPO_ROOT"
 
+    MODEIO_GATEWAY_UPSTREAM_API_KEY="$upstream_api_key" \
     "$PYTHON_BIN" scripts/middleware_gateway.py \
       --host 127.0.0.1 \
       --port "$gateway_port" \
@@ -581,30 +607,42 @@ run_live_gateway_smoke() {
 
     curl -sSf "http://127.0.0.1:${gateway_port}/healthz" >/dev/null
 
-    curl -sSf "http://127.0.0.1:${gateway_port}/v1/chat/completions" \
+    http_code="$(curl -sS -D "$response_headers" -o "$response_body" -w '%{http_code}' "http://127.0.0.1:${gateway_port}/v1/chat/completions" \
       -H "Content-Type: application/json" \
-      -d "{\"model\":\"${upstream_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with LIVE_CHAT_SMOKE_OK only\"}]}" \
-      >"$ARTIFACTS_DIR/live-gateway-response.json"
+      -d "{\"model\":\"${upstream_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with LIVE_CHAT_SMOKE_OK only\"}]}" )"
+
+    if [[ ! "$http_code" =~ ^2 ]]; then
+      echo "[smoke] live gateway returned HTTP ${http_code}" >&2
+      if [[ -f "$response_body" ]]; then
+        echo "[smoke] response body:" >&2
+        cat "$response_body" >&2
+      fi
+      exit 1
+    fi
 
     cleanup_live
     trap - EXIT
-  )
+  ) || rc=$?
+
+  if [[ "$rc" -ne 0 ]]; then
+    return "$rc"
+  fi
 
   live_gateway_status="passed"
 }
 
 run_live_agent_matrix_smoke() {
+  local agent_subset="$1"
+  local artifact_leaf="$2"
+  local label="$3"
+  local status_var="$4"
   local smoke_args=(
     scripts/smoke_agent_matrix.py
-    --artifacts-dir "$ARTIFACTS_DIR/live-agent-matrix"
+    --agents "$agent_subset"
+    --artifacts-dir "$ARTIFACTS_DIR/$artifact_leaf"
     --repo-root "$REPO_ROOT"
     --install-mode "$live_agents_install_mode"
   )
-
-  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${ZENMUX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "[smoke] --live-agents requires MODEIO_GATEWAY_UPSTREAM_API_KEY, ZENMUX_API_KEY, or OPENAI_API_KEY" >&2
-    exit 1
-  fi
 
   if [[ -n "$live_agents_install_target" ]]; then
     smoke_args+=(--install-target "$live_agents_install_target")
@@ -614,15 +652,49 @@ run_live_agent_matrix_smoke() {
     smoke_args+=(--keep-sandbox)
   fi
 
-  log "running live agent matrix smoke (codex/opencode/openclaw/claude via middleware; install-mode=${live_agents_install_mode})"
+  log "running ${label} (install-mode=${live_agents_install_mode})"
+  printf -v "$status_var" '%s' "failed"
+  local rc=0
   (
     cd "$REPO_ROOT"
     "$PYTHON_BIN" "${smoke_args[@]}"
-  )
-  live_agent_matrix_status="passed"
+  ) || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    return "$rc"
+  fi
+  printf -v "$status_var" '%s' "passed"
+}
+
+finalize_live_agent_matrix_status() {
+  local requested=0
+  local all_passed=1
+
+  if [[ "$run_live_openai_agents" -eq 1 ]]; then
+    requested=1
+    [[ "$live_openai_agent_matrix_status" == "passed" ]] || all_passed=0
+  else
+    live_openai_agent_matrix_status="skipped"
+  fi
+
+  if [[ "$run_live_claude" -eq 1 ]]; then
+    requested=1
+    [[ "$live_claude_agent_matrix_status" == "passed" ]] || all_passed=0
+  else
+    live_claude_agent_matrix_status="skipped"
+  fi
+
+  if [[ "$requested" -eq 0 ]]; then
+    live_agent_matrix_status="skipped"
+  elif [[ "$all_passed" -eq 1 ]]; then
+    live_agent_matrix_status="passed"
+  else
+    live_agent_matrix_status="failed"
+  fi
 }
 
 main() {
+  local smoke_failures=0
+
   require_cmd mktemp
   require_cmd curl
   require_cmd tee
@@ -640,15 +712,42 @@ main() {
   run_offline_gateway_smoke
 
   if [[ "$run_live" -eq 1 ]]; then
-    run_live_gateway_smoke
+    if ! run_live_gateway_smoke; then
+      smoke_failures=1
+    fi
   else
     live_gateway_status="skipped"
   fi
 
-  if [[ "$run_live_agents" -eq 1 ]]; then
-    run_live_agent_matrix_smoke
-  else
-    live_agent_matrix_status="skipped"
+  if [[ "$run_live_openai_agents" -eq 1 || "$run_live_claude" -eq 1 ]]; then
+    live_agent_matrix_status="failed"
+  fi
+
+  if [[ "$run_live_openai_agents" -eq 1 ]]; then
+    if ! run_live_agent_matrix_smoke \
+      "codex,opencode,openclaw" \
+      "live-openai-agent-matrix" \
+      "live OpenAI-compatible agent smoke (codex/opencode/openclaw via middleware)" \
+      "live_openai_agent_matrix_status"; then
+      smoke_failures=1
+    fi
+  fi
+
+  if [[ "$run_live_claude" -eq 1 ]]; then
+    if ! run_live_agent_matrix_smoke \
+      "claude" \
+      "live-claude-matrix" \
+      "live Claude hook smoke" \
+      "live_claude_agent_matrix_status"; then
+      smoke_failures=1
+    fi
+  fi
+
+  finalize_live_agent_matrix_status
+
+  if [[ "$smoke_failures" -ne 0 ]]; then
+    log "one or more smoke checks failed"
+    return 1
   fi
 
   log "all smoke checks passed"

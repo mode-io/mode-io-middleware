@@ -11,6 +11,7 @@ from modeio_middleware.connectors.base import (
     ConnectorCapabilities,
 )
 from modeio_middleware.connectors.client_identity import detect_openai_client_name
+from modeio_middleware.core.client_auth import normalize_client_upstream_model
 from modeio_middleware.core.contracts import (
     ENDPOINT_CHAT_COMPLETIONS,
     ENDPOINT_RESPONSES,
@@ -26,6 +27,14 @@ OPENAI_CONNECTOR_PATHS = {
 }
 
 
+def _client_provider_name(incoming_headers: Dict[str, str]) -> str | None:
+    for key, value in incoming_headers.items():
+        if key.lower() == "x-modeio-client-provider":
+            provider_name = str(value).strip()
+            if provider_name:
+                return provider_name
+            return None
+    return None
 class OpenAIHttpConnector(ConnectorAdapter):
     route_paths = tuple(OPENAI_CONNECTOR_PATHS.keys())
 
@@ -58,10 +67,17 @@ class OpenAIHttpConnector(ConnectorAdapter):
         )
         capabilities = ConnectorCapabilities(can_patch=True, can_block=True)
         client_name = detect_openai_client_name(incoming_headers)
+        client_provider_name = _client_provider_name(incoming_headers)
+        request_body["model"] = normalize_client_upstream_model(
+            request_body.get("model"),
+            client_name=client_name,
+            client_provider_name=client_provider_name,
+        )
         connector_context = {
             "endpoint_kind": endpoint_kind,
             "source": "openai_gateway",
             "client_name": client_name,
+            "client_provider_name": client_provider_name,
             "source_event": "http_request",
             "surface_capabilities": capabilities.as_dict(),
         }

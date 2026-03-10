@@ -178,9 +178,13 @@ Live routing check against a real upstream:
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 ```
 
+Live OpenAI-compatible agent smoke now defaults to harness-native auth where possible: Codex uses the client-scoped gateway route, OpenCode preserves its own provider config, and OpenClaw bridges its current auth/profile through a client-scoped middleware route. Explicit `MODEIO_GATEWAY_UPSTREAM_*` remains available as managed mode, and bare `ZENMUX_API_KEY` no longer silently changes the default path.
+
 Full agent-matrix smoke is available for local or self-hosted environments where Codex, Claude, OpenCode, and OpenClaw CLIs are installed:
 
 ```bash
+./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
+./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 ```
 
@@ -192,3 +196,5 @@ Fresh-install acceptance smoke uses the packaged middleware entrypoints from a t
 ```bash
 ./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
 ```
+
+If you need the old OpenClaw middleware-owned provider behavior instead of native auth bridging, run setup with `--openclaw-auth-mode managed`.

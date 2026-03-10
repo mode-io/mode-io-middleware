@@ -97,7 +97,7 @@ class TestSmokeOpenCodeFlow(unittest.TestCase):
                 config_payload = json.loads(opencode_config.read_text(encoding="utf-8"))
                 self.assertEqual(
                     config_payload["provider"]["openai"]["options"]["baseURL"],
-                    gateway_base_url,
+                    f"{gateway.base_url}/clients/opencode/openai/v1",
                 )
 
                 chat_status, chat_headers, chat_payload = post_json(

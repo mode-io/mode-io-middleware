@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 from modeio_middleware.connectors.base import CanonicalInvocation, ConnectorAdapter
+from modeio_middleware.connectors.client_identity import detect_openai_client_name
 from modeio_middleware.connectors.claude_hooks import (
     CLAUDE_HOOK_CONNECTOR_PATH,
     ClaudeHookConnector,
@@ -166,8 +167,118 @@ class MiddlewareEngine:
         request_context = self._invocation_router.build_request_context(invocation)
         return session, on_plugin_error, shared_state, request_context
 
+    def _record_pre_result(self, session: PipelineSession, result: Any) -> None:
+        session.pre_actions = result.actions
+        session.degraded.extend(result.degraded)
+        journal = self.services.request_journal
+        if journal is None:
+            return
+        journal.record_pre_result(
+            request_id=session.request_id,
+            effective_request_body=result.body,
+            pre_actions=list(result.actions),
+            degraded=list(result.degraded),
+            findings=list(result.findings),
+            blocked=result.blocked,
+            block_message=result.block_message,
+        )
+
+    def _record_post_result(self, session: PipelineSession, result: Any) -> None:
+        session.post_actions = result.actions
+        session.degraded.extend(result.degraded)
+        journal = self.services.request_journal
+        if journal is None:
+            return
+        journal.record_post_result(
+            request_id=session.request_id,
+            effective_response_body=result.body,
+            post_actions=list(result.actions),
+            degraded=list(result.degraded),
+            findings=list(result.findings),
+            blocked=result.blocked,
+            block_message=result.block_message,
+        )
+
+    def _run_pre_request_phase(
+        self,
+        *,
+        session: PipelineSession,
+        invocation: CanonicalInvocation,
+        request_context: Dict[str, Any],
+        shared_state: Dict[str, Any],
+        on_plugin_error: str,
+        connector_capabilities: Dict[str, bool],
+    ) -> Any:
+        result = self.plugin_manager.apply_pre_request(
+            session.active_plugins,
+            request_id=session.request_id,
+            endpoint_kind=invocation.endpoint_kind,
+            profile=session.profile,
+            request_body=invocation.request_body,
+            request_headers=invocation.incoming_headers,
+            context=request_context,
+            shared_state=shared_state,
+            on_plugin_error=on_plugin_error,
+            services=self._plugin_services,
+            connector_capabilities=connector_capabilities,
+        )
+        self._record_pre_result(session, result)
+        return result
+
+    def _run_post_response_phase(
+        self,
+        *,
+        session: PipelineSession,
+        invocation: CanonicalInvocation,
+        request_context: Dict[str, Any],
+        response_body: Dict[str, Any],
+        response_headers: Dict[str, str],
+        shared_state: Dict[str, Any],
+        on_plugin_error: str,
+        connector_capabilities: Dict[str, bool],
+    ) -> Any:
+        result = self.plugin_manager.apply_post_response(
+            session.active_plugins,
+            request_id=session.request_id,
+            endpoint_kind=invocation.endpoint_kind,
+            profile=session.profile,
+            request_context=request_context,
+            response_body=response_body,
+            response_headers=response_headers,
+            shared_state=shared_state,
+            on_plugin_error=on_plugin_error,
+            services=self._plugin_services,
+            connector_capabilities=connector_capabilities,
+        )
+        self._record_post_result(session, result)
+        return result
+
     def _release_stream_plugins(self, session: PipelineSession) -> None:
         self._pipeline.release_stream_plugins(session)
+
+    def _finish_success(self, request_id: str) -> None:
+        journal = self.services.request_journal
+        if journal is not None:
+            journal.finish_success(request_id=request_id)
+
+    def _middleware_error_result(
+        self,
+        session: PipelineSession,
+        error: MiddlewareError,
+    ) -> ProcessResult:
+        self._journal_finish_error(session.request_id, error)
+        return self._error_process_result(session, error)
+
+    def _unexpected_error_result(self, session: PipelineSession) -> ProcessResult:
+        return self._middleware_error_result(
+            session,
+            MiddlewareError(
+                503,
+                "MODEIO_INTERNAL_ERROR",
+                "unexpected internal error",
+                retryable=False,
+            ),
+        )
 
     def shutdown(self) -> None:
         self.plugin_manager.shutdown()
@@ -195,6 +306,38 @@ class MiddlewareEngine:
         if invocation.phase == "request":
             return self.process_openai_invocation(invocation)
         return self._process_connector_hook(invocation)
+
+    def process_models_request(
+        self,
+        *,
+        request_id: str,
+        incoming_headers: Dict[str, str],
+        query_params: Dict[str, str],
+    ) -> ProcessResult:
+        client_name = detect_openai_client_name(incoming_headers)
+        client_provider_name = None
+        for key, value in incoming_headers.items():
+            if key.lower() == "x-modeio-client-provider":
+                text = str(value).strip()
+                if text:
+                    client_provider_name = text
+                break
+
+        session = self._new_session(request_id=request_id)
+        try:
+            upstream_response = self._upstream_transport.forward_models_json(
+                incoming_headers=incoming_headers,
+                client_name=client_name,
+                client_provider_name=client_provider_name,
+                query_params=query_params,
+            )
+            return ProcessResult(
+                status=200,
+                payload=upstream_response.payload,
+                headers=upstream_response.headers,
+            )
+        except MiddlewareError:
+            raise
 
     def process_request(
         self,
@@ -228,31 +371,14 @@ class MiddlewareEngine:
         streaming_response = False
 
         try:
-            pre_result = self.plugin_manager.apply_pre_request(
-                session.active_plugins,
-                request_id=session.request_id,
-                endpoint_kind=invocation.endpoint_kind,
-                profile=session.profile,
-                request_body=invocation.request_body,
-                request_headers=invocation.incoming_headers,
-                context=request_context,
+            pre_result = self._run_pre_request_phase(
+                session=session,
+                invocation=invocation,
+                request_context=request_context,
                 shared_state=shared_state,
                 on_plugin_error=on_plugin_error,
-                services=self._plugin_services,
                 connector_capabilities=connector_capabilities,
             )
-            session.pre_actions = pre_result.actions
-            session.degraded.extend(pre_result.degraded)
-            if journal is not None:
-                journal.record_pre_result(
-                    request_id=session.request_id,
-                    effective_request_body=pre_result.body,
-                    pre_actions=list(pre_result.actions),
-                    degraded=list(pre_result.degraded),
-                    findings=list(pre_result.findings),
-                    blocked=pre_result.blocked,
-                    block_message=pre_result.block_message,
-                )
             if pre_result.blocked:
                 raise MiddlewareError(
                     403,
@@ -288,6 +414,10 @@ class MiddlewareEngine:
                 endpoint_kind=invocation.endpoint_kind,
                 payload=pre_result.body,
                 incoming_headers=pre_result.headers,
+                client_name=invocation.client_name,
+                client_provider_name=invocation.connector_context.get(
+                    "client_provider_name"
+                ),
             )
             if journal is not None:
                 journal.record_upstream_result(
@@ -295,31 +425,16 @@ class MiddlewareEngine:
                     response_body=upstream_response.payload,
                 )
 
-            post_result = self.plugin_manager.apply_post_response(
-                session.active_plugins,
-                request_id=session.request_id,
-                endpoint_kind=invocation.endpoint_kind,
-                profile=session.profile,
+            post_result = self._run_post_response_phase(
+                session=session,
+                invocation=invocation,
                 request_context=response_request_context,
                 response_body=upstream_response.payload,
                 response_headers=upstream_response.headers,
                 shared_state=shared_state,
                 on_plugin_error=on_plugin_error,
-                services=self._plugin_services,
                 connector_capabilities=connector_capabilities,
             )
-            session.post_actions = post_result.actions
-            session.degraded.extend(post_result.degraded)
-            if journal is not None:
-                journal.record_post_result(
-                    request_id=session.request_id,
-                    effective_response_body=post_result.body,
-                    post_actions=list(post_result.actions),
-                    degraded=list(post_result.degraded),
-                    findings=list(post_result.findings),
-                    blocked=post_result.blocked,
-                    block_message=post_result.block_message,
-                )
             if post_result.blocked:
                 raise MiddlewareError(
                     403,
@@ -330,24 +445,13 @@ class MiddlewareEngine:
                 )
 
             headers = self._response_headers(session, post_result.headers)
-            if journal is not None:
-                journal.finish_success(request_id=session.request_id)
+            self._finish_success(session.request_id)
             return ProcessResult(status=200, payload=post_result.body, headers=headers)
 
         except MiddlewareError as error:
-            if journal is not None:
-                self._journal_finish_error(session.request_id, error)
-            return self._error_process_result(session, error)
+            return self._middleware_error_result(session, error)
         except Exception:
-            error = MiddlewareError(
-                503,
-                "MODEIO_INTERNAL_ERROR",
-                "unexpected internal error",
-                retryable=False,
-            )
-            if journal is not None:
-                self._journal_finish_error(session.request_id, error)
-            return self._error_process_result(session, error)
+            return self._unexpected_error_result(session)
         finally:
             if not streaming_response:
                 self._shutdown_session_plugins(session)
@@ -379,35 +483,17 @@ class MiddlewareEngine:
             self._start_invocation(invocation)
         )
         connector_capabilities = invocation.connector_capabilities.as_dict()
-        journal = self.services.request_journal
 
         try:
             if invocation.phase == "pre_request":
-                pre_result = self.plugin_manager.apply_pre_request(
-                    session.active_plugins,
-                    request_id=session.request_id,
-                    endpoint_kind=invocation.endpoint_kind,
-                    profile=session.profile,
-                    request_body=invocation.request_body,
-                    request_headers=invocation.incoming_headers,
-                    context=request_context,
+                pre_result = self._run_pre_request_phase(
+                    session=session,
+                    invocation=invocation,
+                    request_context=request_context,
                     shared_state=shared_state,
                     on_plugin_error=on_plugin_error,
-                    services=self._plugin_services,
                     connector_capabilities=connector_capabilities,
                 )
-                session.pre_actions = pre_result.actions
-                session.degraded.extend(pre_result.degraded)
-                if journal is not None:
-                    journal.record_pre_result(
-                        request_id=session.request_id,
-                        effective_request_body=pre_result.body,
-                        pre_actions=list(pre_result.actions),
-                        degraded=list(pre_result.degraded),
-                        findings=list(pre_result.findings),
-                        blocked=pre_result.blocked,
-                        block_message=pre_result.block_message,
-                    )
                 response_payload = build_claude_hook_response(
                     source_event=invocation.source_event,
                     blocked=pre_result.blocked,
@@ -415,31 +501,16 @@ class MiddlewareEngine:
                     findings=pre_result.findings,
                 )
             elif invocation.phase == "post_response":
-                post_result = self.plugin_manager.apply_post_response(
-                    session.active_plugins,
-                    request_id=session.request_id,
-                    endpoint_kind=invocation.endpoint_kind,
-                    profile=session.profile,
+                post_result = self._run_post_response_phase(
+                    session=session,
+                    invocation=invocation,
                     request_context=request_context,
                     response_body=invocation.response_body,
                     response_headers={},
                     shared_state=shared_state,
                     on_plugin_error=on_plugin_error,
-                    services=self._plugin_services,
                     connector_capabilities=connector_capabilities,
                 )
-                session.post_actions = post_result.actions
-                session.degraded.extend(post_result.degraded)
-                if journal is not None:
-                    journal.record_post_result(
-                        request_id=session.request_id,
-                        effective_response_body=post_result.body,
-                        post_actions=list(post_result.actions),
-                        degraded=list(post_result.degraded),
-                        findings=list(post_result.findings),
-                        blocked=post_result.blocked,
-                        block_message=post_result.block_message,
-                    )
                 response_payload = build_claude_hook_response(
                     source_event=invocation.source_event,
                     blocked=post_result.blocked,
@@ -455,29 +526,16 @@ class MiddlewareEngine:
                 )
 
             headers = self._session_headers(session)
-            if journal is not None:
-                journal.finish_success(request_id=session.request_id)
+            self._finish_success(session.request_id)
             return ProcessResult(status=200, payload=response_payload, headers=headers)
 
         except MiddlewareError as error:
-            if journal is not None:
-                self._journal_finish_error(session.request_id, error)
-            return self._error_process_result(session, error)
+            return self._middleware_error_result(session, error)
         except Exception:
-            error = MiddlewareError(
-                503,
-                "MODEIO_INTERNAL_ERROR",
-                "unexpected internal error",
-                retryable=False,
-            )
-            if journal is not None:
-                self._journal_finish_error(session.request_id, error)
-            return self._error_process_result(session, error)
+            return self._unexpected_error_result(session)
         finally:
             self._shutdown_session_plugins(session)
 
     def _finish_stream_request(self, session: PipelineSession) -> None:
-        journal = self.services.request_journal
-        if journal is not None:
-            journal.finish_success(request_id=session.request_id)
+        self._finish_success(session.request_id)
         self._release_stream_plugins(session)

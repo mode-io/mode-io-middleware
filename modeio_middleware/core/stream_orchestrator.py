@@ -49,6 +49,8 @@ class StreamOrchestrator:
             endpoint_kind=endpoint_kind,
             payload=upstream_payload,
             incoming_headers=upstream_headers,
+            client_name=request_context.get("client_name", "unknown"),
+            client_provider_name=request_context.get("client_provider_name"),
         )
         if journal is not None:
             journal.record_upstream_result(

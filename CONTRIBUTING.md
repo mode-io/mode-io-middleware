@@ -46,6 +46,22 @@ modeio-middleware-setup --doctor --json \
   --require-upstream-api-key
 ```
 
+The live smoke resolver now prefers harness-native auth first (Codex/OpenCode/OpenClaw/Claude), then explicit `MODEIO_GATEWAY_UPSTREAM_*` managed mode when you choose to provide it. Bare `ZENMUX_API_KEY` is no longer treated as an implicit default.
+
+Run the OpenAI-compatible client matrix only in environments where Codex/OpenCode/OpenClaw are installed and authenticated:
+
+```bash
+./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
+```
+
+Run the Claude hook matrix when only Claude integration needs live validation:
+
+```bash
+./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
+```
+
+OpenClaw setup defaults to native auth bridging. Use `modeio-middleware-setup --apply-openclaw --openclaw-auth-mode managed ...` only when you explicitly want middleware-managed upstream credentials.
+
 Run the full agent matrix only in environments where all client CLIs are installed and authenticated:
 
 ```bash

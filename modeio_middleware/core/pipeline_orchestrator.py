@@ -58,14 +58,14 @@ class PipelineOrchestrator:
         shared_state: Dict[str, Any] = {}
         return session, on_plugin_error, shared_state
 
-    def shutdown_session_plugins(self, session: PipelineSession) -> None:
+    def _release_plugins(self, session: PipelineSession) -> None:
         if session.plugins_released:
             return
         self._plugin_manager.shutdown_active_plugins(session.active_plugins)
         session.plugins_released = True
 
+    def shutdown_session_plugins(self, session: PipelineSession) -> None:
+        self._release_plugins(session)
+
     def release_stream_plugins(self, session: PipelineSession) -> None:
-        if session.plugins_released:
-            return
-        self._plugin_manager.shutdown_active_plugins(session.active_plugins)
-        session.plugins_released = True
+        self._release_plugins(session)

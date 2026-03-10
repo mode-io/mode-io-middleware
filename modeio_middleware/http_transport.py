@@ -9,6 +9,7 @@ import threading
 import zlib
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
+from urllib.parse import unquote
 
 import uvicorn
 from starlette.applications import Starlette
@@ -46,6 +47,7 @@ except Exception:  # pragma: no cover
 
 CLAUDE_HOOK_CONNECTOR_PATH = "/connectors/claude/hooks"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+CLIENT_ROUTE_PREFIX = "/clients/"
 
 
 def _decode_content_encoded_body(body_bytes: bytes, content_encoding: str) -> bytes:
@@ -233,6 +235,34 @@ def _is_loopback_host(host: str) -> bool:
     return str(host).strip().lower() in LOOPBACK_HOSTS
 
 
+def _normalized_openai_request(
+    path: str,
+    incoming_headers: Dict[str, str],
+) -> tuple[str, Dict[str, str]]:
+    normalized_headers = dict(incoming_headers)
+    if not path.startswith(CLIENT_ROUTE_PREFIX):
+        return path, normalized_headers
+
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) >= 4 and segments[0] == "clients":
+        client_name = unquote(segments[1]).strip()
+        if segments[2] == "v1":
+            remainder = "/".join(segments[3:])
+            if remainder:
+                normalized_headers["x-modeio-client"] = client_name
+                return f"/v1/{remainder}", normalized_headers
+
+        if len(segments) >= 5 and segments[3] == "v1":
+            provider_name = unquote(segments[2]).strip()
+            remainder = "/".join(segments[4:])
+            if remainder:
+                normalized_headers["x-modeio-client"] = client_name
+                normalized_headers["x-modeio-client-provider"] = provider_name
+                return f"/v1/{remainder}", normalized_headers
+
+    return path, normalized_headers
+
+
 def create_app(config: GatewayRuntimeConfig) -> Starlette:
     controller = GatewayController(config)
 
@@ -261,6 +291,9 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
 
     async def _process_post_request(request: Request) -> Response:
         request_id = new_request_id()
+        normalized_path, normalized_headers = _normalized_openai_request(
+            str(request.url.path), dict(request.headers.items())
+        )
         try:
             body = await _read_json_body(request)
         except MiddlewareError as error:
@@ -277,10 +310,10 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
         try:
             result = await run_in_threadpool(
                 controller.process_http_request,
-                path=str(request.url.path),
+                path=normalized_path,
                 request_id=request_id,
                 payload=body,
-                incoming_headers=dict(request.headers.items()),
+                incoming_headers=normalized_headers,
             )
         except MiddlewareError as error:
             return _contract_error_response(
@@ -293,6 +326,43 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
                 details=error.details,
             )
         return _render_engine_result(controller, request_id, result)
+
+    async def _process_models_request(request: Request) -> Response:
+        request_id = new_request_id()
+        normalized_path, normalized_headers = _normalized_openai_request(
+            str(request.url.path), dict(request.headers.items())
+        )
+        if normalized_path != "/v1/models":
+            return _contract_error_response(
+                controller,
+                request_id,
+                status=404,
+                code="MODEIO_ROUTE_NOT_FOUND",
+                message="route not found",
+                retryable=False,
+            )
+
+        try:
+            result = await run_in_threadpool(
+                controller.process_models_request,
+                request_id=request_id,
+                incoming_headers=normalized_headers,
+                query_params={key: str(value) for key, value in request.query_params.items()},
+            )
+        except MiddlewareError as error:
+            return _contract_error_response(
+                controller,
+                request_id,
+                status=error.status,
+                code=error.code,
+                message=error.message,
+                retryable=error.retryable,
+                details=error.details,
+            )
+        response = _render_engine_result(controller, request_id, result)
+        for key, value in _default_contract_headers(controller, request_id).items():
+            response.headers[key] = value
+        return response
 
     async def unknown_route(_request: Request) -> Response:
         request_id = new_request_id()
@@ -320,8 +390,35 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             ),
             *build_monitoring_routes(controller),
             Route(CLAUDE_HOOK_CONNECTOR_PATH, _process_post_request, methods=["POST"]),
+            Route("/v1/models", _process_models_request, methods=["GET"]),
             Route("/v1/chat/completions", _process_post_request, methods=["POST"]),
             Route("/v1/responses", _process_post_request, methods=["POST"]),
+            Route("/clients/{client}/v1/models", _process_models_request, methods=["GET"]),
+            Route(
+                "/clients/{client}/v1/chat/completions",
+                _process_post_request,
+                methods=["POST"],
+            ),
+            Route(
+                "/clients/{client}/v1/responses",
+                _process_post_request,
+                methods=["POST"],
+            ),
+            Route(
+                "/clients/{client}/{provider}/v1/models",
+                _process_models_request,
+                methods=["GET"],
+            ),
+            Route(
+                "/clients/{client}/{provider}/v1/chat/completions",
+                _process_post_request,
+                methods=["POST"],
+            ),
+            Route(
+                "/clients/{client}/{provider}/v1/responses",
+                _process_post_request,
+                methods=["POST"],
+            ),
             Route("/{rest:path}", unknown_route, methods=["GET", "POST"]),
         ],
         lifespan=lifespan,

@@ -14,11 +14,20 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 try:  # Python 3.14+
     from compression import zstd as _zstd_codec
 except Exception:  # pragma: no cover
     _zstd_codec = None
 
+from modeio_middleware.cli.setup_lib.upstream import (
+    OPENAI_UPSTREAM_BASE_URL,
+    resolve_live_upstream_selection,
+    summarize_live_upstream_selection,
+)
 from smoke_matrix.agents import build_agent_command as _build_agent_command
 from smoke_matrix.common import (
     check_required_commands as _check_required_commands,
@@ -29,7 +38,6 @@ from smoke_matrix.common import (
     free_port as _free_port,
     load_tap_events as _load_tap_events,
     parse_agents as _parse_agents,
-    resolve_upstream_api_key as _resolve_upstream_api_key,
     run_command_capture as _run_command_capture,
     tap_token_metrics as _tap_token_metrics,
     tap_window_metrics as _tap_window_metrics,
@@ -45,18 +53,19 @@ from smoke_matrix.sandbox import (
     build_sandbox_paths as _build_sandbox_paths,
     rewrite_openclaw_model_for_live as _rewrite_openclaw_model_for_live,
     seed_codex_credentials as _seed_codex_credentials,
+    seed_opencode_state as _seed_opencode_state,
+    seed_openclaw_state as _seed_openclaw_state,
     upsert_openclaw_provider_model as _upsert_openclaw_provider_model,
 )
 from smoke_matrix.runtime import prepare_runtime as _prepare_runtime
 
 
-DEFAULT_UPSTREAM_BASE_URL = os.environ.get(
-    "MODEIO_GATEWAY_UPSTREAM_BASE_URL",
-    default_upstream_base_url(dict(os.environ)),
+_DEFAULT_UPSTREAM_SELECTION = resolve_live_upstream_selection(env=dict(os.environ))
+DEFAULT_UPSTREAM_BASE_URL = str(
+    _DEFAULT_UPSTREAM_SELECTION.get("baseUrl") or default_upstream_base_url(dict(os.environ))
 )
-DEFAULT_UPSTREAM_MODEL = os.environ.get(
-    "MODEIO_GATEWAY_UPSTREAM_MODEL",
-    default_upstream_model(dict(os.environ)),
+DEFAULT_UPSTREAM_MODEL = str(
+    _DEFAULT_UPSTREAM_SELECTION.get("model") or default_upstream_model(dict(os.environ))
 )
 
 
@@ -105,6 +114,7 @@ def _run_doctor(
     openclaw_models_cache_path: Path,
     claude_settings_path: Path,
     timeout_seconds: int,
+    require_upstream_api_key: bool,
 ) -> Dict[str, object]:
     command = [
         *setup_command,
@@ -122,8 +132,9 @@ def _run_doctor(
         str(claude_settings_path),
         "--require-commands",
         ",".join(agents),
-        "--require-upstream-api-key",
     ]
+    if require_upstream_api_key:
+        command.append("--require-upstream-api-key")
     if "codex" in agents:
         command.append("--require-codex-auth")
 
@@ -152,65 +163,84 @@ def _run_setup(
     openclaw_models_cache_path: Path,
     claude_settings_path: Path,
     timeout_seconds: int,
+    configure_openai_clients: bool,
+    configure_claude: bool,
+    openclaw_auth_mode: str,
 ) -> Dict[str, object]:
+    report: Dict[str, object] = {
+        "success": True,
+        "opencode": None,
+        "openclaw": None,
+        "claude": None,
+        "commands": {},
+    }
 
-    routing_command = [
-        *setup_command,
-        "--json",
-        "--apply-opencode",
-        "--create-opencode-config",
-        "--opencode-config-path",
-        str(opencode_config_path),
-        "--apply-openclaw",
-        "--create-openclaw-config",
-        "--openclaw-config-path",
-        str(openclaw_config_path),
-        "--openclaw-models-cache-path",
-        str(openclaw_models_cache_path),
-        "--gateway-base-url",
-        gateway_base_url,
-    ]
-    routing_payload, routing_result = _run_json_cli_command(
-        command=routing_command,
-        cwd=repo_root,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    if int(routing_result["exitCode"]) != 0 or not routing_payload.get("success"):
-        raise RuntimeError(
-            f"setup command failed: exit={routing_result['exitCode']} payload={routing_payload}"
+    if configure_openai_clients:
+        routing_command = [
+            *setup_command,
+            "--json",
+            "--apply-opencode",
+            "--create-opencode-config",
+            "--opencode-config-path",
+            str(opencode_config_path),
+            "--apply-openclaw",
+            "--create-openclaw-config",
+            "--openclaw-config-path",
+            str(openclaw_config_path),
+            "--openclaw-models-cache-path",
+            str(openclaw_models_cache_path),
+            "--openclaw-auth-mode",
+            openclaw_auth_mode,
+            "--gateway-base-url",
+            gateway_base_url,
+        ]
+        routing_payload, routing_result = _run_json_cli_command(
+            command=routing_command,
+            cwd=repo_root,
+            env=env,
+            timeout_seconds=timeout_seconds,
         )
+        if int(routing_result["exitCode"]) != 0 or not routing_payload.get("success"):
+            raise RuntimeError(
+                f"setup command failed: exit={routing_result['exitCode']} payload={routing_payload}"
+            )
+        report.update(
+            {
+                "opencode": routing_payload.get("opencode"),
+                "openclaw": routing_payload.get("openclaw"),
+            }
+        )
+        commands = routing_payload.get("commands")
+        if isinstance(commands, dict):
+            report["commands"].update(commands)
 
-    claude_command = [
-        *setup_command,
-        "--json",
-        "--apply-claude",
-        "--create-claude-settings",
-        "--claude-settings-path",
-        str(claude_settings_path),
-        "--gateway-base-url",
-        claude_gateway_base_url,
-    ]
-    claude_payload, claude_result = _run_json_cli_command(
-        command=claude_command,
-        cwd=repo_root,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    if int(claude_result["exitCode"]) != 0 or not claude_payload.get("success"):
-        raise RuntimeError(
-            f"setup command failed: exit={claude_result['exitCode']} payload={claude_payload}"
+    if configure_claude:
+        claude_command = [
+            *setup_command,
+            "--json",
+            "--apply-claude",
+            "--create-claude-settings",
+            "--claude-settings-path",
+            str(claude_settings_path),
+            "--gateway-base-url",
+            claude_gateway_base_url,
+        ]
+        claude_payload, claude_result = _run_json_cli_command(
+            command=claude_command,
+            cwd=repo_root,
+            env=env,
+            timeout_seconds=timeout_seconds,
         )
+        if int(claude_result["exitCode"]) != 0 or not claude_payload.get("success"):
+            raise RuntimeError(
+                f"setup command failed: exit={claude_result['exitCode']} payload={claude_payload}"
+            )
+        report["claude"] = claude_payload.get("claude")
+        commands = claude_payload.get("commands")
+        if isinstance(commands, dict) and commands.get("claudeHookUrl"):
+            report["commands"]["claudeHookUrl"] = commands.get("claudeHookUrl")
 
-    routing_payload["claude"] = claude_payload.get("claude")
-    commands = routing_payload.get("commands")
-    if isinstance(commands, dict):
-        commands["claudeHookUrl"] = (
-            claude_payload.get("commands", {}).get("claudeHookUrl")
-            if isinstance(claude_payload.get("commands"), dict)
-            else None
-        )
-    return routing_payload
+    return report
 
 
 def _start_logged_process(
@@ -289,7 +319,7 @@ def _run_agent_check(
     _write_text(stdout_path, str(result["stdout"]))
     _write_text(stderr_path, str(result["stderr"]))
 
-    output_text = str(result["stdout"])
+    output_text = stdout_path.read_text(encoding="utf-8")
     if agent == "codex" and codex_message_path.exists():
         output_text = codex_message_path.read_text(encoding="utf-8")
 
@@ -297,12 +327,50 @@ def _run_agent_check(
     new_events = after_events[before_count:]
     tap_window = _tap_window_metrics(new_events)
     tap_token = _tap_token_metrics(new_events, token)
+    upstream_statuses = []
+    for event in new_events:
+        if not isinstance(event, dict):
+            continue
+        response_obj = event.get("response")
+        status = response_obj.get("status") if isinstance(response_obj, dict) else None
+        if isinstance(status, int):
+            upstream_statuses.append(status)
     tap_kind = "claude_hook_tap" if agent == "claude" else "upstream_tap"
-    ok = (
+    transport_check_ok = (
         int(result["exitCode"]) == 0
         and int(tap_window["eventCount"]) >= 1
         and int(tap_window["successCount"]) >= 1
     )
+
+    diagnostic = None
+    outcome = "product_failed"
+    stdout_text = str(result["stdout"])
+    stderr_text = str(result["stderr"])
+    if agent == "codex":
+        if "Missing scopes: api.responses.write" in stdout_text or "Missing scopes: api.responses.write" in stderr_text:
+            diagnostic = "Codex native OAuth reaches upstream, but the current token lacks `api.responses.write`."
+            outcome = "external_blocked"
+        elif "refresh token was already used" in stderr_text:
+            diagnostic = "Codex auth store needs a fresh login before native middleware smoke can pass."
+            outcome = "warning"
+    elif agent == "opencode":
+        if "OpenAI API key is missing" in stdout_text:
+            diagnostic = "OpenCode is still on the `openai` provider but this sandbox has no reusable `OPENAI_API_KEY`."
+            outcome = "external_blocked"
+    elif agent == "openclaw":
+        if 429 in upstream_statuses:
+            diagnostic = "OpenClaw native bridge reaches upstream chat completions, but the current token/account is rate limited."
+            outcome = "external_blocked"
+        elif 401 in upstream_statuses:
+            diagnostic = "OpenClaw native bridge reaches upstream, but the current auth is rejected for this route."
+            outcome = "external_blocked"
+
+    if transport_check_ok:
+        outcome = "passed"
+    elif diagnostic is None:
+        diagnostic = "Agent run did not produce the expected successful upstream traffic."
+
+    product_ok = outcome in {"passed", "warning", "external_blocked"}
 
     return {
         "name": agent,
@@ -318,8 +386,12 @@ def _run_agent_check(
         "tap": {
             "window": tap_window,
             "token": tap_token,
+            "upstreamStatuses": upstream_statuses,
         },
-        "ok": ok,
+        "diagnostic": diagnostic,
+        "ok": transport_check_ok,
+        "outcome": outcome,
+        "productOk": product_ok,
     }
 
 
@@ -366,22 +438,36 @@ def _request_with_bytes(
 
 def _run_gateway_smoke_checks(
     *,
-    gateway_base_url: str,
+    gateway_root_url: str,
+    request_base_url: str,
     model: str,
     run_id: str,
     timeout_seconds: int,
     tap_jsonl_path: Path,
 ) -> Sequence[Dict[str, object]]:
     checks = []
+    codex_native_mode = "/clients/codex/v1" in request_base_url
 
-    def _append(name: str, ok: bool, details: Dict[str, object]) -> None:
-        checks.append({"name": name, "ok": ok, **details})
-
-    gateway_root = gateway_base_url.rsplit("/v1", 1)[0]
+    def _append(
+        name: str,
+        ok: bool,
+        details: Dict[str, object],
+        *,
+        outcome: str = "product_failed",
+    ) -> None:
+        checks.append(
+            {
+                "name": name,
+                "ok": ok,
+                "outcome": outcome if not ok else "passed",
+                "productOk": ok or outcome in {"external_blocked", "warning", "not_applicable_transport"},
+                **details,
+            }
+        )
 
     health_result = _request_with_bytes(
         method="GET",
-        url=f"{gateway_root}/healthz",
+        url=f"{gateway_root_url}/healthz",
         body=None,
         headers={},
         timeout_seconds=timeout_seconds,
@@ -403,7 +489,7 @@ def _run_gateway_smoke_checks(
     before_count = len(_load_tap_events(tap_jsonl_path))
     route_result = _request_with_bytes(
         method="POST",
-        url=f"{gateway_base_url}/not-a-real-route",
+        url=f"{request_base_url}/not-a-real-route",
         body=json.dumps({"probe": run_id}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         timeout_seconds=timeout_seconds,
@@ -436,7 +522,7 @@ def _run_gateway_smoke_checks(
     before_count = len(_load_tap_events(tap_jsonl_path))
     unsupported_result = _request_with_bytes(
         method="POST",
-        url=f"{gateway_base_url}/responses",
+        url=f"{request_base_url}/responses",
         body=unsupported_raw,
         headers={
             "Content-Type": "application/json",
@@ -472,7 +558,7 @@ def _run_gateway_smoke_checks(
     before_count = len(_load_tap_events(tap_jsonl_path))
     gzip_result = _request_with_bytes(
         method="POST",
-        url=f"{gateway_base_url}/responses",
+        url=f"{request_base_url}/responses",
         body=gzip.compress(gzip_raw),
         headers={
             "Content-Type": "application/json",
@@ -487,7 +573,7 @@ def _run_gateway_smoke_checks(
         for key, value in dict(gzip_result.get("headers") or {}).items()
     }
     gzip_ok = bool(
-        gzip_result.get("status") == 200
+        (gzip_result.get("status") == 200 or (codex_native_mode and gzip_result.get("status") == 502))
         and gzip_headers.get("x-modeio-contract-version")
         and gzip_headers.get("x-modeio-request-id")
         and gzip_headers.get("x-modeio-upstream-called") == "true"
@@ -503,6 +589,7 @@ def _run_gateway_smoke_checks(
             "tap2xx": gzip_window.get("successCount"),
             "paths": gzip_window.get("paths"),
         },
+        outcome="not_applicable_transport" if codex_native_mode and gzip_result.get("status") == 502 else "product_failed",
     )
 
     if _zstd_codec is None:
@@ -526,7 +613,7 @@ def _run_gateway_smoke_checks(
     before_count = len(_load_tap_events(tap_jsonl_path))
     zstd_result = _request_with_bytes(
         method="POST",
-        url=f"{gateway_base_url}/responses",
+        url=f"{request_base_url}/responses",
         body=_zstd_codec.compress(zstd_raw),
         headers={
             "Content-Type": "application/json",
@@ -541,7 +628,7 @@ def _run_gateway_smoke_checks(
         for key, value in dict(zstd_result.get("headers") or {}).items()
     }
     zstd_ok = bool(
-        zstd_result.get("status") == 200
+        (zstd_result.get("status") == 200 or (codex_native_mode and zstd_result.get("status") == 502))
         and zstd_headers.get("x-modeio-contract-version")
         and zstd_headers.get("x-modeio-request-id")
         and zstd_headers.get("x-modeio-upstream-called") == "true"
@@ -557,6 +644,7 @@ def _run_gateway_smoke_checks(
             "tap2xx": zstd_window.get("successCount"),
             "paths": zstd_window.get("paths"),
         },
+        outcome="not_applicable_transport" if codex_native_mode and zstd_result.get("status") == 502 else "product_failed",
     )
     return checks
 
@@ -663,6 +751,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = run_dir / "summary.json"
     tap_jsonl_path = run_dir / "tap-exchanges.jsonl"
     tap_stdout_path = run_dir / "tap-proxy.log"
+    codex_tap_jsonl_path = run_dir / "codex-tap-exchanges.jsonl"
+    codex_tap_stdout_path = run_dir / "codex-tap.log"
     claude_tap_jsonl_path = run_dir / "claude-hook-exchanges.jsonl"
     claude_tap_stdout_path = run_dir / "claude-hook-tap.log"
     gateway_log_path = run_dir / "gateway.log"
@@ -693,6 +783,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "logPath": str(tap_jsonl_path),
             "stdoutPath": str(tap_stdout_path),
         },
+        "codexNativeTap": None,
         "claudeHookTap": None,
         "doctor": None,
         "setup": None,
@@ -715,6 +806,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     tap_process: Optional[subprocess.Popen] = None
     tap_log_handle = None
+    codex_tap_process: Optional[subprocess.Popen] = None
+    codex_tap_log_handle = None
     claude_tap_process: Optional[subprocess.Popen] = None
     claude_tap_log_handle = None
     gateway_process: Optional[subprocess.Popen] = None
@@ -723,17 +816,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         agents = _parse_agents(args.agents)
         needs_claude = "claude" in agents
+        needs_openai_agents = any(agent != "claude" for agent in agents)
+        report["mode"] = (
+            "live-agents"
+            if needs_claude and needs_openai_agents
+            else "live-claude"
+            if needs_claude
+            else "live-openai-agents"
+        )
         missing_commands = _check_required_commands(agents)
         if missing_commands:
             raise RuntimeError(
                 "missing required commands: " + ", ".join(missing_commands)
             )
 
-        upstream_api_key, upstream_api_key_env = _resolve_upstream_api_key(
-            dict(os.environ),
-            args.upstream_api_key_env,
+        explicit_base_url = (
+            args.upstream_base_url
+            if args.upstream_base_url != DEFAULT_UPSTREAM_BASE_URL
+            else ""
         )
-        report["upstream"]["apiKeyEnv"] = upstream_api_key_env
+        explicit_model = args.model if args.model != DEFAULT_UPSTREAM_MODEL else ""
+        upstream_selection = resolve_live_upstream_selection(
+            preferred_env=args.upstream_api_key_env,
+            env=dict(os.environ),
+            explicit_base_url=explicit_base_url,
+            explicit_model=explicit_model,
+        )
+        report["upstream"] = {
+            **report["upstream"],
+            **summarize_live_upstream_selection(upstream_selection),
+            "required": False,
+            "requestedBaseUrl": args.upstream_base_url,
+            "requestedModel": args.model,
+        }
+
+        upstream_api_key = str(upstream_selection.get("apiKey") or "")
 
         runtime = _prepare_runtime(
             repo_root=repo_root,
@@ -751,7 +868,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths["openclaw_models_cache"].parent.mkdir(parents=True, exist_ok=True)
 
         seeded_codex = _seed_codex_credentials(Path.home(), paths["home"])
+        seeded_opencode = _seed_opencode_state(Path.home(), paths)
+        seeded_openclaw = _seed_openclaw_state(Path.home(), paths)
         report["sandbox"]["seededCodexFiles"] = seeded_codex
+        report["sandbox"]["seededOpenCode"] = seeded_opencode
+        report["sandbox"]["seededOpenClaw"] = seeded_openclaw
         report["sandbox"]["claudeUsesHostAuthContext"] = needs_claude
 
         gateway_port = args.gateway_port if args.gateway_port > 0 else _free_port()
@@ -779,32 +900,85 @@ def main(argv: Sequence[str] | None = None) -> int:
             openclaw_models_cache_path=paths["openclaw_models_cache"],
             claude_settings_path=paths["claude_settings"],
             timeout_seconds=args.command_timeout_seconds,
+            require_upstream_api_key=False,
+        )
+        native_clients_report = report.get("doctor", {}).get("nativeClients", {})
+        opencode_transport = (
+            native_clients_report.get("opencode", {}).get("transport")
+            if isinstance(native_clients_report, dict)
+            else None
         )
 
-        tap_command = [
-            sys.executable,
-            str(repo_root / "scripts" / "upstream_tap_proxy.py"),
-            "--host",
-            args.gateway_host,
-            "--port",
-            str(tap_port),
-            "--target-base-url",
-            args.upstream_base_url,
-            "--log-jsonl",
-            str(tap_jsonl_path),
-            "--api-key-env",
-            "MODEIO_TAP_UPSTREAM_API_KEY",
-        ]
-        tap_process, tap_log_handle = _start_logged_process(
-            command=tap_command,
-            cwd=repo_root,
-            env=env,
-            log_path=tap_stdout_path,
-        )
-        if not _wait_for_url(
-            f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
-        ):
-            raise RuntimeError("tap proxy failed to become healthy")
+        gateway_upstream_chat_url = f"{OPENAI_UPSTREAM_BASE_URL}/chat/completions"
+        gateway_upstream_responses_url = f"{OPENAI_UPSTREAM_BASE_URL}/responses"
+        if needs_openai_agents:
+            tap_command = [
+                sys.executable,
+                str(repo_root / "scripts" / "upstream_tap_proxy.py"),
+                "--host",
+                args.gateway_host,
+                "--port",
+                str(tap_port),
+                "--target-base-url",
+                args.upstream_base_url,
+                "--log-jsonl",
+                str(tap_jsonl_path),
+                "--api-key-env",
+                "MODEIO_TAP_UPSTREAM_API_KEY",
+            ]
+            tap_process, tap_log_handle = _start_logged_process(
+                command=tap_command,
+                cwd=repo_root,
+                env=env,
+                log_path=tap_stdout_path,
+            )
+            if not _wait_for_url(
+                f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
+            ):
+                raise RuntimeError("tap proxy failed to become healthy")
+            gateway_upstream_chat_url = f"{tap_base_url}/v1/chat/completions"
+            gateway_upstream_responses_url = f"{tap_base_url}/v1/responses"
+            report["tap"]["baseUrl"] = tap_base_url
+            report["tap"]["port"] = tap_port
+            if "codex" in agents:
+                codex_tap_port = _free_port()
+                codex_tap_base_url = f"http://{args.gateway_host}:{codex_tap_port}"
+                codex_tap_command = [
+                    sys.executable,
+                    str(repo_root / "scripts" / "upstream_tap_proxy.py"),
+                    "--host",
+                    args.gateway_host,
+                    "--port",
+                    str(codex_tap_port),
+                    "--target-base-url",
+                    "https://chatgpt.com/backend-api/codex",
+                    "--log-jsonl",
+                    str(codex_tap_jsonl_path),
+                    "--api-key-env",
+                    "MODEIO_TAP_UPSTREAM_API_KEY",
+                ]
+                codex_tap_process, codex_tap_log_handle = _start_logged_process(
+                    command=codex_tap_command,
+                    cwd=repo_root,
+                    env=env,
+                    log_path=codex_tap_stdout_path,
+                )
+                if not _wait_for_url(
+                    f"{codex_tap_base_url}/healthz",
+                    timeout_seconds=args.startup_timeout_seconds,
+                ):
+                    raise RuntimeError("codex native tap proxy failed to become healthy")
+                env["MODEIO_CODEX_NATIVE_BASE_URL"] = codex_tap_base_url
+                report["codexNativeTap"] = {
+                    "baseUrl": codex_tap_base_url,
+                    "port": codex_tap_port,
+                    "logPath": str(codex_tap_jsonl_path),
+                    "stdoutPath": str(codex_tap_stdout_path),
+                    "targetBaseUrl": "https://chatgpt.com/backend-api/codex",
+                }
+        else:
+            report["tap"]["skipped"] = True
+            report["tap"]["reason"] = "openai-compatible-agents-not-requested"
 
         gateway_command = [
             *runtime.gateway_command,
@@ -813,9 +987,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--port",
             str(gateway_port),
             "--upstream-chat-url",
-            f"{tap_base_url}/v1/chat/completions",
+            gateway_upstream_chat_url,
             "--upstream-responses-url",
-            f"{tap_base_url}/v1/responses",
+            gateway_upstream_responses_url,
         ]
         gateway_process, gateway_log_handle = _start_logged_process(
             command=gateway_command,
@@ -835,8 +1009,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "host": args.gateway_host,
             "port": gateway_port,
         }
-        report["tap"]["baseUrl"] = tap_base_url
-        report["tap"]["port"] = tap_port
 
         claude_gateway_base_url = gateway_base_url
         if needs_claude:
@@ -889,25 +1061,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             openclaw_models_cache_path=paths["openclaw_models_cache"],
             claude_settings_path=paths["claude_settings"],
             timeout_seconds=args.command_timeout_seconds,
+            configure_openai_clients=needs_openai_agents,
+            configure_claude=needs_claude,
+            openclaw_auth_mode="native",
         )
         report["setup"] = setup_payload
         _write_json(setup_payload_path, setup_payload)
 
-        report["openclawLiveModelPatch"] = _rewrite_openclaw_model_for_live(
-            config_path=paths["openclaw_config"],
-            models_cache_path=paths["openclaw_models_cache"],
-            model_id=args.model,
-        )
-
-        report["gatewayChecks"] = list(
-            _run_gateway_smoke_checks(
-                gateway_base_url=gateway_base_url,
-                model=args.model,
-                run_id=run_id,
-                timeout_seconds=args.command_timeout_seconds,
-                tap_jsonl_path=tap_jsonl_path,
+        if needs_openai_agents and str(setup_payload.get("openclaw", {}).get("authMode") or "") != "native":
+            report["openclawLiveModelPatch"] = _rewrite_openclaw_model_for_live(
+                config_path=paths["openclaw_config"],
+                models_cache_path=paths["openclaw_models_cache"],
+                model_id=args.model,
             )
-        )
+        else:
+            report["openclawLiveModelPatch"] = {
+                "skipped": True,
+                "reason": "native-auth OpenClaw smoke uses the copied local provider/model without live-model override",
+            }
+
+        if needs_openai_agents and bool(upstream_selection.get("ready")):
+            gateway_check_base_url = f"{gateway_root_url}/clients/codex/v1"
+            report["gatewayChecks"] = list(
+                _run_gateway_smoke_checks(
+                    gateway_root_url=gateway_root_url,
+                    request_base_url=gateway_check_base_url,
+                    model=args.model,
+                    run_id=run_id,
+                    timeout_seconds=args.command_timeout_seconds,
+                    tap_jsonl_path=(
+                        codex_tap_jsonl_path if codex_tap_process is not None else tap_jsonl_path
+                    ),
+                )
+            )
+        elif needs_openai_agents:
+            report["gatewayChecks"] = [
+                {
+                    "name": "managed-upstream-gateway-checks",
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "native-auth-only run; generic /responses gateway probes require an explicit reusable managed upstream",
+                }
+            ]
 
         for index, agent in enumerate(agents, start=1):
             report["agents"].append(
@@ -924,26 +1119,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                     claude_settings_path=paths["claude_settings"]
                     if agent == "claude"
                     else None,
-                    tap_jsonl_path=claude_tap_jsonl_path
-                    if agent == "claude"
-                    else tap_jsonl_path,
+                    tap_jsonl_path=(
+                        claude_tap_jsonl_path
+                        if agent == "claude"
+                        else codex_tap_jsonl_path
+                        if (
+                            codex_tap_process is not None
+                            and (
+                                agent == "codex"
+                                or (agent == "opencode" and opencode_transport == "codex_native")
+                            )
+                        )
+                        else tap_jsonl_path
+                    ),
                 )
             )
 
-        gateway_checks_ok = all(
-            bool(item.get("ok")) for item in report.get("gatewayChecks", [])
-        )
+        gateway_checks_ok = True
+        if needs_openai_agents and bool(upstream_selection.get("ready")):
+            gateway_checks_ok = all(
+                bool(item.get("productOk", item.get("ok")))
+                for item in report.get("gatewayChecks", [])
+            )
         report["success"] = gateway_checks_ok and all(
-            bool(agent.get("ok")) for agent in report["agents"]
+            bool(agent.get("productOk", agent.get("ok"))) for agent in report["agents"]
         )
     except Exception as error:
         report["success"] = False
         report["error"] = str(error)
     finally:
         _stop_process(claude_tap_process)
+        _stop_process(codex_tap_process)
         _stop_process(gateway_process)
         _stop_process(tap_process)
         _close_handle(claude_tap_log_handle)
+        _close_handle(codex_tap_log_handle)
         _close_handle(gateway_log_handle)
         _close_handle(tap_log_handle)
 
@@ -963,7 +1173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         success_count = window.get("successCount") if isinstance(window, dict) else None
         print(
             "[smoke-agent-matrix] "
-            f"{agent_report.get('name')}: ok={agent_report.get('ok')} "
+            f"{agent_report.get('name')}: ok={agent_report.get('ok')} outcome={agent_report.get('outcome')} "
             f"exit={agent_report.get('exitCode')} tapEvents={event_count} tap2xx={success_count}"
         )
 
@@ -972,7 +1182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         print(
             "[smoke-agent-matrix] "
-            f"check {check.get('name')}: ok={check.get('ok')} "
+            f"check {check.get('name')}: ok={check.get('ok')} outcome={check.get('outcome')} "
             f"status={check.get('status')}"
         )
 

@@ -9,14 +9,16 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from modeio_middleware.cli.setup_lib.common import (
+    build_client_gateway_base_url,
     SetupError,
     detect_os_name,
     ensure_object,
-    normalize_gateway_base_url,
     read_json_file,
     utc_timestamp,
     write_json_file,
 )
+
+OPENCODE_PLACEHOLDER_API_KEY = "modeio-middleware"
 
 
 def default_opencode_config_path(
@@ -44,19 +46,40 @@ def default_opencode_config_path(
     return resolved_home / ".config" / "opencode" / "opencode.json"
 
 
+def current_opencode_provider_id(config: Dict[str, Any]) -> str:
+    model_name = config.get("model")
+    if isinstance(model_name, str) and "/" in model_name:
+        provider_id, _ = model_name.split("/", 1)
+        if provider_id.strip():
+            return provider_id.strip()
+    return "openai"
+
+
 def apply_opencode_base_url(config: Dict[str, Any], gateway_base_url: str) -> Tuple[Dict[str, Any], bool]:
     updated = copy.deepcopy(config)
+    provider_id = current_opencode_provider_id(updated)
     provider_obj = ensure_object(updated.get("provider"), "provider")
-    openai_obj = ensure_object(provider_obj.get("openai"), "provider.openai")
-    options_obj = ensure_object(openai_obj.get("options"), "provider.openai.options")
+    selected_provider = ensure_object(
+        provider_obj.get(provider_id), f"provider.{provider_id}"
+    )
+    options_obj = ensure_object(
+        selected_provider.get("options"), f"provider.{provider_id}.options"
+    )
 
-    normalized = normalize_gateway_base_url(gateway_base_url)
+    normalized = build_client_gateway_base_url(
+        gateway_base_url,
+        "opencode",
+        provider_name=provider_id,
+    )
     current_base_url = options_obj.get("baseURL")
     changed = current_base_url != normalized
 
     options_obj["baseURL"] = normalized
-    openai_obj["options"] = options_obj
-    provider_obj["openai"] = openai_obj
+    if not isinstance(options_obj.get("apiKey"), str) or not str(options_obj.get("apiKey")).strip():
+        options_obj["apiKey"] = OPENCODE_PLACEHOLDER_API_KEY
+        changed = True
+    selected_provider["options"] = options_obj
+    provider_obj[provider_id] = selected_provider
     updated["provider"] = provider_obj
     return updated, changed
 
@@ -68,32 +91,39 @@ def remove_opencode_base_url(
     force_remove: bool,
 ) -> Tuple[Dict[str, Any], bool, Optional[str], str]:
     updated = copy.deepcopy(config)
+    provider_id = current_opencode_provider_id(updated)
 
     provider_obj = updated.get("provider")
     if not isinstance(provider_obj, dict):
         return updated, False, None, "provider_missing"
 
-    openai_obj = provider_obj.get("openai")
-    if not isinstance(openai_obj, dict):
-        return updated, False, None, "openai_provider_missing"
+    selected_provider = provider_obj.get(provider_id)
+    if not isinstance(selected_provider, dict):
+        return updated, False, None, f"{provider_id}_provider_missing"
 
-    options_obj = openai_obj.get("options")
+    options_obj = selected_provider.get("options")
     if not isinstance(options_obj, dict):
-        return updated, False, None, "openai_options_missing"
+        return updated, False, None, f"{provider_id}_options_missing"
 
     raw_base_url = options_obj.get("baseURL")
     if not isinstance(raw_base_url, str) or not raw_base_url.strip():
         return updated, False, None, "base_url_not_set"
 
-    normalized_target = normalize_gateway_base_url(gateway_base_url)
+    normalized_target = build_client_gateway_base_url(
+        gateway_base_url,
+        "opencode",
+        provider_name=provider_id,
+    )
     normalized_current = raw_base_url.rstrip("/")
 
     if not force_remove and normalized_current != normalized_target:
         return updated, False, raw_base_url, "base_url_mismatch"
 
     del options_obj["baseURL"]
-    openai_obj["options"] = options_obj
-    provider_obj["openai"] = openai_obj
+    if options_obj.get("apiKey") == OPENCODE_PLACEHOLDER_API_KEY:
+        del options_obj["apiKey"]
+    selected_provider["options"] = options_obj
+    provider_obj[provider_id] = selected_provider
     updated["provider"] = provider_obj
     return updated, True, raw_base_url, "removed"
 

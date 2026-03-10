@@ -55,6 +55,14 @@ def responses_payload(content: str) -> Dict[str, Any]:
     }
 
 
+def models_payload(*model_ids: str) -> Dict[str, Any]:
+    ids = model_ids or ("test-model",)
+    return {
+        "object": "list",
+        "models": [{"id": model_id, "name": model_id} for model_id in ids],
+    }
+
+
 def http_get_json(base_url: str, path: str):
     request = urllib.request.Request(f"{base_url}{path}", method="GET")
     try:
@@ -207,6 +215,26 @@ class UpstreamStub:
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                owner.requests.append(
+                    {
+                        "path": self.path,
+                        "headers": dict(self.headers.items()),
+                        "body": None,
+                    }
+                )
+
+                response_payload = owner.response_factory(self.path, {})
+                response_body = json.dumps(response_payload).encode("utf-8")
+
+                self.send_response(owner.status)
+                self.send_header("Content-Type", "application/json")
+                for header_name, header_value in owner.response_headers.items():
+                    self.send_header(header_name, header_value)
+                self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
 
             def do_POST(self):
                 content_length = int(self.headers.get("Content-Length", "0"))

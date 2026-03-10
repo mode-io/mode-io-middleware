@@ -206,6 +206,13 @@ python -m unittest discover tests -p 'test_*.py'
 # Live upstream traversal check
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 
+# OpenAI-compatible client matrix (auto-reuses explicit middleware upstream env,
+# existing client auth/config when available, and falls back to managed upstream env if provided)
+./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
+
+# Claude-only hook matrix (no separate OpenAI-compatible upstream required)
+./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
+
 # Full Codex/OpenCode/OpenClaw/Claude matrix (local or self-hosted only)
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 
@@ -215,6 +222,8 @@ python -m unittest discover tests -p 'test_*.py'
 # Build artifact validation
 ./scripts/release_check.sh
 ```
+
+OpenClaw setup defaults to native auth bridging. Use `--openclaw-auth-mode managed` only when you explicitly want middleware-owned upstream credentials.
 
 If you are working from a source checkout and want the repo-local helper equivalents, use:
 

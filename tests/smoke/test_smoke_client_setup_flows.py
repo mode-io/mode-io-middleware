@@ -61,7 +61,10 @@ class TestSmokeClientSetupFlows(unittest.TestCase):
 
                 config_payload = json.loads(openclaw_config.read_text(encoding="utf-8"))
                 provider = config_payload["models"]["providers"]["modeio-middleware"]
-                self.assertEqual(provider["baseUrl"], gateway_base_url)
+                self.assertEqual(
+                    provider["baseUrl"],
+                    f"{gateway.base_url}/clients/openclaw/v1",
+                )
                 self.assertEqual(
                     config_payload["agents"]["defaults"]["model"]["primary"],
                     "modeio-middleware/middleware-default",

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 
 class SetupError(RuntimeError):
@@ -48,6 +49,21 @@ def derive_health_url(gateway_base_url: str) -> str:
     if normalized.endswith("/v1"):
         return normalized[:-3] + "/healthz"
     return normalized + "/healthz"
+
+
+def build_client_gateway_base_url(
+    gateway_base_url: str,
+    client_name: str,
+    *,
+    provider_name: Optional[str] = None,
+) -> str:
+    normalized = normalize_gateway_base_url(gateway_base_url)
+    root = normalized[:-3] if normalized.endswith("/v1") else normalized
+    client_part = quote(str(client_name).strip().lower().replace("_", "-"), safe="-")
+    if provider_name:
+        provider_part = quote(str(provider_name).strip(), safe="-._~")
+        return f"{root}/clients/{client_part}/{provider_part}/v1"
+    return f"{root}/clients/{client_part}/v1"
 
 
 def ensure_object(value: Any, label: str) -> Dict[str, Any]:
