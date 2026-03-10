@@ -219,6 +219,85 @@
   - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract`
     - `55` tests passed
 
+### Session: 2026-03-10 refactor readiness review
+- Committed the OpenClaw boundary fix checkpoint as `1177ebb` (`Gate deferred OpenClaw Codex family`).
+- Performed a structural review over the current branch with local inspection focused on:
+  - `modeio_middleware/cli/setup_lib/openclaw.py`
+  - `modeio_middleware/core/provider_auth.py`
+  - `modeio_middleware/core/upstream_client.py`
+  - `modeio_middleware/http_transport.py`
+  - `modeio_middleware/core/engine.py`
+  - `scripts/smoke_agent_matrix.py`
+  - `scripts/upstream_tap_proxy.py`
+  - key unit/integration/smoke-support test files
+- Highest-confidence findings recorded in `findings.md`:
+  - OpenClaw setup should be rewritten around one transaction model
+  - auth/transport should move to a typed upstream plan instead of metadata dict hints
+  - request-context parsing is duplicated across transport, engine, and connectors
+  - smoke orchestration should be split into scenario, runner, and reporting layers
+  - several dead-surface candidates are now clear enough to track for post-refactor removal
+- The detailed staged refactor sequence is now captured in `task_plan.md` under:
+  - `Phase 15: Structural refactor gate`
+  - `Structural Refactor Plan`
+
+### Phase 15: Structural refactor review and plan
+- **Status:** in_progress
+- Actions taken:
+  - Committed the public OpenClaw boundary fix as `1177ebb` (`Gate deferred OpenClaw Codex family`) so the structural review starts from a clean, green checkpoint.
+  - Re-ran the exact failing auth/transport/gateway subset after the fix and confirmed it stayed green.
+  - Reviewed the main cleanup hotspots locally and via split subsystem review prompts:
+    - OpenClaw setup
+    - auth/transport
+    - gateway boundary
+    - smoke infrastructure
+    - test architecture
+    - repo-wide dead-surface scan
+  - Converted the review into a concrete refactor gate in `task_plan.md`, with sequencing and target abstractions instead of a loose “clean it up later” note.
+- Key conclusions:
+  - The branch is now ready for refactor because the wrong public boundary has been corrected.
+  - The biggest problem is duplicated logic and mixed responsibilities, not a large pile of safely deletable dead code.
+  - Highest-priority refactor targets are:
+    - `modeio_middleware/cli/setup_lib/openclaw.py`
+    - `modeio_middleware/core/provider_auth.py`
+    - `modeio_middleware/core/upstream_client.py`
+    - `scripts/smoke_agent_matrix.py`
+  - The right next move is a structural refactor gate before continuing more OpenClaw-family feature work.
+- Planned execution order:
+  1. OpenClaw setup transaction rewrite
+  2. Auth/transport plan split
+  3. Upstream strategy extraction
+  4. Smoke scenario/execution/reporting split
+  5. Test fixture/contract cleanup
+  6. Compatibility/dead-surface deletion
+
+### Phase 8D: Structural review and refactor planning
+- **Status:** complete
+- Actions taken:
+  - Committed the OpenClaw contract-boundary fix as `1177ebb` (`Gate deferred OpenClaw Codex family`).
+  - Re-ran a structural review focused on the new hotspots rather than the original product bug.
+  - Consolidated the cleanup target list around three code seams:
+    - OpenClaw setup transaction flow
+    - auth/inspection/transport planning
+    - smoke scenario/process/report orchestration
+  - Converted the review into a staged refactor plan instead of a single large rewrite proposal.
+- Files inspected:
+  - `modeio_middleware/cli/setup_lib/openclaw.py`
+  - `modeio_middleware/core/provider_auth.py`
+  - `modeio_middleware/core/upstream_client.py`
+  - `modeio_middleware/http_transport.py`
+  - `scripts/smoke_agent_matrix.py`
+  - `scripts/smoke_matrix/sandbox.py`
+  - `scripts/smoke_e2e.sh`
+  - `scripts/upstream_tap_proxy.py`
+  - `tests/unit/test_setup_gateway.py`
+  - `tests/unit/test_client_auth.py`
+  - `tests/unit/test_upstream_client.py`
+  - `tests/integration/test_gateway_contract.py`
+  - `tests/smoke/test_smoke_agent_matrix_support.py`
+- Main conclusion:
+  - the branch is ready for refactor, but not for a repo-wide rewrite
+  - the clean path is a staged structural pass built around typed plans/transactions and narrower modules, with behavior locked by the current contract and live-smoke coverage
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|

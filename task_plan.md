@@ -4,7 +4,7 @@
 Refactor `modeio-middleware` so a user with an already authed supported harness (`codex`, `opencode`, `openclaw`, or `claude`) can start middleware and use it naturally without extra provider setup, while keeping managed-upstream mode as an explicit fallback.
 
 ## Current Phase
-Phase 9
+Phase 15
 
 ## Phases
 
@@ -110,6 +110,65 @@ Phase 9
 - [ ] Prepare release notes that separate managed OpenClaw family support from deferred experimental native-profile reuse.
 - **Status:** planned
 
+### Phase 15: Structural refactor gate
+- [ ] Rewrite the OpenClaw setup path around one transaction model instead of parallel apply/restore code paths.
+  - Target shape:
+    - `OpenClawRouteSnapshot`: current config/models-cache/sidecar facts
+    - `OpenClawRouteIntent`: desired route mode, provider identity, api family, restore policy
+    - `OpenClawRouteTransaction`: pure plan -> apply -> rollback/restore
+    - `OpenClawRouteReport`: doctor/setup JSON output derived from the transaction result
+  - File split:
+    - `setup_lib/openclaw_state.py` for JSON/file discovery and sidecar IO
+    - `setup_lib/openclaw_route_plan.py` for route planning and restore plans
+    - `setup_lib/openclaw_apply.py` for config/models-cache mutation
+    - keep `openclaw.py` as a thin facade or remove it entirely after migration
+- [ ] Split auth resolution from transport planning in the provider layer.
+  - Target shape:
+    - `ResolvedCredential`: source, auth kind, refresh metadata, guaranteed/best-effort
+    - `ResolvedAuthMaterial`: exact outgoing auth headers or bearer token
+    - `ResolvedUpstreamPlan`: transport kind, base URL, api family, model override, account id, unsupported/deferred flags
+  - Rules:
+    - no free-form transport hints in `inspection.metadata`
+    - `provider_auth.py` resolves credentials only
+    - transport selection lives in a dedicated planner used by `upstream_client.py`
+- [ ] Refactor upstream forwarding into strategy objects instead of endpoint-specific conditionals.
+  - Target shape:
+    - `OpenAICompatStrategy`
+    - `AnthropicMessagesStrategy`
+    - `CodexNativeStrategy`
+  - Each strategy owns:
+    - endpoint URL derivation
+    - request shaping
+    - model normalization/override behavior
+    - response post-processing requirements
+  - `upstream_client.py` becomes orchestration only: incoming auth precedence -> resolve plan -> delegate strategy -> map errors
+- [ ] Split smoke infrastructure into scenario, execution, and reporting layers.
+  - Target shape:
+    - `scripts/smoke_matrix/scenarios.py`
+    - `scripts/smoke_matrix/runners.py`
+    - `scripts/smoke_matrix/reporting.py`
+    - `scripts/smoke_agent_matrix.py` reduced to CLI composition
+  - `scripts/smoke_e2e.sh` should become a thin wrapper, not a second scenario engine.
+  - `scripts/upstream_tap_proxy.py` should be rewritten or heavily refactored to tee streaming bodies instead of buffering full upstream responses before replay.
+- [ ] Replace hand-built test fixtures with builders and contract helpers.
+  - Add fixture builders for:
+    - OpenClaw config/models-cache/auth-profile state
+    - credential inspection objects
+    - gateway pair / family tap scenarios
+  - Separate test layers:
+    - unit: credential and route-plan builders
+    - integration: stable gateway contract
+    - smoke-support: CLI/scenario assembly only
+  - Stop asserting on private metadata shapes unless the metadata itself is the contract under test.
+- [ ] Defer deletion until after migration, then remove redundant compatibility scaffolding.
+  - High-confidence current issue is duplication, not large amounts of safely deletable code.
+  - Dead-surface cleanup should come after the new transaction/plan layers land, especially in:
+    - legacy managed OpenClaw setup helpers
+    - duplicated route/base-url helpers
+    - fixture duplication in setup/auth/smoke tests
+- [ ] Use this structural refactor as the gate before continuing Phases 9-14.
+- **Status:** in_progress
+
 ## Key Questions
 1. What exact backend/transport contract should `CodexNativeAdapter` target so native auth is actually valid end to end?
 2. How should provider adapters expose refresh, request injection, and protocol rewrite hooks without duplicating transport code?
@@ -129,6 +188,7 @@ Phase 9
 | OpenClaw v1 should be family-explicit, not provider-native zero-config | OpenClaw's `api` abstraction is provider-level, so a release-grade integration needs one synthetic provider per practical family rather than one universal provider |
 | OpenClaw support should ship around three practical families | `openai-completions` covers most API-key/proxy gateways, `anthropic-messages` covers Anthropic-compatible providers like MiniMax, and `openai-codex-responses` covers the Codex-native path we already support for Codex CLI |
 | The current OpenClaw native-profile reuse path should not block release | It is valuable investigation, but managed family support is the simpler release boundary and matches how comparable tools scope OpenClaw support |
+| Structural refactor now gates more OpenClaw-family feature work | The incorrect public boundary is fixed and tests are green, so the next highest-leverage move is to clean the setup/auth/smoke seams before adding more family-specific behavior |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -146,6 +206,13 @@ Phase 9
 - Preferred implementation order: shared provider/auth foundation -> Codex adapter -> OpenCode adapters -> OpenClaw migration -> setup/doctor cleanup -> smoke/rollout.
 - Keep the refactor additive first, then reductive: introduce adapters beside current logic, migrate call sites, remove old paths only after tests and smoke are green.
 - Use dedicated validation gates after each phase; do not wait until the end to discover compatibility drift.
+- Structural work should now proceed in this order:
+  1. OpenClaw setup transaction rewrite
+  2. Auth/transport plan split
+  3. Upstream strategy extraction
+  4. Smoke scenario/execution/reporting split
+  5. Test fixture and contract cleanup
+  6. Compatibility/dead-surface deletion
 
 ## OpenClaw Practical Release Plan
 
@@ -171,3 +238,157 @@ Phase 9
 3. Ship `anthropic-messages` second because it unlocks Anthropic-compatible providers and requires the largest new boundary surface.
 4. Ship `openai-codex-responses` third by reusing the existing Codex-native upstream work behind a dedicated OpenClaw-facing contract.
 5. Update setup, doctor, docs, and smoke only after the family boundaries are explicit and testable.
+
+## Structural Refactor Plan
+
+### Objective
+
+Keep the current behavior and support matrix, but replace the patch-accumulated implementation with smaller, typed seams so new OpenClaw family work can land without further entangling setup, auth, transport, and smoke code.
+
+### Guardrails
+
+- Do not change the public contract first. The current boundary fix is the baseline:
+  - public OpenClaw supports `openai-completions` and `anthropic-messages`
+  - deferred OpenClaw `openai-codex-responses` is rejected explicitly
+  - Codex/OpenCode may still reuse OpenClaw `openai-codex` state internally
+- Keep each slice behavior-preserving and test-backed.
+- Prefer additive extraction first, deletion second.
+- Do not combine the structural pass with another product-scope pivot in the same PR.
+
+### Refactor Slice A: typed upstream resolution plan
+
+- Goal:
+  - separate credential lookup from transport/routing decisions
+- New internal objects:
+  - `ResolvedCredential`
+  - `ResolvedTransportTarget`
+  - `ResolvedUpstreamPlan`
+- `ResolvedCredential` should own:
+  - auth kind
+  - credential source
+  - resolved headers / bearer value
+  - guarantee level
+- `ResolvedTransportTarget` should own:
+  - transport kind
+  - base URL
+  - API family
+  - model override
+  - account id / client-specific extra headers
+- `ResolvedUpstreamPlan` should be the single object returned from auth/inspection for runtime use.
+- Change points:
+  - extract plan building out of `modeio_middleware/core/provider_auth.py`
+  - make `modeio_middleware/core/upstream_client.py` consume the typed plan instead of free-form `inspection.metadata`
+- Expected code deletions:
+  - most `metadata.get("upstreamBaseUrl" | "overrideBaseUrl" | "nativeBaseUrl" | "fallbackModelId")` branches in the transport layer
+- Validation gate:
+  - current `client_auth`, `upstream_client`, `http_transport`, and `gateway_contract` tests stay green
+  - live smoke remains unchanged
+
+### Refactor Slice B: OpenClaw route transaction rewrite
+
+- Goal:
+  - replace the four parallel OpenClaw setup/uninstall flows with one symmetric transaction model
+- New internal objects:
+  - `OpenClawRoutePlan`
+  - `OpenClawRouteEntry`
+  - `OpenClawRouteTransaction`
+- `OpenClawRoutePlan` should compute once:
+  - route mode
+  - provider key/id
+  - model id / primary ref
+  - API family
+  - original config/cache values
+  - created-vs-preserved flags
+- `OpenClawRouteTransaction` should own:
+  - backup creation
+  - config patch apply
+  - models-cache patch apply
+  - uninstall/restore
+  - sidecar metadata persistence
+- Split `modeio_middleware/cli/setup_lib/openclaw.py` into smaller modules:
+  - route-state discovery
+  - plan building
+  - config patching
+  - models-cache patching
+  - transaction apply/uninstall
+- Expected code deletions:
+  - duplicated `baseUrl` / `api` patch logic
+  - repeated backup/write scaffolding
+  - repeated provider container resolution paths
+- Validation gate:
+  - `test_setup_gateway.py` remains green
+  - setup/uninstall smoke remains green
+
+### Refactor Slice C: smoke scenario model extraction
+
+- Goal:
+  - make Python the single source of truth for smoke scenarios and reports
+- New internal modules:
+  - `scripts/smoke_matrix/scenarios.py`
+  - `scripts/smoke_matrix/runners.py`
+  - `scripts/smoke_matrix/reporting.py`
+  - `scripts/smoke_matrix/processes.py`
+- `smoke_agent_matrix.py` should become a thin CLI that:
+  - parses args
+  - builds scenario objects
+  - dispatches runners
+  - writes the final report
+- `smoke_e2e.sh` should become a thin wrapper only:
+  - env/bootstrap
+  - invoke Python
+  - no duplicated scenario logic
+- `upstream_tap_proxy.py` should be reviewed as a partial rewrite:
+  - preserve current JSONL evidence logging
+  - add a true streaming tee path if we need transport-faithful SSE verification
+- Validation gate:
+  - smoke-support tests remain green
+  - repo/wheel smoke outputs stay schema-compatible
+
+### Refactor Slice D: test fixture layer cleanup
+
+- Goal:
+  - reduce implementation-coupled, repeated fixture assembly
+- Add focused builders/factories for:
+  - OpenClaw config payloads
+  - OpenClaw models-cache payloads
+  - auth-profile stores
+  - mocked inspection objects
+  - smoke scenario fixtures
+- Move repeated low-level literals out of:
+  - `tests/unit/test_setup_gateway.py`
+  - `tests/unit/test_client_auth.py`
+  - `tests/integration/test_gateway_contract.py`
+  - `tests/smoke/test_smoke_agent_matrix_support.py`
+- Add one higher-level contract helper for client-scoped routes so integration tests stop handcrafting internal inspection shapes.
+- Validation gate:
+  - no functional behavior changes
+  - test LOC and fixture duplication both decrease materially
+
+### Refactor Slice E: dead-surface sweep
+
+- Goal:
+  - remove stale compatibility paths only after the new seams are in place
+- Candidates:
+  - redundant managed-only OpenClaw route branches that no longer match the release path
+  - compatibility/barrel alias exports that no longer serve active callers
+  - shell-only smoke logic that becomes redundant after Slice C
+- Rule:
+  - delete only with call-site proof or grep-backed zero-usage evidence
+
+### Recommended PR slicing
+
+1. PR A: typed upstream plan extraction with no route/setup changes
+2. PR B: OpenClaw setup transaction rewrite
+3. PR C: smoke scenario/process/report extraction
+4. PR D: test-fixture cleanup and dead-surface removal
+
+### Recommendation
+
+- Start the refactor now.
+- Do not do another targeted fix pass first unless a new correctness bug appears.
+- Do not attempt one giant rewrite PR.
+- The most elegant implementation path is staged:
+  - typed runtime plans first
+  - symmetric OpenClaw transaction second
+  - smoke orchestration split third
+  - deletion pass last

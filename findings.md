@@ -166,3 +166,164 @@
 - Conclusion:
   - this was not evidence that the whole branch needs emergency rewrites before correctness work
   - the right order is the one we suspected: fix the one wrong boundary first, then do the larger structural refactor on top of the corrected contract
+
+## Refactor Readiness Review
+- The branch is now in the right state to start a structural refactor. The public boundary bug is fixed, the contract-focused test slice is green again, and the remaining problems are primarily maintainability and layering problems rather than unresolved correctness bugs.
+- Highest-value structural hotspots:
+  - `modeio_middleware/cli/setup_lib/openclaw.py`
+    - too much duplicated apply/restore logic across config, models cache, managed mode, and preserve-provider mode
+    - sidecar/restore correctness still depends on orchestration order rather than one transaction model
+  - `modeio_middleware/core/provider_auth.py`
+    - credential lookup, provider selection, fallback selection, refresh behavior, and transport hints are still too interleaved
+    - runtime behavior still depends on free-form metadata keys like `upstreamBaseUrl`, `overrideBaseUrl`, and `nativeBaseUrl`
+  - `modeio_middleware/core/upstream_client.py`
+    - endpoint selection, auth precedence, request shaping, error mapping, and transport-specific behavior are still centralized in one large conditional module
+  - `scripts/smoke_agent_matrix.py`
+    - scenario discovery, patch generation, process orchestration, gateway probes, and report shaping are all in one file
+- Clear request-context duplication exists today:
+  - `x-modeio-client-provider` parsing is repeated in `http_transport.py`, `engine.py`, `openai_http.py`, and `anthropic_http.py`
+  - `_client_provider_name()` is duplicated verbatim in both HTTP connector modules
+- Dead / likely-removable surface identified locally:
+  - `modeio_middleware/core/sse.py`
+    - `parse_sse_data_line()` and `serialize_sse_data_line()` have no internal references
+  - `modeio_middleware/core/upstream_transport.py`
+    - currently a pure pass-through wrapper with no real policy or behavior of its own
+  - `modeio_middleware/connectors/__init__.py`
+    - compatibility aliases `ConnectorEvent` and `ClaudeHookInvocation` appear unused internally; external compatibility risk should be checked before removal
+  - duplicated `OPENCLAW_SUPPORTED_API_FAMILIES` constants in setup and provider layers should be centralized once the new plan/transaction modules exist
+  - `GatewayController.default_profile()` and runtime `runtime_name` fields still look like dead surface candidates and should be rechecked after the refactor
+- Recommendation:
+  - do not continue with more OpenClaw family feature work first
+  - start the staged structural refactor now, with typed runtime plans and OpenClaw transaction rewrite as the first two slices
+
+## Structural Review: Refactor Readiness
+- The branch is now ready for refactor.
+  - The public OpenClaw Codex boundary mismatch is fixed.
+  - The focused contract/auth/transport subset is green again.
+  - That means the next work can safely optimize for structure instead of continuing to chase correctness ambiguity.
+- The main problem is not hidden dead runtime code. It is concentrated duplication and mixed responsibilities.
+  - High-confidence deletions in the touched path are limited.
+  - The larger maintenance cost comes from multiple overlapping implementations of the same ideas.
+
+### Highest-priority refactor targets
+- `modeio_middleware/cli/setup_lib/openclaw.py` (`1456` lines)
+  - carries parallel apply/remove/restore logic for:
+    - managed provider mode
+    - preserve-provider mode
+    - config file
+    - models-cache file
+    - sidecar restore metadata
+  - repeated concerns:
+    - provider container discovery
+    - base-url/api-family mutation
+    - created-vs-existing provider handling
+    - restore mismatch handling
+    - primary-model preservation
+  - precise rewrite seam:
+    - replace mutation helpers with one route transaction plan that computes desired state once and then applies/restores it symmetrically
+- `modeio_middleware/core/provider_auth.py` (`1570` lines)
+  - currently mixes:
+    - credential discovery
+    - token refresh
+    - family inference
+    - provider fallback selection
+    - request-header materialization
+    - transport hints for upstream routing
+  - repeated patterns:
+    - auth materialization (`authorization` vs `resolved_headers`)
+    - metadata assembly (`apiFamily`, `upstreamBaseUrl`, `nativeBaseUrl`, fallback fields)
+    - near-duplicate OpenClaw profile/models-cache/env/fallback branches
+  - precise rewrite seam:
+    - separate credential lookup from outgoing auth materialization and from upstream transport planning
+- `modeio_middleware/core/upstream_client.py` (`736` lines)
+  - orchestration and policy are entangled:
+    - explicit incoming auth precedence
+    - unsupported-family policy
+    - transport URL derivation
+    - codex-native request shaping
+    - retry/error mapping
+  - precise rewrite seam:
+    - keep this file as orchestration only and move family-specific behavior into transport strategies
+- `scripts/smoke_agent_matrix.py` (`1779` lines)
+  - combines:
+    - scenario discovery
+    - OpenClaw family inference
+    - sandbox patch writing
+    - process orchestration
+    - gateway probes
+    - report shaping
+  - precise rewrite seam:
+    - split into scenario resolution, runner execution, and report assembly modules
+
+### Specific design problems to fix
+- Stringly metadata is carrying transport policy.
+  - `provider_auth.py` currently emits fields like `apiFamily`, `upstreamBaseUrl`, `nativeBaseUrl`, `overrideBaseUrl`, and fallback model hints inside `inspection.metadata`.
+  - `upstream_client.py` then treats those as transport instructions.
+  - This is the clearest sign that a typed `ResolvedUpstreamPlan` is needed.
+- Explicit incoming auth precedence still lives too late in the flow.
+  - `upstream_client.py` calls native inspection before it knows whether a real caller-provided auth header should just win.
+  - That risks unnecessary file reads or refresh side effects on requests that should have been pass-through.
+- OpenClaw setup/install symmetry is fragile.
+  - Apply/uninstall correctness depends on matching current mutated base URLs plus sidecar state, rather than one transaction object that owns both directions.
+- Smoke setup knowledge is duplicated between Python and shell.
+  - `smoke_e2e.sh` and `smoke_agent_matrix.py` both encode scenario assumptions.
+- The tap proxy is not transport-faithful for streaming.
+  - It buffers the full upstream body before replaying and then logs previews.
+  - That is fine for evidence capture, but not clean if we want it to validate streaming correctness.
+
+### Test architecture findings
+- The most common maintenance smell is fixture duplication, not missing assertions.
+  - OpenClaw state fixtures are rebuilt by hand across setup, auth, integration, and smoke-support tests.
+  - inspection mocks are hand-built in several places and drift easily when the contract grows.
+- The next test cleanup should add builders for:
+  - OpenClaw config/models-cache/auth-profiles
+  - credential inspection objects
+  - smoke family scenarios
+- Contract tests should assert on public gateway behavior first, not private metadata shape unless that metadata is itself the public contract.
+
+### Refactor decision
+- Recommendation: proceed with structural refactor now.
+- Scope recommendation:
+  - not a full rewrite of the repo
+  - yes to a deliberate rewrite of the OpenClaw setup slice
+  - yes to a structural refactor of auth/transport planning
+  - yes to a smoke infrastructure split, with likely rewrite of the tap proxy
+
+## Structural Review Findings
+- The current branch is functionally much healthier than the code shape suggests, but the implementation is now too patch-accumulative to extend safely without a structural pass.
+- The three highest-value refactor seams are:
+  1. `modeio_middleware/cli/setup_lib/openclaw.py`
+     - It now contains four partially parallel workflows:
+       - managed config apply/remove
+       - managed models-cache apply/remove
+       - preserve-provider config apply/restore
+       - preserve-provider models-cache apply/restore
+     - The file repeats the same concerns in slightly different forms:
+       - provider lookup/container creation
+       - `baseUrl` and `api` patching
+       - backup/write bookkeeping
+       - uninstall mismatch handling
+       - sidecar metadata interpretation
+     - This should be rewritten around one typed route transaction/plan model rather than further helper accretion.
+  2. `modeio_middleware/core/provider_auth.py` + `modeio_middleware/core/upstream_client.py`
+     - The resolver is doing too many jobs at once:
+       - file/env state loading
+       - OpenClaw provider selection policy
+       - credential shaping
+       - cross-client auth sharing
+       - transport-target hints via free-form metadata
+       - model normalization
+     - `upstream_client.py` then interprets that stringly metadata (`upstreamBaseUrl`, `overrideBaseUrl`, `nativeBaseUrl`, `fallbackModelId`) as routing truth.
+     - This is the core layering problem: credential inspection and transport planning are still entangled.
+  3. `scripts/smoke_agent_matrix.py` + `scripts/smoke_e2e.sh` + `scripts/upstream_tap_proxy.py`
+     - `smoke_agent_matrix.py` is simultaneously a scenario resolver, setup/doctor runner, process supervisor, gateway probe runner, report assembler, and CLI.
+     - `smoke_e2e.sh` duplicates scenario knowledge and summary semantics that already exist in Python.
+     - `upstream_tap_proxy.py` is adequate for request evidence, but it is not a transport-faithful streaming tee because it buffers full upstream responses before forwarding.
+- Test burden is also too coupled to implementation details:
+  - `tests/unit/test_setup_gateway.py` hand-builds many near-duplicate OpenClaw config/cache fixtures.
+  - `tests/integration/test_gateway_contract.py` still patches low-level inspection objects directly rather than leaning on stable builders.
+  - `tests/smoke/test_smoke_agent_matrix_support.py` asserts script heuristics rather than a formal scenario object contract.
+- A few dead-surface candidates exist, but they should be deleted only after the structural seams are stabilized:
+  - compatibility/barrel alias surfaces
+  - legacy managed-provider-only OpenClaw branches that no longer represent the release contract
+  - smoke wrapper logic that becomes redundant once Python is the single source of truth
