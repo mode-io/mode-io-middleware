@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export interface SelectOption {
   value: string;
@@ -13,10 +14,17 @@ interface SelectProps {
   disabled?: boolean;
 }
 
+interface MenuPosition {
+  top: number;
+  left: number;
+  width: number;
+}
+
 export function Select({ value, options, onChange, "aria-label": ariaLabel, disabled }: SelectProps) {
   const [open, setOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<MenuPosition>({ top: 0, left: 0, width: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const selected = options.find((o) => o.value === value);
@@ -26,16 +34,32 @@ export function Select({ value, options, onChange, "aria-label": ariaLabel, disa
     setFocusIdx(-1);
   }, []);
 
+  // position the portal menu below the trigger
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  }, [open]);
+
   // close on outside click
   useEffect(() => {
     if (!open) return;
     function handleClick(event: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
-        close();
-      }
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (listRef.current?.contains(target)) return;
+      close();
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
+  }, [open, close]);
+
+  // close on scroll in any ancestor (menu position would be stale)
+  useEffect(() => {
+    if (!open) return;
+    function handleScroll() { close(); }
+    document.addEventListener("scroll", handleScroll, true);
+    return () => document.removeEventListener("scroll", handleScroll, true);
   }, [open, close]);
 
   // scroll focused option into view
@@ -95,8 +119,34 @@ export function Select({ value, options, onChange, "aria-label": ariaLabel, disa
     }
   }
 
+  const menu = open ? (
+    <div
+      className="select__menu"
+      ref={listRef}
+      role="listbox"
+      aria-label={ariaLabel}
+      style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
+    >
+      {options.map((option, idx) => (
+        <div
+          key={option.value}
+          className={`select__option${option.value === value ? " select__option--selected" : ""}${idx === focusIdx ? " select__option--focused" : ""}`}
+          role="option"
+          aria-selected={option.value === value}
+          onMouseEnter={() => setFocusIdx(idx)}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            pick(option.value);
+          }}
+        >
+          {option.label}
+        </div>
+      ))}
+    </div>
+  ) : null;
+
   return (
-    <div className="select" ref={wrapRef}>
+    <div className="select">
       <button
         className={`select__trigger${open ? " select__trigger--open" : ""}`}
         type="button"
@@ -107,29 +157,12 @@ export function Select({ value, options, onChange, "aria-label": ariaLabel, disa
         disabled={disabled}
         onClick={toggle}
         onKeyDown={handleKeyDown}
+        ref={triggerRef}
       >
         <span className="select__value">{selected?.label ?? value}</span>
         <span className="select__chevron" aria-hidden="true" />
       </button>
-      {open ? (
-        <div className="select__menu" ref={listRef} role="listbox" aria-label={ariaLabel}>
-          {options.map((option, idx) => (
-            <div
-              key={option.value}
-              className={`select__option${option.value === value ? " select__option--selected" : ""}${idx === focusIdx ? " select__option--focused" : ""}`}
-              role="option"
-              aria-selected={option.value === value}
-              onMouseEnter={() => setFocusIdx(idx)}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                pick(option.value);
-              }}
-            >
-              {option.label}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      {menu ? createPortal(menu, document.body) : null}
     </div>
   );
 }
