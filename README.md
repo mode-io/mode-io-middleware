@@ -141,7 +141,7 @@ If you want raw data or to wire your own tooling around it, use the versioned mo
 
 Plugin inventory and mutation live under `/modeio/admin/v1/*`. The gateway keeps admin routes on loopback by default; binding a non-loopback host now requires `--allow-remote-admin`.
 
-For frontend editing, `npm run dev` inside `dashboard/` serves the Vite app on `http://127.0.0.1:4173/modeio/dashboard/` and proxies `/modeio/api/*`, `/modeio/admin/*`, `/v1`, `/connectors/*`, and `/healthz` to `127.0.0.1:8787` by default. That means the canonical gateway still owns the live middleware state while the dev server handles hot-reload UI work.
+For frontend editing, `npm run dev` inside `dashboard/` serves the Vite app on `http://127.0.0.1:4173/modeio/dashboard/` and proxies `/modeio/api/v1/*`, `/modeio/admin/v1/*`, `/v1`, `/connectors/*`, and `/healthz` to `127.0.0.1:8787` by default. That means the canonical gateway still owns the live middleware state while the dev server handles hot-reload UI work.
 
 ## Plugin workflow
 

@@ -69,7 +69,7 @@ async def _parse_json_body(request: Request) -> dict[str, Any]:
 
 
 def _request_journal(controller: GatewayController):
-    journal = controller.current_engine().services.request_journal
+    journal = controller.request_journal()
     if journal is None:
         return None
     return journal
@@ -218,14 +218,4 @@ def build_monitoring_routes(controller: GatewayController) -> list[Route]:
         Route("/modeio/api/v1/events/{request_id}", event_detail, methods=["GET"]),
         Route("/modeio/api/v1/events", events, methods=["GET"]),
         Route("/modeio/api/v1/stats", stats, methods=["GET"]),
-        Route("/modeio/api/plugins", plugins, methods=["GET"]),
-        Route(
-            "/modeio/api/profiles/{profile}/plugins",
-            update_profile_plugins,
-            methods=["PUT"],
-        ),
-        Route("/modeio/api/events/live", live, methods=["GET"]),
-        Route("/modeio/api/events/{request_id}", event_detail, methods=["GET"]),
-        Route("/modeio/api/events", events, methods=["GET"]),
-        Route("/modeio/api/stats", stats, methods=["GET"]),
     ]

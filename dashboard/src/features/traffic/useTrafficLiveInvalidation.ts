@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
 
+import { modeioMonitoringRoutes } from "../../apiRoutes";
 import {
   buildDetailQueryKey,
   TRAFFIC_EVENTS_QUERY_KEY,
@@ -18,7 +19,7 @@ export function useTrafficLiveInvalidation(selectedRequestId: string | null) {
   }, [selectedRequestId]);
 
   useEffect(() => {
-    const source = new EventSource("/modeio/api/events/live");
+    const source = new EventSource(modeioMonitoringRoutes.liveEvents);
 
     const scheduleRefresh = () => {
       if (refreshTimer.current !== null) {

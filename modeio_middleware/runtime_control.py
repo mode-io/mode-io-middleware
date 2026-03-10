@@ -54,6 +54,7 @@ class GatewayController:
     def __init__(self, runtime_config: GatewayRuntimeConfig):
         self._lock = threading.RLock()
         self._engine = MiddlewareEngine(runtime_config)
+        self._request_journal = self._engine.services.request_journal
         self._generation = 1
         self._active_counts: Dict[int, int] = {self._generation: 0}
         self._retired: Dict[int, MiddlewareEngine] = {}
@@ -104,6 +105,9 @@ class GatewayController:
             self._config_path
         )
 
+    def request_journal(self):
+        return self._request_journal
+
     def default_profile(self) -> str:
         return self._launch_settings.default_profile
 
@@ -125,7 +129,7 @@ class GatewayController:
 
         payload = read_runtime_config_payload(self._config_path)
         current_engine = self.current_engine()
-        journal = current_engine.services.request_journal
+        journal = self.request_journal()
         stats_snapshot = journal.stats_snapshot() if journal is not None else None
         return build_plugin_inventory_response(
             payload,
@@ -151,7 +155,12 @@ class GatewayController:
 
     def _prepare_engine_swap(self, payload: Dict[str, Any]) -> PreparedEngineSwap:
         next_config = self._build_runtime_config_from_payload(payload)
-        return PreparedEngineSwap(next_engine=MiddlewareEngine(next_config))
+        return PreparedEngineSwap(
+            next_engine=MiddlewareEngine(
+                next_config,
+                request_journal=self._request_journal,
+            )
+        )
 
     def _activate_prepared_engine(self, prepared: PreparedEngineSwap) -> MiddlewareEngine | None:
         current_generation = self._generation
