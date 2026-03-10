@@ -5,11 +5,17 @@ import gzip
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+try:  # Python 3.14+
+    from compression import zstd as _zstd_codec
+except Exception:  # pragma: no cover
+    _zstd_codec = None
 
 from smoke_matrix.agents import build_agent_command as _build_agent_command
 from smoke_matrix.common import (
@@ -804,4 +810,3 @@ def run_gateway_smoke_checks(
         outcome="not_applicable_transport" if codex_native_mode and zstd_result.get("status") == 502 else "product_failed",
     )
     return checks
-

@@ -346,3 +346,15 @@
 - The remaining cleanup category is now mostly deletion and consolidation, not architecture discovery.
   - The main gate is done.
   - Future cleanup can be targeted by zero-usage proof and normal review, rather than another exploratory design pass.
+
+## Post-Refactor Smoke Findings
+- The refactor did not break the middleware runtime contract, but it did break the smoke CLI entrypoints in small, real ways.
+  - `smoke_agent_matrix.py` and `smoke_matrix/runner.py` both lost standard-library imports during the split.
+  - The smoke-support tests were not exercising those exact entrypoint paths strongly enough to catch the missing imports before the live run.
+- `smoke_e2e.sh` still held one hidden policy decision after the Python split.
+  - The wrapper was not forwarding explicit upstream base/model overrides into `smoke_agent_matrix.py`.
+  - In this environment that meant live smoke silently fell back to `https://api.openai.com/v1` + `gpt-4o-mini`, which is not the intended release validation path.
+- The `opencode` investigation confirmed the architectural distinction:
+  - transport is normalized enough that we do not need an OpenClaw-style provider-family matrix
+  - auth reuse is still a separate concern because middleware must choose between direct selected-provider auth and shared native fallback
+  - the OpenAI-specific native bridge for `opencode` remains the main special case, not a sign that `opencode` needs the same integration model as OpenClaw

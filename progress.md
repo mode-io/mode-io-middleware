@@ -340,3 +340,33 @@
 - Result:
   - the structural refactor gate is complete
   - remaining cleanup is no longer a blocker for continuing product work or opening the next review
+
+### Session: 2026-03-10 16:25 UTC release-smoke follow-up after refactor
+- Re-ran the release smoke path from the refactor branch and found two real smoke-split regressions:
+  - `scripts/smoke_agent_matrix.py` lost `tempfile`, `subprocess`, and `shutil` imports during the split
+  - `scripts/smoke_matrix/runner.py` lost `sys` and `_zstd_codec` imports during the split
+- Fixed those regressions and validated the smoke-support layer again:
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest tests.smoke.test_smoke_agent_matrix_support`
+    - `13` tests passed
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest discover tests/smoke -p 'test_*.py'`
+    - `18` tests passed
+- Release-smoke discovery:
+  - the wrapper path in `scripts/smoke_e2e.sh` was not forwarding `MODEIO_GATEWAY_UPSTREAM_BASE_URL` / `MODEIO_GATEWAY_UPSTREAM_MODEL` into `scripts/smoke_agent_matrix.py`
+  - without that pass-through, the live matrix silently defaulted back to `https://api.openai.com/v1` + `gpt-4o-mini`, which caused false-negative repo smoke in this environment
+  - patched `scripts/smoke_e2e.sh` to forward those explicit upstream overrides
+- Auth-path confirmation from live debugging:
+  - `opencode` does not need an OpenClaw-style public family split
+  - but the internal auth layer still has to choose between:
+    - direct selected-provider auth reuse
+    - placeholder-localhost passthrough
+    - shared Codex/OpenClaw native fallback
+  - removing direct OpenAI-style env vars from the smoke sandbox proved the shared Codex-native fallback still works for `opencode`
+- Final live smoke evidence after the wrapper/import fixes:
+  - repo mode:
+    - `bash ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-refactor-postgate-nativeenv2`
+    - passed
+    - artifact root: `.artifacts/live-agent-refactor-postgate-nativeenv2/20260310T162202Z-99837`
+  - wheel mode:
+    - `bash ./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-refactor-postgate-nativeenv2-wheel`
+    - passed
+    - artifact root: `.artifacts/live-agent-refactor-postgate-nativeenv2-wheel/20260310T162342Z-1414`

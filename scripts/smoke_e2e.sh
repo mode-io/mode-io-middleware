@@ -778,6 +778,14 @@ run_live_agent_matrix_smoke() {
     --install-mode "$live_agents_install_mode"
   )
 
+  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-}" ]]; then
+    smoke_args+=(--upstream-base-url "$MODEIO_GATEWAY_UPSTREAM_BASE_URL")
+  fi
+
+  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_MODEL:-}" ]]; then
+    smoke_args+=(--model "$MODEIO_GATEWAY_UPSTREAM_MODEL")
+  fi
+
   if [[ -n "$live_agents_install_target" ]]; then
     smoke_args+=(--install-target "$live_agents_install_target")
   fi
