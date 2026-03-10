@@ -358,3 +358,4 @@
   - transport is normalized enough that we do not need an OpenClaw-style provider-family matrix
   - auth reuse is still a separate concern because middleware must choose between direct selected-provider auth and shared native fallback
   - the OpenAI-specific native bridge for `opencode` remains the main special case, not a sign that `opencode` needs the same integration model as OpenClaw
+  - the passing release smoke also showed that force-injecting a placeholder OpenCode API key is no longer required for the localhost setup path in this branch; preserving a missing key avoids one more auth-precedence edge case

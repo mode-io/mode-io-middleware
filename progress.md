@@ -361,6 +361,7 @@
     - placeholder-localhost passthrough
     - shared Codex/OpenClaw native fallback
   - removing direct OpenAI-style env vars from the smoke sandbox proved the shared Codex-native fallback still works for `opencode`
+  - preserving a missing OpenCode provider API key in setup, instead of force-injecting the local placeholder, kept the localhost path compatible with the now-cleaner auth precedence and the passing live smoke runs
 - Final live smoke evidence after the wrapper/import fixes:
   - repo mode:
     - `bash ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-refactor-postgate-nativeenv2`

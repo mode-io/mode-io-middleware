@@ -18,8 +18,6 @@ from modeio_middleware.cli.setup_lib.common import (
     write_json_file,
 )
 
-OPENCODE_PLACEHOLDER_API_KEY = "modeio-middleware"
-
 
 def default_opencode_config_path(
     *,
@@ -75,9 +73,6 @@ def apply_opencode_base_url(config: Dict[str, Any], gateway_base_url: str) -> Tu
     changed = current_base_url != normalized
 
     options_obj["baseURL"] = normalized
-    if not isinstance(options_obj.get("apiKey"), str) or not str(options_obj.get("apiKey")).strip():
-        options_obj["apiKey"] = OPENCODE_PLACEHOLDER_API_KEY
-        changed = True
     selected_provider["options"] = options_obj
     provider_obj[provider_id] = selected_provider
     updated["provider"] = provider_obj
@@ -120,8 +115,6 @@ def remove_opencode_base_url(
         return updated, False, raw_base_url, "base_url_mismatch"
 
     del options_obj["baseURL"]
-    if options_obj.get("apiKey") == OPENCODE_PLACEHOLDER_API_KEY:
-        del options_obj["apiKey"]
     selected_provider["options"] = options_obj
     provider_obj[provider_id] = selected_provider
     updated["provider"] = provider_obj

@@ -168,7 +168,7 @@ class TestSetupGateway(unittest.TestCase):
             "secret",
         )
 
-    def test_apply_opencode_base_url_injects_placeholder_when_api_key_missing(self):
+    def test_apply_opencode_base_url_preserves_missing_api_key(self):
         source = {
             "model": "openai/gpt-4o-mini",
             "provider": {
@@ -179,10 +179,7 @@ class TestSetupGateway(unittest.TestCase):
         }
         updated, changed = apply_opencode_base_url(source, "http://127.0.0.1:8787/v1")
         self.assertTrue(changed)
-        self.assertEqual(
-            updated["provider"]["openai"]["options"]["apiKey"],
-            "modeio-middleware",
-        )
+        self.assertNotIn("apiKey", updated["provider"]["openai"]["options"])
 
     def test_apply_opencode_base_url_tracks_current_provider(self):
         source = {
