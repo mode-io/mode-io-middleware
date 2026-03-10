@@ -47,6 +47,12 @@ PROVIDER_ALIASES = {
     "codex": PROVIDER_OPENAI_CODEX,
     "openai_codex": PROVIDER_OPENAI_CODEX,
 }
+OPENCLAW_SUPPORTED_API_FAMILIES = frozenset(
+    {
+        "openai-completions",
+        "anthropic-messages",
+    }
+)
 
 
 def normalize_provider_id(raw_provider_id: str | None) -> str:
@@ -1221,6 +1227,29 @@ class GenericProviderAdapter:
 
     def inspect(self, context: AuthContext) -> CredentialInspection:
         if context.client_name == CLIENT_OPENCLAW:
+            api_family = _openclaw_current_api_family(context.provider_id, context.env)
+            if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
+                metadata = {
+                    "providerId": normalize_provider_id(context.provider_id),
+                    "apiFamily": api_family,
+                    "unsupportedFamily": True,
+                    "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
+                }
+                upstream_base_url = _openclaw_preserved_upstream_base_url(
+                    context.provider_id,
+                    context.env,
+                )
+                if upstream_base_url:
+                    metadata["upstreamBaseUrl"] = upstream_base_url
+                return _missing(
+                    context.provider_id,
+                    strategy="unsupported_family",
+                    reason=(
+                        f"OpenClaw provider family '{api_family}' is not supported by middleware yet."
+                    ),
+                    fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
+                    metadata=metadata,
+                )
             return _inspect_openclaw_provider(
                 context.provider_id,
                 context.env,
@@ -1513,6 +1542,8 @@ class CredentialResolver:
         )
         if inspection.ready and inspection.authorization:
             return inspection.authorization
+        if incoming_auth and _looks_like_placeholder(incoming_auth):
+            return None
         return incoming_auth or None
 
     def record_failure(self, inspection: CredentialInspection, *, status_code: int) -> None:

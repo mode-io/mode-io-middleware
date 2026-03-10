@@ -116,13 +116,13 @@ class TestGatewayContract(unittest.TestCase):
                 payload["choices"][0]["message"]["content"],
                 "hello passthrough",
             )
-            self.assertEqual(
-                upstream.requests[-1]["headers"]["Authorization"],
-                "Bearer incoming-secret",
-            )
             upstream_request_headers = {
                 key.lower(): value for key, value in upstream.requests[-1]["headers"].items()
             }
+            self.assertEqual(
+                upstream_request_headers["authorization"],
+                "Bearer incoming-secret",
+            )
             self.assertEqual(
                 upstream_request_headers["openai-organization"],
                 "org_test",
@@ -174,6 +174,7 @@ class TestGatewayContract(unittest.TestCase):
             ready=True,
             guaranteed=False,
             authorization="Bearer codex-token",
+            resolved_headers={},
             transport="codex_native",
             metadata={"nativeBaseUrl": f"{upstream.base_url}/codex", "accountId": "acct-1"},
         )
@@ -252,52 +253,35 @@ class TestGatewayContract(unittest.TestCase):
                 gateway_stub.stop()
                 upstream.stop()
 
-    def test_client_scoped_openclaw_route_bridges_placeholder_auth(self):
-        with TemporaryDirectory() as temp_dir:
-            agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
-            agent_dir.mkdir(parents=True)
-            (agent_dir / "auth-profiles.json").write_text(
-                json.dumps(
-                    {
-                        "profiles": {
-                            "openai-codex:default": {
-                                "provider": "openai-codex",
-                                "access": "eyJhbGciOi-openclaw",
-                            }
-                        }
-                    }
-                ),
-                encoding="utf-8",
+    def test_client_scoped_openclaw_route_rejects_deferred_openai_codex_family(self):
+        upstream, gateway_stub = self._start_pair(
+            lambda _path, payload: completion_payload(payload["messages"][0]["content"])
+        )
+        try:
+            status, _headers, payload = post_json(
+                gateway_stub.base_url,
+                "/clients/openclaw/openai-codex/v1/chat/completions",
+                {
+                    "model": "gpt-test",
+                    "messages": [{"role": "user", "content": "hello openclaw"}],
+                },
+                headers={"Authorization": "Bearer modeio-middleware"},
             )
-
-            upstream, gateway_stub = self._start_pair(
-                lambda _path, payload: completion_payload(
-                    payload["messages"][0]["content"]
-                )
+            self.assertEqual(status, 400)
+            self.assertEqual(payload["error"]["code"], "MODEIO_VALIDATION_ERROR")
+            self.assertIn("unsupported API family", payload["error"]["message"])
+            self.assertEqual(
+                payload["error"]["details"]["apiFamily"],
+                "openai-codex-responses",
             )
-            try:
-                with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
-                    status, _headers, payload = post_json(
-                        gateway_stub.base_url,
-                        "/clients/openclaw/openai-codex/v1/chat/completions",
-                        {
-                            "model": "gpt-test",
-                            "messages": [{"role": "user", "content": "hello openclaw"}],
-                        },
-                        headers={"Authorization": "Bearer modeio-middleware"},
-                    )
-                self.assertEqual(status, 200)
-                self.assertEqual(
-                    payload["choices"][0]["message"]["content"],
-                    "hello openclaw",
-                )
-                self.assertEqual(
-                    upstream.requests[-1]["headers"]["Authorization"],
-                    "Bearer eyJhbGciOi-openclaw",
-                )
-            finally:
-                gateway_stub.stop()
-                upstream.stop()
+            self.assertEqual(
+                payload["error"]["details"]["providerId"],
+                "openai-codex",
+            )
+            self.assertEqual(upstream.requests, [])
+        finally:
+            gateway_stub.stop()
+            upstream.stop()
 
     def test_client_scoped_route_normalizes_provider_prefixed_model(self):
         upstream, gateway_stub = self._start_pair(
@@ -307,6 +291,7 @@ class TestGatewayContract(unittest.TestCase):
             ready=True,
             guaranteed=True,
             authorization="Bearer test-token",
+            resolved_headers={},
             transport="openai_compat",
             metadata={},
         )

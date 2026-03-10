@@ -123,6 +123,17 @@ class TestClientAuth(unittest.TestCase):
 
         self.assertEqual(authorization, "Bearer sk-openclaw-openai")
 
+    def test_openclaw_bridge_drops_placeholder_for_deferred_openai_codex_family(self):
+        with TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                authorization = resolve_client_upstream_authorization(
+                    {"Authorization": "Bearer modeio-middleware"},
+                    client_name=CLIENT_OPENCLAW,
+                    client_provider_name="openai-codex",
+                )
+
+        self.assertIsNone(authorization)
+
     def test_opencode_bridge_uses_configured_openai_api_key(self):
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / ".config" / "opencode" / "opencode.json"
@@ -554,7 +565,18 @@ class TestClientAuth(unittest.TestCase):
         self.assertEqual(selection.provider_id, "zenmux")
         self.assertTrue(selection.reason.startswith("fallback_provider:"))
 
-    def test_openclaw_inspection_refreshes_expired_openai_codex_profile(self):
+    def test_openclaw_inspection_reports_openai_codex_as_unsupported_family(self):
+        with TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+                inspection = inspect_openclaw_native_auth("openai-codex")
+
+        self.assertFalse(inspection["ready"])
+        self.assertEqual(inspection["strategy"], "unsupported_family")
+        self.assertEqual(inspection["providerId"], "openai-codex")
+        self.assertEqual(inspection["apiFamily"], "openai-codex-responses")
+        self.assertTrue(inspection["unsupportedFamily"])
+
+    def test_codex_bridge_refreshes_expired_openclaw_openai_codex_profile(self):
         with TemporaryDirectory() as temp_dir:
             agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
             agent_dir.mkdir(parents=True)
@@ -584,12 +606,14 @@ class TestClientAuth(unittest.TestCase):
                 },
             ):
                 with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
-                    inspection = inspect_openclaw_native_auth("openai-codex")
+                    authorization = resolve_client_upstream_authorization(
+                        {},
+                        client_name=CLIENT_CODEX,
+                    )
 
             stored = json.loads(auth_path.read_text(encoding="utf-8"))
 
-        self.assertTrue(inspection["ready"])
-        self.assertEqual(inspection["selectedProfileId"], "openai-codex:default")
+        self.assertEqual(authorization, "Bearer new-token")
         self.assertEqual(stored["profiles"]["openai-codex:default"]["access"], "new-token")
         self.assertEqual(stored["profiles"]["openai-codex:default"]["refresh"], "new-refresh")
 

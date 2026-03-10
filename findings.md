@@ -37,6 +37,21 @@
 | Codex OAuth token reaches upstream but public OpenAI-compatible routes reject it | Treat Codex as a dedicated native-adapter problem, not a generic passthrough case |
 | OpenCode current `openai` provider has no reusable auth on this machine | Plan provider-aware inspection and explicit `not guaranteed` reporting for missing auth |
 | OpenClaw native live smoke mixed local cache/config bugs with external rate limiting | Fixed local route/cache sync first, then isolated remaining live failure as upstream `429` |
+| Gateway contract subset regressed after OpenClaw family work | Independent rerun showed 4 failing tests: 3 are stale tests tied to old header casing/mock shapes, 1 is a real boundary mismatch where `/clients/openclaw/openai-codex/*` still reaches Codex-native transport even though OpenClaw support intentionally excludes `openai-codex-responses` for now |
+
+## Independent Investigation: Contract Mismatch
+- Re-ran `./.venv/bin/python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract` on commit `bbb9b77`; result: `52` tests, `2` failures, `2` errors.
+- Independently reproduced the four failing integration cases:
+  - `test_gateway_preserves_safe_upstream_metadata_headers`: runtime behavior is correct; upstream stub stores request headers with lowercased names (`authorization`, `openai-organization`), so the test is stale rather than the middleware being wrong.
+  - `test_client_scoped_route_normalizes_provider_prefixed_model`: adding `resolved_headers={}` to the mocked inspection makes the test pass. The current failure is a stale mock shape after `_build_upstream_headers()` started expecting `resolved_headers`.
+  - `test_codex_native_transport_uses_backend_api_paths`: likewise passes once the mocked inspection includes `resolved_headers={}`; this is also a stale mock/test-double issue.
+  - `test_client_scoped_openclaw_route_bridges_placeholder_auth`: this is the real mismatch. With host `~/.openclaw` seeded only with `openai-codex` auth, `/clients/openclaw/openai-codex/v1/chat/completions` now bypasses the configured stub upstream and returns `401` from the Codex-native backend instead.
+- Interpretation:
+  - The first three failures do not block refactor; they are test maintenance.
+  - The last failure is a real contract ambiguity. OpenClaw v1 support is currently defined around `openai-completions` and `anthropic-messages`, while `openai-codex-responses` is explicitly deferred, but the generic client-scoped route still allows `openai-codex` to trigger Codex-native transport.
+- Recommendation from the investigation:
+  - Fix this one boundary mismatch first by making the deferred OpenClaw Codex family explicit, for example rejecting `/clients/openclaw/openai-codex/*` with an unsupported-family error until the dedicated `openai-codex-responses` surface exists, or otherwise gating native Codex transport behind an explicit OpenClaw family contract.
+  - After that targeted fix, proceed with the larger refactor. Refactoring before clarifying this contract would bake the wrong boundary into the cleanup.
 
 ## Resources
 - Middleware worktree context: `/Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass/.worktree-context.md`
@@ -118,6 +133,11 @@
   - `modeio-codex`
 - OpenClaw native-profile reuse should be retained only as an experimental path until the three managed families are implemented and validated.
 
+## Test Review Notes
+- Branch-vs-`origin/main` changed test surface is concentrated in `tests/unit/test_client_auth.py`, `tests/unit/test_upstream_client.py`, `tests/unit/test_setup_gateway.py`, `tests/smoke/test_smoke_agent_matrix_support.py`, plus `tests/integration/test_gateway_contract.py`, `tests/smoke/test_smoke_client_setup_flows.py`, and `tests/helpers/gateway_harness.py`.
+- Early structural pattern: unit coverage is broad but heavily coupled to nested config dict shapes, on-disk OpenClaw state file layouts, and private helper functions. Higher-level integration coverage is stronger for generic gateway routes and Codex/OpenClaw OpenAI-compatible paths than for the newer Anthropic/OpenClaw family path.
+- The most important likely gap is higher-level coverage for OpenClaw `anthropic-messages`: unit tests cover transport/header selection and setup rewrites, but no integration/smoke test currently drives `/clients/openclaw/<provider>/v1/messages` through the gateway.
+
 ## OpenClaw Family Smoke Findings
 - The smoke harness now supports real OpenClaw preserve-provider family runs for the two currently supported families:
   - `openai-completions`
@@ -127,3 +147,22 @@
 - Current live result on this machine:
   - `anthropic-messages` reaches the intended upstream `/v1/messages` path through the family tap and returns `401`, so the path is real but externally blocked by current auth/account state.
   - `openai-completions` still returns `401` before the intended family tap sees traffic, even after preferring concrete copied providers over generic `auto` entries. That points to a remaining OpenClaw OpenAI-family auth/routing gap, not just a missing smoke scenario.
+
+## Independent Investigation: Contract Mismatch
+- Re-ran the exact contract-focused subset that previously surfaced the mismatch:
+  - `python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract`
+- Result before the fix: four failing cases split into three stale-test issues and one real contract bug.
+- The stale cases were:
+  - one upstream-header casing assertion in `tests/integration/test_gateway_contract.py`
+  - two mocked `SimpleNamespace` inspection objects that no longer matched the runtime inspection shape because they omitted `resolved_headers`
+- The real bug was narrower:
+  - OpenClaw setup and product intent defer `openai-codex-responses`, but the generic `/clients/openclaw/openai-codex/...` runtime route could still fall through into transport selection and forward placeholder auth toward a generic upstream path.
+- Fixed contract decision:
+  - public OpenClaw runtime now rejects unsupported/deferred provider families explicitly
+  - `openai-codex-responses` remains reusable internally for Codex/OpenCode auth sharing, but it is no longer silently exposed through the OpenClaw route boundary
+- Post-fix validation:
+  - the same four-module subset now passes cleanly (`55` tests)
+  - targeted auth/upstream/integration coverage and adjacent setup/transport tests also pass
+- Conclusion:
+  - this was not evidence that the whole branch needs emergency rewrites before correctness work
+  - the right order is the one we suspected: fix the one wrong boundary first, then do the larger structural refactor on top of the corrected contract

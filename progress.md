@@ -78,6 +78,21 @@
   - Moved OpenClaw auth inspection behind the shared provider adapter contract.
   - Added `OpenClawSelectionResolver` so provider/profile choice is encapsulated instead of scattered across helper functions.
   - Added auto-refresh support for expired `openai-codex` OpenClaw OAuth profiles and fallback-aware health bookkeeping.
+
+### Session: 2026-03-10 test review
+- **Status:** in_progress
+- Actions taken:
+  - Audited changed tests on the branch against `origin/main`.
+  - Read the main unit test files plus touched integration/smoke helpers.
+  - Identified likely structural issues around config-shape coupling, private-helper testing, and missing higher-level Anthropic/OpenClaw coverage.
+- Files inspected:
+  - `tests/unit/test_client_auth.py`
+  - `tests/unit/test_upstream_client.py`
+  - `tests/unit/test_setup_gateway.py`
+  - `tests/smoke/test_smoke_agent_matrix_support.py`
+  - `tests/integration/test_gateway_contract.py`
+  - `tests/smoke/test_smoke_client_setup_flows.py`
+  - `tests/helpers/gateway_harness.py`
   - Added runtime cooldown marking on `429`/auth rejection so the resolver has real failure state to work with.
   - Added bounded fallback-provider selection from the user’s configured OpenClaw models cache, but the current machine’s alternate providers do not offer a like-for-like `gpt-5.4` replacement, so live OpenClaw still does not clear end-to-end.
   - Preserved current native provider/profile resolution and managed fallback semantics.
@@ -177,6 +192,32 @@
 | 2026-03-10 13:53 UTC | OpenClaw `openai-completions` live family smoke returned `401` without hitting the intended family tap | 1 | Harness now selects concrete copied providers instead of generic `auto`, but the current live result still points to a remaining OpenClaw OpenAI-family auth/routing gap to investigate separately |
 | 2026-03-10 14:01 UTC | OpenClaw `openai-completions` preserve-provider inspection bypassed the current provider and silently fell back to another provider before checking the current provider's cached API key | 1 | Reordered `_inspect_openclaw_provider` so current-provider cache/env auth wins before cross-provider fallback; preserve-provider live smoke now reaches the intended family tap |
 | 2026-03-10 14:02 UTC | OpenClaw family tap proxies were overwriting preserved caller auth with `MODEIO_TAP_UPSTREAM_API_KEY` | 1 | Removed the auth override from OpenClaw family taps so live smoke preserves the real copied OpenClaw credentials end to end |
+| 2026-03-10 14:33 UTC | Generic `/clients/openclaw/openai-codex/...` routes could still fall through into upstream forwarding even though OpenClaw intentionally defers `openai-codex-responses` | 1 | Rejected unsupported OpenClaw families explicitly at the public runtime boundary and updated stale contract tests/mocks to match the current inspection shape |
+
+### Phase 8C: Contract boundary fix and stale test cleanup
+- **Status:** complete
+- Actions taken:
+  - Added an explicit public OpenClaw-family gate so only `openai-completions` and `anthropic-messages` are routable through the OpenClaw client boundary.
+  - Preserved internal reuse of OpenClaw `openai-codex` profiles for Codex/OpenCode fallback paths, so the fix does not regress shared auth behavior.
+  - Updated the upstream client to fail fast with a clear validation error instead of forwarding placeholder OpenClaw auth toward a generic upstream path.
+  - Fixed stale integration/unit tests:
+    - header assertion now tolerates normalized casing
+    - mocked inspection objects now include `resolved_headers`
+    - the old OpenClaw `openai-codex` route test now asserts explicit rejection instead of unsupported success
+    - replaced the stale public OpenClaw `openai-codex` inspection expectation with a public unsupported-family assertion plus a Codex-side refresh regression test
+- Files created/modified:
+  - `modeio_middleware/core/provider_auth.py`
+  - `modeio_middleware/core/upstream_client.py`
+  - `tests/integration/test_gateway_contract.py`
+  - `tests/unit/test_client_auth.py`
+  - `tests/unit/test_upstream_client.py`
+- Validation:
+  - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.integration.test_gateway_contract`
+    - `49` tests passed
+  - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_http_transport tests.unit.test_setup_gateway`
+    - `44` tests passed
+  - `python-test-env.sh test --repo ... -- python -m unittest tests.unit.test_client_auth tests.unit.test_upstream_client tests.unit.test_http_transport tests.integration.test_gateway_contract`
+    - `55` tests passed
 
 ## 5-Question Reboot Check
 | Question | Answer |

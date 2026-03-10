@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from modeio_middleware.connectors.client_identity import CLIENT_OPENCLAW
 from modeio_middleware.core.client_auth import (
     inspect_client_native_auth,
     record_client_native_failure,
@@ -111,6 +112,33 @@ def _build_upstream_headers(
         client_name=client_name,
         client_provider_name=client_provider_name,
     )
+    metadata = inspection.metadata if isinstance(getattr(inspection, "metadata", None), dict) else {}
+    if client_name == CLIENT_OPENCLAW and metadata.get("unsupportedFamily"):
+        provider_id = str(
+            client_provider_name
+            or metadata.get("providerId")
+            or getattr(inspection, "provider_id", "")
+        ).strip() or "unknown"
+        api_family = str(metadata.get("apiFamily") or "unknown").strip() or "unknown"
+        supported = metadata.get("supportedFamilies")
+        details = {
+            "client": client_name,
+            "providerId": provider_id,
+            "apiFamily": api_family,
+        }
+        if isinstance(supported, list) and supported:
+            details["supportedFamilies"] = list(supported)
+        raise MiddlewareError(
+            400,
+            "MODEIO_VALIDATION_ERROR",
+            (
+                f"OpenClaw provider '{provider_id}' uses unsupported API family "
+                f"'{api_family}'. Supported families are openai-completions and "
+                "anthropic-messages."
+            ),
+            retryable=False,
+            details=details,
+        )
     explicit_incoming_auth = False
     for key, value in incoming_headers.items():
         lower_key = key.lower()

@@ -285,6 +285,43 @@ class TestUpstreamClient(unittest.TestCase):
         self.assertNotIn("x-api-key", sent_headers)
         self.assertEqual(sent_headers["anthropic-version"], "2023-06-01")
 
+    def test_forward_upstream_json_rejects_deferred_openclaw_family(self):
+        inspection = SimpleNamespace(
+            ready=False,
+            authorization=None,
+            resolved_headers={},
+            metadata={
+                "providerId": "openai-codex",
+                "apiFamily": "openai-codex-responses",
+                "unsupportedFamily": True,
+                "supportedFamilies": [
+                    "anthropic-messages",
+                    "openai-completions",
+                ],
+            },
+            transport="openai_compat",
+        )
+        with patch(
+            "modeio_middleware.core.upstream_client.inspect_client_native_auth",
+            return_value=inspection,
+        ):
+            with self.assertRaises(MiddlewareError) as error_ctx:
+                forward_upstream_json(
+                    config=self.config,
+                    endpoint_kind="chat_completions",
+                    payload={"model": "gpt-test"},
+                    incoming_headers={"Authorization": "Bearer modeio-middleware"},
+                    client_name="openclaw",
+                    client_provider_name="openai-codex",
+                )
+
+        self.assertEqual(error_ctx.exception.status, 400)
+        self.assertEqual(error_ctx.exception.code, "MODEIO_VALIDATION_ERROR")
+        self.assertEqual(
+            error_ctx.exception.details["apiFamily"],
+            "openai-codex-responses",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
