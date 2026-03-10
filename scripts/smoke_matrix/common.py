@@ -13,7 +13,6 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 from modeio_middleware.cli.setup_lib.upstream import (
     OPENAI_DEFAULT_MODEL,
     OPENAI_UPSTREAM_BASE_URL,
-    resolve_live_upstream_selection,
 )
 
 SUPPORTED_AGENTS = ("codex", "opencode", "openclaw", "claude")
@@ -54,37 +53,13 @@ def parse_agents(raw: str) -> Tuple[str, ...]:
     return tuple(deduped)
 
 
-def resolve_upstream_api_key(
-    env: Dict[str, str], preferred_env: str
-) -> Tuple[str, str]:
-    selection = resolve_live_upstream_selection(
-        preferred_env=preferred_env,
-        env=env,
-    )
-    api_key = selection.get("apiKey")
-    api_key_env = selection.get("apiKeyEnv")
-    if isinstance(api_key, str) and api_key and isinstance(api_key_env, str) and api_key_env:
-        return api_key, api_key_env
-
-    raise RuntimeError(
-        "missing reusable live upstream. Set MODEIO_GATEWAY_UPSTREAM_BASE_URL/MODEL with a key, "
-        "or provide a reusable OpenCode/OpenClaw config, or set OPENAI_API_KEY."
-    )
-
-
 def default_upstream_base_url(env: Dict[str, str]) -> str:
-    selection = resolve_live_upstream_selection(env=env)
-    base_url = selection.get("baseUrl")
-    if isinstance(base_url, str) and base_url:
-        return base_url
+    del env
     return OPENAI_UPSTREAM_BASE_URL
 
 
 def default_upstream_model(env: Dict[str, str]) -> str:
-    selection = resolve_live_upstream_selection(env=env)
-    model = selection.get("model")
-    if isinstance(model, str) and model:
-        return model
+    del env
     return OPENAI_DEFAULT_MODEL
 
 

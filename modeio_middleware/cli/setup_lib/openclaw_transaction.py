@@ -41,7 +41,7 @@ def apply_openclaw_provider_route(
     config: Dict[str, Any],
     gateway_base_url: str,
     *,
-    auth_mode: str,
+    auth_mode: str = OPENCLAW_AUTH_MODE_NATIVE,
     existing_route_metadata: Dict[str, Any] | None = None,
 ) -> Tuple[Dict[str, Any], bool]:
     route_metadata = existing_route_metadata or {}
@@ -69,7 +69,7 @@ def remove_openclaw_provider_route(
     gateway_base_url: str,
     *,
     force_remove: bool,
-    auth_mode: str,
+    auth_mode: str = OPENCLAW_AUTH_MODE_NATIVE,
     native_provider: str | None,
     route_model_id: str,
     previous_primary: str | None,
@@ -90,7 +90,7 @@ def apply_openclaw_config_file(
     config_path: Path,
     gateway_base_url: str,
     create_if_missing: bool,
-    auth_mode: str,
+    auth_mode: str = OPENCLAW_AUTH_MODE_NATIVE,
     models_cache_path: Path | None = None,
 ) -> Dict[str, Any]:
     existed = config_path.exists()

@@ -71,7 +71,6 @@ def run_doctor(
     openclaw_models_cache_path: Path,
     claude_settings_path: Path,
     timeout_seconds: int,
-    require_upstream_api_key: bool,
 ) -> Dict[str, object]:
     command = [
         *setup_command,
@@ -90,8 +89,6 @@ def run_doctor(
         "--require-commands",
         ",".join(agents),
     ]
-    if require_upstream_api_key:
-        command.append("--require-upstream-api-key")
     if "codex" in agents:
         command.append("--require-codex-auth")
 
@@ -122,7 +119,6 @@ def run_setup(
     timeout_seconds: int,
     configure_openai_clients: bool,
     configure_claude: bool,
-    openclaw_auth_mode: str,
 ) -> Dict[str, object]:
     report: Dict[str, object] = {
         "success": True,
@@ -146,8 +142,6 @@ def run_setup(
             str(openclaw_config_path),
             "--openclaw-models-cache-path",
             str(openclaw_models_cache_path),
-            "--openclaw-auth-mode",
-            openclaw_auth_mode,
             "--gateway-base-url",
             gateway_base_url,
         ]
@@ -235,6 +229,35 @@ def close_handle(handle: Optional[object]) -> None:
         handle.close()
 
 
+def skipped_agent_report(
+    *,
+    agent: str,
+    report_name: str,
+    diagnostic: str,
+) -> Dict[str, object]:
+    return {
+        "name": agent,
+        "reportName": report_name,
+        "exitCode": 0,
+        "timedOut": False,
+        "durationMs": 0,
+        "stdoutPath": "",
+        "stderrPath": "",
+        "tokenInOutput": False,
+        "tapKind": "upstream_tap",
+        "tap": {
+            "window": {"eventCount": 0, "successCount": 0, "paths": []},
+            "token": {"eventCount": 0, "tokenFound": False},
+            "upstreamStatuses": [],
+            "matchedPaths": [],
+        },
+        "diagnostic": diagnostic,
+        "ok": True,
+        "outcome": "skipped",
+        "productOk": True,
+    }
+
+
 def run_agent_check(
     *,
     agent: str,
@@ -268,6 +291,12 @@ def run_agent_check(
 
     before_count = len(_load_tap_events(tap_jsonl_path))
     agent_env = dict(os.environ) if agent == "claude" else env
+    if agent == "codex":
+        codex_base_url = str(env.get("MODEIO_SMOKE_CODEX_BASE_URL") or "").strip()
+        if codex_base_url:
+            agent_env["OPENAI_BASE_URL"] = codex_base_url
+    else:
+        agent_env.pop("OPENAI_BASE_URL", None)
     result = _run_command_capture(
         command=command,
         cwd=repo_root,
@@ -491,8 +520,6 @@ def run_openclaw_family_checks(
                     str(openclaw_config_path),
                     "--openclaw-models-cache-path",
                     str(openclaw_models_cache_path),
-                    "--openclaw-auth-mode",
-                    "native",
                     "--gateway-base-url",
                     gateway_base_url,
                 ],

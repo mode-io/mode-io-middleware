@@ -30,8 +30,6 @@ python -m pip install -e . build
 The bundled default config starts with no active plugins enabled.
 
 ```bash
-export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
-
 modeio-middleware-gateway \
   --host 127.0.0.1 \
   --port 8787 \
@@ -78,6 +76,8 @@ modeio-middleware-setup \
   --apply-opencode \
   --create-opencode-config
 ```
+
+This works for redirectable OpenCode providers. If the active provider is built-in `openai` authenticated through ChatGPT OAuth, setup will report that the provider stays outside middleware preserve-provider mode.
 
 ### OpenClaw
 
@@ -191,8 +191,7 @@ modeio-middleware-setup \
 ```bash
 # Optional readiness check before live smoke
 modeio-middleware-setup --doctor --json \
-  --require-commands codex,opencode,openclaw,claude \
-  --require-upstream-api-key
+  --require-commands codex,opencode,openclaw,claude
 
 # Full Python test suite
 python -m unittest discover tests -p 'test_*.py'
@@ -206,8 +205,7 @@ python -m unittest discover tests -p 'test_*.py'
 # Live upstream traversal check
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 
-# OpenAI-compatible client matrix (auto-reuses explicit middleware upstream env,
-# existing client auth/config when available, and falls back to managed upstream env if provided)
+# OpenAI-compatible client matrix using harness-owned auth only
 ./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
 
 # Claude-only hook matrix (no separate OpenAI-compatible upstream required)
@@ -223,7 +221,7 @@ python -m unittest discover tests -p 'test_*.py'
 ./scripts/release_check.sh
 ```
 
-OpenClaw setup defaults to native auth bridging. Use `--openclaw-auth-mode managed` only when you explicitly want middleware-owned upstream credentials.
+OpenClaw setup preserves the active supported provider in place. Unsupported provider families fail clearly instead of switching to middleware-owned auth.
 
 If you are working from a source checkout and want the repo-local helper equivalents, use:
 

@@ -22,17 +22,43 @@ sys.path.insert(0, str(TESTS_DIR))
 
 from helpers.gateway_harness import (  # noqa: E402
     completion_payload,
-    http_get_json,
+    http_get_json as _base_http_get_json,
     models_payload,
-    post_json,
-    post_raw,
-    post_stream,
+    post_json as _base_post_json,
+    post_raw as _base_post_raw,
+    post_stream as _base_post_stream,
     responses_payload,
     start_gateway_pair,
 )
 from helpers.inspection_builder import build_inspection  # noqa: E402
 from helpers.plugin_modules import register_plugin_module  # noqa: E402
 from modeio_middleware.plugins.base import MiddlewarePlugin  # noqa: E402
+
+DEFAULT_TEST_AUTH = {"Authorization": "Bearer test-upstream-auth"}
+
+
+def _merge_auth_headers(headers=None):
+    merged = dict(DEFAULT_TEST_AUTH)
+    if headers:
+        merged.update(headers)
+    return merged
+
+
+def http_get_json(base_url: str, path: str, *, headers=None):
+    request_headers = None if path == "/healthz" else _merge_auth_headers(headers)
+    return _base_http_get_json(base_url, path, headers=request_headers)
+
+
+def post_json(base_url: str, path: str, payload, *, headers=None):
+    return _base_post_json(base_url, path, payload, headers=_merge_auth_headers(headers))
+
+
+def post_raw(base_url: str, path: str, body: bytes, *, headers=None):
+    return _base_post_raw(base_url, path, body, headers=_merge_auth_headers(headers))
+
+
+def post_stream(base_url: str, path: str, payload, *, headers=None):
+    return _base_post_stream(base_url, path, payload, headers=_merge_auth_headers(headers))
 
 
 class _BlockerPlugin(MiddlewarePlugin):
@@ -185,6 +211,7 @@ class TestGatewayContract(unittest.TestCase):
                 status, _headers, models = http_get_json(
                     gateway_stub.base_url,
                     "/clients/codex/v1/models?client_version=0.112.0",
+                    headers={"Authorization": "Bearer modeio-middleware"},
                 )
                 self.assertEqual(status, 200)
                 self.assertEqual(models["models"][0]["id"], "gpt-5.4")
@@ -199,6 +226,7 @@ class TestGatewayContract(unittest.TestCase):
                         "instructions": "You are Codex",
                         "input": "hello codex transport",
                     },
+                    headers={"Authorization": "Bearer modeio-middleware"},
                 )
                 self.assertEqual(status, 200)
                 self.assertEqual(payload["output_text"], "hello codex transport")
@@ -226,11 +254,20 @@ class TestGatewayContract(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            upstream, gateway_stub = self._start_pair(
-                lambda _path, payload: completion_payload(
-                    payload["messages"][0]["content"]
-                )
-            )
+            def response_factory(_path, payload):
+                input_items = payload.get("input") or []
+                text = "ok"
+                if isinstance(input_items, list) and input_items:
+                    first = input_items[0]
+                    if isinstance(first, dict):
+                        content = first.get("content")
+                        if isinstance(content, list) and content:
+                            entry = content[0]
+                            if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                                text = entry["text"]
+                return responses_payload(text)
+
+            upstream, gateway_stub = self._start_pair(response_factory)
             try:
                 with mock.patch.dict(
                     os.environ,
@@ -247,12 +284,17 @@ class TestGatewayContract(unittest.TestCase):
                             "model": "gpt-test",
                             "messages": [{"role": "user", "content": "hello codex"}],
                         },
+                        headers={"Authorization": "Bearer modeio-middleware"},
                     )
                 self.assertEqual(status, 200)
-                self.assertEqual(payload["choices"][0]["message"]["content"], "hello codex")
+                self.assertEqual(payload["output_text"], "hello codex")
                 self.assertEqual(
                     upstream.requests[-1]["headers"]["Authorization"],
                     "Bearer eyJhbGciOi-test-codex",
+                )
+                self.assertEqual(
+                    upstream.requests[-1]["path"],
+                    "/codex/chat/completions",
                 )
             finally:
                 gateway_stub.stop()
@@ -293,7 +335,10 @@ class TestGatewayContract(unittest.TestCase):
             lambda _path, payload: completion_payload(payload["model"])
         )
         inspection = build_inspection(
+            provider_id="openai-codex",
             authorization="Bearer test-token",
+            transport="codex_native",
+            metadata={"nativeBaseUrl": f"{upstream.base_url}/codex"},
         )
         try:
             with mock.patch(
@@ -307,6 +352,7 @@ class TestGatewayContract(unittest.TestCase):
                         "model": "openai/gpt-test",
                         "messages": [{"role": "user", "content": "hello model"}],
                     },
+                    headers={"Authorization": "Bearer modeio-middleware"},
                 )
             self.assertEqual(status, 200)
             self.assertEqual(payload["choices"][0]["message"]["content"], "gpt-test")

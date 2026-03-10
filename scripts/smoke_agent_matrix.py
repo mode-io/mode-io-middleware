@@ -19,11 +19,7 @@ try:  # Python 3.14+
 except Exception:  # pragma: no cover
     _zstd_codec = None
 
-from modeio_middleware.cli.setup_lib.upstream import (
-    OPENAI_UPSTREAM_BASE_URL,
-    resolve_live_upstream_selection,
-    summarize_live_upstream_selection,
-)
+from modeio_middleware.cli.setup_lib.upstream import OPENAI_UPSTREAM_BASE_URL
 from smoke_matrix.common import (
     check_required_commands as _check_required_commands,
     default_upstream_base_url,
@@ -57,6 +53,7 @@ from smoke_matrix.runner import (
     run_json_cli_command as _run_json_cli_command,
     run_openclaw_family_checks as _run_openclaw_family_checks,
     run_setup as _run_setup,
+    skipped_agent_report as _skipped_agent_report,
     start_logged_process as _start_logged_process,
     stop_process as _stop_process,
     close_handle as _close_handle,
@@ -64,19 +61,15 @@ from smoke_matrix.runner import (
 from smoke_matrix.sandbox import (
     build_sandbox_env as _build_sandbox_env,
     build_sandbox_paths as _build_sandbox_paths,
+    resolve_opencode_smoke_model as _resolve_opencode_smoke_model,
     seed_codex_credentials as _seed_codex_credentials,
     seed_opencode_state as _seed_opencode_state,
     seed_openclaw_state as _seed_openclaw_state,
 )
 from smoke_matrix.runtime import prepare_runtime as _prepare_runtime
 
-_DEFAULT_UPSTREAM_SELECTION = resolve_live_upstream_selection(env=dict(os.environ))
-DEFAULT_UPSTREAM_BASE_URL = str(
-    _DEFAULT_UPSTREAM_SELECTION.get("baseUrl") or default_upstream_base_url(dict(os.environ))
-)
-DEFAULT_UPSTREAM_MODEL = str(
-    _DEFAULT_UPSTREAM_SELECTION.get("model") or default_upstream_model(dict(os.environ))
-)
+DEFAULT_UPSTREAM_BASE_URL = default_upstream_base_url(dict(os.environ))
+DEFAULT_UPSTREAM_MODEL = default_upstream_model(dict(os.environ))
 
 
 def _default_repo_root() -> Path:
@@ -98,7 +91,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=DEFAULT_UPSTREAM_MODEL,
-        help="OpenAI-compatible model name used for codex/opencode/openclaw smoke prompts",
+        help="OpenAI-compatible model name used for codex smoke prompts and as the fallback default elsewhere",
+    )
+    parser.add_argument(
+        "--opencode-model",
+        default="",
+        help="Optional OpenCode model override in provider/model form; defaults to the seeded harness-selected model",
     )
     parser.add_argument(
         "--openclaw-families",
@@ -142,11 +140,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--upstream-base-url",
         default=DEFAULT_UPSTREAM_BASE_URL,
         help="Real upstream OpenAI-compatible base URL",
-    )
-    parser.add_argument(
-        "--upstream-api-key-env",
-        default="MODEIO_GATEWAY_UPSTREAM_API_KEY",
-        help="Primary env var to read upstream API key from",
     )
     parser.add_argument(
         "--artifacts-dir",
@@ -236,11 +229,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "finishedAt": None,
         "upstream": {
             "baseUrl": args.upstream_base_url,
-            "apiKeyEnv": None,
             "model": args.model,
+            "source": "cli_or_default",
         },
         "agentModels": {
             "openaiCompatible": args.model,
+            "codex": args.model,
+            "opencode": args.opencode_model or None,
             "claude": args.claude_model,
         },
         "runtime": {
@@ -288,7 +283,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         agents = _parse_agents(args.agents)
         needs_claude = "claude" in agents
         needs_openai_agents = any(agent != "claude" for agent in agents)
-        needs_managed_gateway_checks = any(agent in {"codex", "opencode"} for agent in agents)
         report["mode"] = (
             "live-agents"
             if needs_claude and needs_openai_agents
@@ -302,27 +296,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "missing required commands: " + ", ".join(missing_commands)
             )
 
-        explicit_base_url = (
-            args.upstream_base_url
-            if args.upstream_base_url != DEFAULT_UPSTREAM_BASE_URL
-            else ""
-        )
-        explicit_model = args.model if args.model != DEFAULT_UPSTREAM_MODEL else ""
-        upstream_selection = resolve_live_upstream_selection(
-            preferred_env=args.upstream_api_key_env,
-            env=dict(os.environ),
-            explicit_base_url=explicit_base_url,
-            explicit_model=explicit_model,
-        )
         report["upstream"] = {
             **report["upstream"],
-            **summarize_live_upstream_selection(upstream_selection),
-            "required": False,
             "requestedBaseUrl": args.upstream_base_url,
             "requestedModel": args.model,
         }
-
-        upstream_api_key = str(upstream_selection.get("apiKey") or "")
 
         runtime = _prepare_runtime(
             repo_root=repo_root,
@@ -346,6 +324,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["sandbox"]["seededOpenCode"] = seeded_opencode
         report["sandbox"]["seededOpenClaw"] = seeded_openclaw
         report["sandbox"]["claudeUsesHostAuthContext"] = needs_claude
+        resolved_opencode_model = (
+            args.opencode_model.strip()
+            or _resolve_opencode_smoke_model(
+                config_path=paths["opencode_config"],
+                state_path=paths["xdg_state"] / "opencode" / "model.json",
+                fallback_model=f"openai/{args.model}" if "/" not in args.model else args.model,
+            )
+        )
+        report["agentModels"]["opencode"] = resolved_opencode_model
 
         openclaw_family_scenarios: List[Dict[str, object]] = []
         if "openclaw" in agents:
@@ -384,7 +371,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime.env,
             paths,
             gateway_base_url=gateway_base_url,
-            upstream_api_key=upstream_api_key,
         )
 
         report["doctor"] = _run_doctor(
@@ -398,12 +384,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             openclaw_models_cache_path=paths["openclaw_models_cache"],
             claude_settings_path=paths["claude_settings"],
             timeout_seconds=args.command_timeout_seconds,
-            require_upstream_api_key=False,
         )
         native_clients_report = report.get("doctor", {}).get("nativeClients", {})
-        opencode_transport = (
-            native_clients_report.get("opencode", {}).get("transport")
+        opencode_native_report = (
+            native_clients_report.get("opencode", {})
             if isinstance(native_clients_report, dict)
+            else {}
+        )
+        opencode_transport = (
+            opencode_native_report.get("transport")
+            if isinstance(opencode_native_report, dict)
             else None
         )
 
@@ -421,8 +411,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.upstream_base_url,
                 "--log-jsonl",
                 str(tap_jsonl_path),
-                "--api-key-env",
-                "MODEIO_TAP_UPSTREAM_API_KEY",
             ]
             tap_process, tap_log_handle = _start_logged_process(
                 command=tap_command,
@@ -452,8 +440,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "https://chatgpt.com/backend-api/codex",
                     "--log-jsonl",
                     str(codex_tap_jsonl_path),
-                    "--api-key-env",
-                    "MODEIO_TAP_UPSTREAM_API_KEY",
                 ]
                 codex_tap_process, codex_tap_log_handle = _start_logged_process(
                     command=codex_tap_command,
@@ -525,8 +511,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 gateway_root_url,
                 "--log-jsonl",
                 str(claude_tap_jsonl_path),
-                "--api-key-env",
-                "MODEIO_TAP_UPSTREAM_API_KEY",
             ]
             claude_tap_process, claude_tap_log_handle = _start_logged_process(
                 command=claude_tap_command,
@@ -561,43 +545,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=args.command_timeout_seconds,
             configure_openai_clients=needs_openai_agents,
             configure_claude=needs_claude,
-            openclaw_auth_mode="native",
         )
         report["setup"] = setup_payload
         _write_json(setup_payload_path, setup_payload)
 
-        if needs_managed_gateway_checks and bool(upstream_selection.get("ready")):
-            gateway_check_base_url = f"{gateway_root_url}/clients/codex/v1"
-            report["gatewayChecks"] = list(
-                _run_gateway_smoke_checks(
-                    gateway_root_url=gateway_root_url,
-                    request_base_url=gateway_check_base_url,
-                    model=args.model,
-                    run_id=run_id,
-                    timeout_seconds=args.command_timeout_seconds,
-                    tap_jsonl_path=(
-                        codex_tap_jsonl_path if codex_tap_process is not None else tap_jsonl_path
-                    ),
-                )
-            )
-        elif needs_managed_gateway_checks:
-            report["gatewayChecks"] = [
-                {
-                    "name": "managed-upstream-gateway-checks",
-                    "ok": True,
-                    "skipped": True,
-                    "reason": "native-auth-only run; generic /responses gateway probes require an explicit reusable managed upstream",
-                }
-            ]
-        else:
-            report["gatewayChecks"] = [
-                {
-                    "name": "managed-upstream-gateway-checks",
-                    "ok": True,
-                    "skipped": True,
-                    "reason": "agent subset does not use the generic managed OpenAI-compatible gateway probes",
-                }
-            ]
+        report["gatewayChecks"] = [
+            {
+                "name": "generic-gateway-probes",
+                "ok": True,
+                "skipped": True,
+                "reason": "disabled: middleware now relies on harness-owned auth and does not run generic managed-upstream gateway probes",
+            }
+        ]
 
         for index, agent in enumerate(agents, start=1):
             if agent == "openclaw":
@@ -617,6 +576,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
                 continue
+            if (
+                agent == "opencode"
+                and isinstance(opencode_native_report, dict)
+                and opencode_native_report.get("supported") is False
+            ):
+                report["agents"].append(
+                    _skipped_agent_report(
+                        agent="opencode",
+                        report_name="opencode",
+                        diagnostic=(
+                            str(opencode_native_report.get("reason") or "").strip()
+                            or "OpenCode selected provider is not redirectable through middleware."
+                        ),
+                    )
+                )
+                continue
 
             report["agents"].append(
                 _run_agent_check(
@@ -624,7 +599,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     index=index,
                     run_id=run_id,
                     report_name=None,
-                    model=args.model,
+                    model=resolved_opencode_model if agent == "opencode" else args.model,
                     claude_model=args.claude_model,
                     repo_root=repo_root,
                     run_dir=run_dir,
@@ -649,13 +624,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
 
-        gateway_checks_ok = True
-        if needs_managed_gateway_checks and bool(upstream_selection.get("ready")):
-            gateway_checks_ok = all(
-                bool(item.get("productOk", item.get("ok")))
-                for item in report.get("gatewayChecks", [])
-            )
-        report["success"] = gateway_checks_ok and all(
+        report["success"] = all(
             bool(agent.get("productOk", agent.get("ok"))) for agent in report["agents"]
         )
     except Exception as error:

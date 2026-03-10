@@ -21,6 +21,8 @@ from helpers.gateway_harness import (
 from helpers.plugin_modules import register_plugin_module  # noqa: E402
 from modeio_middleware.plugins.base import MiddlewarePlugin  # noqa: E402
 
+AUTH_HEADERS = {"Authorization": "Bearer smoke-key"}
+
 
 class _ModifyBothPlugin(MiddlewarePlugin):
     name = "modify_both"
@@ -98,7 +100,7 @@ class TestMonitoringApi(unittest.TestCase):
                     "model": "gpt-test",
                     "messages": [{"role": "user", "content": "hello monitoring"}],
                 },
-                headers={"User-Agent": "Codex CLI/1.0"},
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 200)
 
@@ -108,7 +110,7 @@ class TestMonitoringApi(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(len(events["items"]), 1)
             request_id = events["items"][0]["requestId"]
-            self.assertEqual(events["items"][0]["clientName"], "codex")
+            self.assertEqual(events["items"][0]["clientName"], "unknown")
             self.assertEqual(events["items"][0]["lifecycle"], "none")
             self.assertEqual(events["items"][0]["impact"], "pass_through")
 
@@ -116,7 +118,7 @@ class TestMonitoringApi(unittest.TestCase):
                 gateway_stub.base_url, f"/modeio/api/v1/events/{request_id}"
             )
             self.assertEqual(status, 200)
-            self.assertEqual(detail["clientName"], "codex")
+            self.assertEqual(detail["clientName"], "unknown")
             self.assertEqual(detail["lifecycle"], "none")
             self.assertEqual(
                 detail["request"]["before"]["messages"][0]["content"],
@@ -164,6 +166,7 @@ class TestMonitoringApi(unittest.TestCase):
                     "model": "gpt-test",
                     "messages": [{"role": "user", "content": "hello monitoring"}],
                 },
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 200)
             self.assertEqual(
@@ -226,6 +229,7 @@ class TestMonitoringApi(unittest.TestCase):
                     "model": "gpt-test",
                     "messages": [{"role": "user", "content": "hello monitoring"}],
                 },
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 403)
             self.assertEqual(payload["error"]["code"], "MODEIO_PLUGIN_BLOCKED")
@@ -260,17 +264,17 @@ class TestMonitoringApi(unittest.TestCase):
                     "model": "gpt-test",
                     "messages": [{"role": "user", "content": "hello monitoring"}],
                 },
-                headers={"User-Agent": "OpenCode/0.9"},
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 200)
 
             status, _headers, events = http_get_json(
                 gateway_stub.base_url,
-                "/modeio/api/v1/events?client=opencode&impact=pass_through&lifecycle=none",
+                "/modeio/api/v1/events?client=unknown&impact=pass_through&lifecycle=none",
             )
             self.assertEqual(status, 200)
             self.assertEqual(len(events["items"]), 1)
-            self.assertEqual(events["items"][0]["clientName"], "opencode")
+            self.assertEqual(events["items"][0]["clientName"], "unknown")
             self.assertEqual(events["items"][0]["impact"], "pass_through")
             self.assertEqual(events["items"][0]["lifecycle"], "none")
 

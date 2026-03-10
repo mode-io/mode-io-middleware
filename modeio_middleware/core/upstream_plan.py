@@ -33,7 +33,6 @@ class ResolvedUpstreamPlan:
     model_override: str | None = None
     unsupported_family: str | None = None
     supported_families: tuple[str, ...] = ()
-    fallback_mode: str | None = None
     route_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -49,4 +48,3 @@ class ResolvedClientUpstreamAuth:
     upstream_plan: ResolvedUpstreamPlan
     inspection: Any
     explicit_incoming_auth: bool = False
-    used_managed_fallback: bool = False

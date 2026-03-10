@@ -33,13 +33,14 @@ def build_agent_command(
         ]
 
     if agent == "opencode":
+        opencode_model = model if "/" in model else f"openai/{model}"
         return [
             "opencode",
             "run",
             "--format",
             "json",
             "--model",
-            model,
+            opencode_model,
             "--dir",
             str(repo_root),
             prompt,

@@ -16,6 +16,8 @@ sys.path.insert(0, str(HELPERS_DIR))
 
 from gateway_harness import completion_payload, post_json, start_gateway_pair  # noqa: E402
 
+AUTH_HEADERS = {"Authorization": "Bearer smoke-key"}
+
 
 class TestProtocolStdioRuntime(unittest.TestCase):
     def _start_pair(self, plugins: dict, profiles: dict):
@@ -58,6 +60,7 @@ class TestProtocolStdioRuntime(unittest.TestCase):
                     "messages": [{"role": "user", "content": "original-text"}],
                     "modeio": {"profile": "dev"},
                 },
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 200)
             self.assertEqual(payload["choices"][0]["message"]["content"], "original-text")
@@ -95,6 +98,7 @@ class TestProtocolStdioRuntime(unittest.TestCase):
                     "messages": [{"role": "user", "content": "original-text"}],
                     "modeio": {"profile": "dev"},
                 },
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 200)
             self.assertEqual(payload["choices"][0]["message"]["content"], "rewritten-in-enforce")
@@ -132,6 +136,7 @@ class TestProtocolStdioRuntime(unittest.TestCase):
                     "messages": [{"role": "user", "content": "original-text"}],
                     "modeio": {"profile": "dev"},
                 },
+                headers=AUTH_HEADERS,
             )
             self.assertEqual(status, 200)
             self.assertEqual(payload["choices"][0]["message"]["content"], "original-text")

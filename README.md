@@ -29,6 +29,7 @@ Built-in monitor with live traces, filters, before/after payload inspection, hoo
 - Codex CLI
 - Claude Code
 - OpenCode
+  Supported when the selected OpenCode provider is redirectable through its configured base URL. Built-in `openai` with ChatGPT OAuth stays outside middleware because OpenCode rewrites that path internally.
 - OpenClaw
 
 ## Public surface
@@ -72,8 +73,6 @@ python -m pip install .
 1. Start the gateway:
 
 ```bash
-export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
-
 modeio-middleware-gateway \
   --host 127.0.0.1 \
   --port 8787 \
@@ -178,7 +177,7 @@ Live routing check against a real upstream:
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 ```
 
-Live OpenAI-compatible agent smoke now defaults to harness-native auth where possible: Codex uses the client-scoped gateway route, OpenCode preserves its own provider config, and OpenClaw bridges its current auth/profile through a client-scoped middleware route. Explicit `MODEIO_GATEWAY_UPSTREAM_*` remains available as managed mode, and bare `ZENMUX_API_KEY` no longer silently changes the default path.
+Live OpenAI-compatible agent smoke now defaults to harness-native auth only: Codex uses the client-scoped gateway route, redirectable OpenCode providers preserve their own provider config, and OpenClaw bridges its current auth/profile through a client-scoped middleware route. Middleware does not provide a managed upstream fallback.
 
 Full agent-matrix smoke is available for local or self-hosted environments where Codex, Claude, OpenCode, and OpenClaw CLIs are installed:
 
@@ -196,5 +195,3 @@ Fresh-install acceptance smoke uses the packaged middleware entrypoints from a t
 ```bash
 ./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
 ```
-
-If you need the old OpenClaw middleware-owned provider behavior instead of native auth bridging, run setup with `--openclaw-auth-mode managed`.

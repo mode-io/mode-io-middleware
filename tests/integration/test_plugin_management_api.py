@@ -21,6 +21,8 @@ from helpers.gateway_harness import (  # noqa: E402
     start_gateway_pair,
 )
 
+AUTH_HEADERS = {"Authorization": "Bearer smoke-key"}
+
 
 PLUGIN_SCRIPT = """#!/usr/bin/env python3
 from __future__ import annotations
@@ -222,6 +224,7 @@ class TestPluginManagementApi(unittest.TestCase):
                         "model": "gpt-test",
                         "messages": [{"role": "user", "content": "hello plugin"}],
                     },
+                    headers=AUTH_HEADERS,
                 )
                 self.assertEqual(status, 200)
                 self.assertEqual(
@@ -347,6 +350,7 @@ class TestPluginManagementApi(unittest.TestCase):
                         "model": "gpt-test",
                         "messages": [{"role": "user", "content": "before reload"}],
                     },
+                    headers=AUTH_HEADERS,
                 )
                 self.assertEqual(status, 200)
 
@@ -377,6 +381,7 @@ class TestPluginManagementApi(unittest.TestCase):
                         "model": "gpt-test",
                         "messages": [{"role": "user", "content": "after reload"}],
                     },
+                    headers=AUTH_HEADERS,
                 )
                 self.assertEqual(status, 200)
 

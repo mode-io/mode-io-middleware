@@ -173,11 +173,64 @@ def _unsupported_family_error(
     )
 
 
+def _missing_harness_auth_error(
+    *,
+    route_context: ClientRouteContext,
+    resolved: ResolvedClientUpstreamAuth,
+) -> MiddlewareError:
+    provider_id = (
+        route_context.client_provider_name
+        or resolved.credential.provider_id
+        or "unknown"
+    )
+    details = {
+        "client": route_context.client_name,
+        "providerId": provider_id,
+        "source": resolved.credential.source,
+    }
+    if resolved.credential.best_effort_reason:
+        details["reason"] = resolved.credential.best_effort_reason
+    return MiddlewareError(
+        400,
+        "MODEIO_VALIDATION_ERROR",
+        (
+            f"Middleware could not reuse auth for {route_context.client_name} provider "
+            f"'{provider_id}'. Authenticate the harness itself and retry."
+        ),
+        retryable=False,
+        details=details,
+    )
+
+
+def _missing_client_route_error(
+    *,
+    route_context: ClientRouteContext,
+    resolved: ResolvedClientUpstreamAuth,
+) -> MiddlewareError:
+    provider_id = (
+        route_context.client_provider_name
+        or resolved.credential.provider_id
+        or "unknown"
+    )
+    return MiddlewareError(
+        400,
+        "MODEIO_VALIDATION_ERROR",
+        (
+            f"Middleware could not resolve the preserved upstream route for "
+            f"{route_context.client_name} provider '{provider_id}'. Re-run setup for the active provider."
+        ),
+        retryable=False,
+        details={
+            "client": route_context.client_name,
+            "providerId": provider_id,
+        },
+    )
+
+
 def _resolve_client_upstream_auth(
     *,
     route_context: ClientRouteContext,
     explicit_incoming_auth: bool,
-    upstream_api_key_env: str,
 ) -> ResolvedClientUpstreamAuth:
     if explicit_incoming_auth:
         upstream_plan = resolve_client_route_upstream_plan(route_context=route_context)
@@ -192,7 +245,6 @@ def _resolve_client_upstream_auth(
             upstream_plan=upstream_plan,
             inspection=None,
             explicit_incoming_auth=True,
-            used_managed_fallback=False,
         )
 
     inspection = inspect_client_native_auth(
@@ -202,19 +254,12 @@ def _resolve_client_upstream_auth(
     credential = resolve_client_inspection_credential(inspection)
     auth_material = resolve_client_inspection_auth_material(inspection)
     upstream_plan = resolve_client_inspection_upstream_plan(inspection)
-    used_managed_fallback = False
-    if not inspection.ready:
-        fallback_key = os.environ.get(upstream_api_key_env, "").strip()
-        if fallback_key:
-            used_managed_fallback = True
-            auth_material = ResolvedAuthMaterial(authorization=f"Bearer {fallback_key}")
     return ResolvedClientUpstreamAuth(
         credential=credential,
         auth_material=auth_material,
         upstream_plan=upstream_plan,
         inspection=inspection,
         explicit_incoming_auth=False,
-        used_managed_fallback=used_managed_fallback,
     )
 
 
@@ -237,7 +282,6 @@ def _build_upstream_headers(
     resolved = _resolve_client_upstream_auth(
         route_context=route_context,
         explicit_incoming_auth=_has_explicit_incoming_auth(incoming_headers),
-        upstream_api_key_env=upstream_api_key_env,
     )
 
     if (
@@ -245,6 +289,23 @@ def _build_upstream_headers(
         and resolved.upstream_plan.unsupported_family is not None
     ):
         raise _unsupported_family_error(
+            route_context=route_context,
+            resolved=resolved,
+        )
+
+    if not resolved.explicit_incoming_auth and not resolved.credential.guaranteed and not resolved.auth_material.authorization and not resolved.auth_material.resolved_headers:
+        raise _missing_harness_auth_error(
+            route_context=route_context,
+            resolved=resolved,
+        )
+    if (
+        route_context.client_name != "unknown"
+        and route_context.client_name != ""
+        and route_context.client_name != CLIENT_OPENCLAW
+        and resolved.upstream_plan.base_url is None
+        and resolved.upstream_plan.transport_kind != "codex_native"
+    ):
+        raise _missing_client_route_error(
             route_context=route_context,
             resolved=resolved,
         )
@@ -280,7 +341,7 @@ def _record_failure_if_needed(
     route_context: ClientRouteContext,
     status_code: int,
 ) -> None:
-    if resolved.used_managed_fallback or resolved.explicit_incoming_auth:
+    if resolved.explicit_incoming_auth:
         return
     record_client_native_failure(
         client_name=route_context.client_name,

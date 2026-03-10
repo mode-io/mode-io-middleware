@@ -25,8 +25,10 @@ from smoke_matrix.common import (  # noqa: E402
     parse_agents,
 )
 from smoke_matrix.sandbox import (  # noqa: E402
+    build_sandbox_env,
     build_sandbox_paths,
     configure_openclaw_supported_family,
+    resolve_opencode_smoke_model,
 )
 
 
@@ -43,6 +45,20 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             paths["claude_settings"],
             Path("/tmp/modeio-smoke/home/.claude/settings.json"),
         )
+
+    def test_build_sandbox_env_uses_codex_only_base_url_marker(self):
+        paths = build_sandbox_paths(Path("/tmp/modeio-smoke"))
+        env = build_sandbox_env(
+            {"PATH": "/usr/bin", "OPENAI_API_KEY": "sk-test"},
+            paths,
+            gateway_base_url="http://127.0.0.1:8787/v1",
+        )
+        self.assertEqual(
+            env["MODEIO_SMOKE_CODEX_BASE_URL"],
+            "http://127.0.0.1:8787/clients/codex/v1",
+        )
+        self.assertNotIn("OPENAI_BASE_URL", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
 
     def test_build_agent_command_for_claude_uses_print_mode_and_settings(self):
         command = build_agent_command(
@@ -85,6 +101,7 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(args.claude_model, "sonnet")
         self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
         self.assertEqual(args.model, "gpt-4o-mini")
+        self.assertEqual(args.opencode_model, "")
         self.assertEqual(args.install_mode, "repo")
         self.assertEqual(args.install_target, "")
         self.assertEqual(
@@ -118,11 +135,9 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             self.assertEqual(default_upstream_base_url(env), "https://api.openai.com/v1")
             self.assertEqual(default_upstream_model(env), "gpt-4o-mini")
 
-    def test_opencode_config_defaults_drive_live_upstream_choice(self):
+    def test_defaults_ignore_host_config_and_stay_static(self):
         with TemporaryDirectory() as temp_dir:
-            config_path = (
-                Path(temp_dir) / ".config" / "opencode" / "opencode.json"
-            )
+            config_path = Path(temp_dir) / ".config" / "opencode" / "opencode.json"
             config_path.parent.mkdir(parents=True)
             config_path.write_text(
                 json.dumps(
@@ -142,10 +157,10 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             )
 
             env = {"HOME": temp_dir}
-            self.assertEqual(default_upstream_base_url(env), "https://provider.example/v1")
-            self.assertEqual(default_upstream_model(env), "provider-model")
+            self.assertEqual(default_upstream_base_url(env), "https://api.openai.com/v1")
+            self.assertEqual(default_upstream_model(env), "gpt-4o-mini")
 
-    def test_parse_args_uses_environment_defaults_for_live_smoke(self):
+    def test_parse_args_ignores_managed_upstream_environment_defaults(self):
         with mock.patch.dict(
             "os.environ",
             {
@@ -154,24 +169,72 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             },
             clear=False,
         ):
-            import smoke_agent_matrix  # noqa: E402
+            args = parse_args([])
 
-            with (
-                mock.patch.object(
-                    smoke_agent_matrix,
-                    "DEFAULT_UPSTREAM_BASE_URL",
-                    "https://example.test/v1",
-                ),
-                mock.patch.object(
-                    smoke_agent_matrix,
-                    "DEFAULT_UPSTREAM_MODEL",
-                    "example-model",
-                ),
-            ):
-                args = smoke_agent_matrix.parse_args([])
+        self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
+        self.assertEqual(args.model, "gpt-4o-mini")
+        self.assertEqual(args.opencode_model, "")
 
-        self.assertEqual(args.upstream_base_url, "https://example.test/v1")
-        self.assertEqual(args.model, "example-model")
+    def test_resolve_opencode_smoke_model_prefers_config_model(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "opencode.json"
+            state_path = root / "model.json"
+            config_path.write_text(
+                json.dumps({"model": "openai/gpt-5.4"}),
+                encoding="utf-8",
+            )
+
+            resolved = resolve_opencode_smoke_model(
+                config_path=config_path,
+                state_path=state_path,
+                fallback_model="openai/gpt-4o-mini",
+            )
+
+            self.assertEqual(resolved, "openai/gpt-5.4")
+
+    def test_resolve_opencode_smoke_model_falls_back_to_recent_state(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "opencode.json"
+            state_path = root / "model.json"
+            config_path.write_text("{}", encoding="utf-8")
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "recent": [
+                            {
+                                "providerID": "openai",
+                                "modelID": "gpt-5.4",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            resolved = resolve_opencode_smoke_model(
+                config_path=config_path,
+                state_path=state_path,
+                fallback_model="openai/gpt-4o-mini",
+            )
+
+            self.assertEqual(resolved, "openai/gpt-5.4")
+
+    def test_resolve_opencode_smoke_model_uses_fallback_when_state_missing(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "opencode.json"
+            state_path = root / "model.json"
+            config_path.write_text("{}", encoding="utf-8")
+
+            resolved = resolve_opencode_smoke_model(
+                config_path=config_path,
+                state_path=state_path,
+                fallback_model="openai/gpt-4o-mini",
+            )
+
+            self.assertEqual(resolved, "openai/gpt-4o-mini")
 
     def test_parse_openclaw_families_rejects_invalid_values(self):
         with self.assertRaises(ValueError):

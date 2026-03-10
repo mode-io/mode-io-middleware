@@ -33,19 +33,12 @@ from modeio_middleware.cli.setup_lib.opencode import (
     uninstall_opencode_config_file,
 )
 from modeio_middleware.cli.setup_lib.openclaw import (
-    OPENCLAW_AUTH_MODE_MANAGED,
-    OPENCLAW_AUTH_MODE_NATIVE,
     apply_openclaw_config_file,
     apply_openclaw_models_cache_file,
     default_openclaw_config_path,
     default_openclaw_models_cache_path,
     uninstall_openclaw_config_file,
     uninstall_openclaw_models_cache_file,
-)
-from modeio_middleware.cli.setup_lib.upstream import (
-    resolve_live_upstream_selection,
-    resolve_upstream_api_key_presence,
-    summarize_live_upstream_selection,
 )
 from modeio_middleware.core.client_auth import (
     inspect_codex_native_auth,
@@ -200,11 +193,6 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
     health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
     home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
     required_commands = list(_split_csv_values(args.require_commands))
-    resolved_env = dict(os.environ)
-    upstream_api_key = resolve_upstream_api_key_presence(
-        args.upstream_api_key_env,
-        env=resolved_env,
-    )
 
     opencode_path = (
         Path(args.opencode_config_path).expanduser()
@@ -227,12 +215,6 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
         else default_claude_settings_path()
     )
     codex_auth_path = home / ".codex" / "auth.json"
-    live_upstream = resolve_live_upstream_selection(
-        preferred_env=args.upstream_api_key_env,
-        env=resolved_env,
-        opencode_config_path=opencode_path,
-        openclaw_config_path=openclaw_path,
-    )
     def _sanitize_native_client(entry: Dict[str, Any]) -> Dict[str, Any]:
         sanitized = dict(entry)
         sanitized.pop("authorization", None)
@@ -270,8 +252,6 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
                 "message": "skipped",
             },
         },
-        "upstreamApiKey": upstream_api_key,
-        "liveUpstream": summarize_live_upstream_selection(live_upstream),
         "nativeClients": native_clients,
         "codex": {
             "shell": shell,
@@ -335,19 +315,6 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
                 "name": "required-commands",
                 "ok": not missing_required,
                 "missing": missing_required,
-            }
-        )
-
-    if args.require_upstream_api_key:
-        report["checks"].append(
-            {
-                "name": "upstream-api-key",
-                "ok": bool(live_upstream.get("ready")),
-                "env": upstream_api_key["env"],
-                "searched": upstream_api_key["searched"],
-                "resolvedSource": live_upstream.get("source"),
-                "resolvedBaseUrl": live_upstream.get("baseUrl"),
-                "resolvedModel": live_upstream.get("model"),
             }
         )
 
@@ -426,6 +393,7 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
                 config_path=config_path,
                 gateway_base_url=gateway_base_url,
                 create_if_missing=args.create_opencode_config,
+                env=dict(os.environ),
             )
 
     if args.apply_openclaw:
@@ -445,7 +413,6 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
                 gateway_base_url=gateway_base_url,
                 config_path=config_path,
                 force_remove=args.force_remove_openclaw_provider,
-                auth_mode=args.openclaw_auth_mode,
             )
             openclaw_report = uninstall_openclaw_config_file(
                 config_path=config_path,
@@ -459,14 +426,12 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
                 config_path=config_path,
                 gateway_base_url=gateway_base_url,
                 create_if_missing=args.create_openclaw_config,
-                auth_mode=args.openclaw_auth_mode,
                 models_cache_path=models_cache_path,
             )
             openclaw_report["modelsCache"] = apply_openclaw_models_cache_file(
                 models_cache_path=models_cache_path,
                 gateway_base_url=gateway_base_url,
                 config_path=config_path,
-                auth_mode=str(openclaw_report.get("authMode") or args.openclaw_auth_mode),
             )
             report["openclaw"] = openclaw_report
 
@@ -508,18 +473,6 @@ def _print_human_report(report: Dict[str, Any]) -> None:
         else:
             print("- Health check: skipped")
 
-        upstream = report.get("upstreamApiKey") or {}
-        print(
-            "- Upstream API key: "
-            f"present={upstream.get('present')} env={upstream.get('env')}"
-        )
-        live_upstream = report.get("liveUpstream") or {}
-        print(
-            "- Live upstream selection: "
-            f"ready={live_upstream.get('ready')} source={live_upstream.get('source')} "
-            f"provider={live_upstream.get('provider')} base={live_upstream.get('baseUrl')} "
-            f"model={live_upstream.get('model')}"
-        )
         print("- Native client readiness:")
         native_clients = report.get("nativeClients") or {}
         for client_name in ("codex", "opencode", "openclaw", "claude"):
@@ -710,15 +663,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="OpenClaw generated models cache path override (default: infer from OpenClaw state/config)",
     )
     parser.add_argument(
-        "--openclaw-auth-mode",
-        choices=(OPENCLAW_AUTH_MODE_NATIVE, OPENCLAW_AUTH_MODE_MANAGED),
-        default=OPENCLAW_AUTH_MODE_NATIVE,
-        help=(
-            "How OpenClaw is routed through middleware: native preserves the active provider/model identity "
-            "for supported families, managed keeps the legacy synthetic middleware provider flow"
-        ),
-    )
-    parser.add_argument(
         "--claude-settings-path", default="", help="Claude settings path override"
     )
     parser.add_argument(
@@ -731,19 +675,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--require-commands",
         default="",
         help="Comma-separated commands that must exist for a successful doctor run",
-    )
-    parser.add_argument(
-        "--upstream-api-key-env",
-        default="MODEIO_GATEWAY_UPSTREAM_API_KEY",
-        help="Preferred env var checked by doctor for upstream key readiness",
-    )
-    parser.add_argument(
-        "--require-upstream-api-key",
-        action="store_true",
-        help=(
-            "Fail doctor when no reusable live upstream is available from explicit middleware env, "
-            "existing OpenCode/OpenClaw config, or OPENAI_API_KEY"
-        ),
     )
     parser.add_argument(
         "--require-codex-auth",

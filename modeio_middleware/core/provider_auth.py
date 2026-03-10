@@ -9,6 +9,7 @@ import time
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -30,9 +31,6 @@ AUTH_KIND_MISSING = "missing"
 AUTH_KIND_OAUTH = "oauth"
 AUTH_KIND_TOKEN = "token"
 
-FALLBACK_MODE_MANAGED_UPSTREAM = "managed_upstream"
-FALLBACK_MODE_NONE = "none"
-
 TRANSPORT_CODEX_NATIVE = "codex_native"
 TRANSPORT_OPENAI_COMPAT = "openai_compat"
 
@@ -42,6 +40,7 @@ PROVIDER_GOOGLE_GEMINI_CLI = "google-gemini-cli"
 PROVIDER_MODEIO_MIDDLEWARE = "modeio-middleware"
 PROVIDER_OPENAI = "openai"
 PROVIDER_OPENAI_CODEX = "openai-codex"
+OPENAI_COMPAT_BASE_URL = "https://api.openai.com/v1"
 
 OPENAI_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -62,7 +61,7 @@ OPENCLAW_SUPPORTED_API_FAMILIES = frozenset(
 def normalize_provider_id(raw_provider_id: str | None) -> str:
     text = str(raw_provider_id or "").strip().lower().replace("_", "-")
     if not text:
-        return PROVIDER_OPENAI
+        return ""
     return PROVIDER_ALIASES.get(text, text)
 
 
@@ -205,7 +204,6 @@ class CredentialInspection:
     guaranteed: bool
     strategy: str
     transport: str = TRANSPORT_OPENAI_COMPAT
-    fallback_mode: str = FALLBACK_MODE_NONE
     reason: str | None = None
     auth_source: str | None = None
     path: str | None = None
@@ -232,8 +230,6 @@ class CredentialInspection:
             "strategy": self.strategy,
             "transport": self.transport,
         }
-        if self.fallback_mode != FALLBACK_MODE_NONE:
-            payload["fallbackMode"] = self.fallback_mode
         if self.reason is not None:
             payload["reason"] = self.reason
         if self.auth_source is not None:
@@ -309,14 +305,14 @@ def resolve_inspection_upstream_plan(
     raw_supported = metadata.get("supportedFamilies")
     if isinstance(raw_supported, list):
         supported_families = tuple(str(item) for item in raw_supported if str(item).strip())
-    base_url = metadata.get("upstreamBaseUrl") or metadata.get("overrideBaseUrl")
+    base_url = metadata.get("upstreamBaseUrl")
     if not isinstance(base_url, str) or not base_url.strip():
         native_base = metadata.get("nativeBaseUrl")
         if isinstance(native_base, str) and native_base.strip():
             base_url = native_base.strip()
         else:
             base_url = None
-    model_override = metadata.get("fallbackModelId")
+    model_override = metadata.get("modelOverride")
     if not isinstance(model_override, str) or not model_override.strip():
         model_override = None
     transport_kind = str(
@@ -343,7 +339,6 @@ def resolve_inspection_upstream_plan(
         model_override=model_override,
         unsupported_family=unsupported_family,
         supported_families=supported_families,
-        fallback_mode=getattr(inspection, "fallback_mode", FALLBACK_MODE_NONE),
         metadata=dict(metadata),
     )
 
@@ -369,7 +364,6 @@ def _context_upstream_plan(
                 upstream_base_url=upstream_base_url,
                 unsupported_family=api_family,
                 supported_families=tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES)),
-                fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
                 metadata=metadata,
             )
         return ResolvedUpstreamPlan(
@@ -377,7 +371,6 @@ def _context_upstream_plan(
             transport_kind=_default_transport_kind(normalized_provider),
             api_family=api_family,
             upstream_base_url=upstream_base_url,
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
             metadata=metadata,
         )
 
@@ -389,16 +382,29 @@ def _context_upstream_plan(
             transport_kind=TRANSPORT_CODEX_NATIVE,
             api_family="openai-codex-responses",
             native_base_url=native_base_url,
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
             metadata=metadata,
         )
+
+    if client_name == CLIENT_OPENCODE:
+        upstream_base_url = _opencode_preserved_upstream_base_url(normalized_provider, env)
+        if upstream_base_url:
+            metadata["upstreamBaseUrl"] = upstream_base_url
+        return ResolvedUpstreamPlan(
+            provider_id=normalized_provider,
+            transport_kind=TRANSPORT_OPENAI_COMPAT,
+            api_family=_default_api_family(normalized_provider),
+            upstream_base_url=upstream_base_url,
+            metadata=metadata,
+        )
+
+    if normalized_provider == PROVIDER_OPENAI:
+        metadata["upstreamBaseUrl"] = OPENAI_COMPAT_BASE_URL
 
     return ResolvedUpstreamPlan(
         provider_id=normalized_provider,
         transport_kind=_default_transport_kind(normalized_provider),
         api_family=_default_api_family(normalized_provider),
-        upstream_base_url=None,
-        fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
+        upstream_base_url=metadata.get("upstreamBaseUrl"),
         metadata=metadata,
     )
 
@@ -478,7 +484,6 @@ def _missing(
     auth_env: str | None = None,
     metadata: dict[str, Any] | None = None,
     transport: str = TRANSPORT_OPENAI_COMPAT,
-    fallback_mode: str = FALLBACK_MODE_NONE,
 ) -> CredentialInspection:
     return CredentialInspection(
         provider_id=provider_id,
@@ -487,7 +492,6 @@ def _missing(
         guaranteed=False,
         strategy=strategy,
         transport=transport,
-        fallback_mode=fallback_mode,
         reason=reason,
         path=path,
         auth_env=auth_env,
@@ -511,7 +515,6 @@ def _ready(
     audience: Any = None,
     scopes: list[str] | None = None,
     transport: str = TRANSPORT_OPENAI_COMPAT,
-    fallback_mode: str = FALLBACK_MODE_NONE,
 ) -> CredentialInspection:
     return CredentialInspection(
         provider_id=provider_id,
@@ -520,7 +523,6 @@ def _ready(
         guaranteed=guaranteed,
         strategy=strategy,
         transport=transport,
-        fallback_mode=fallback_mode,
         reason=reason,
         auth_source=auth_source,
         path=path,
@@ -542,13 +544,27 @@ def _inspect_codex_store(env: Mapping[str, str]) -> CredentialInspection:
     auth_path = _codex_auth_path(env)
     payload = _read_json_object(auth_path)
     if payload is None:
+        env_api_key = str(env.get("OPENAI_API_KEY") or "").strip()
+        if env_api_key:
+            return _ready(
+                PROVIDER_OPENAI,
+                auth_kind=AUTH_KIND_API_KEY,
+                guaranteed=True,
+                strategy="provider-env",
+                auth_env="OPENAI_API_KEY",
+                authorization=_bearer(env_api_key) or "",
+                transport=TRANSPORT_OPENAI_COMPAT,
+                metadata={
+                    "providerId": PROVIDER_OPENAI,
+                    "upstreamBaseUrl": OPENAI_COMPAT_BASE_URL,
+                },
+            )
         return _missing(
             provider_id,
             strategy="missing",
             reason="codex auth store not found",
             path=str(auth_path),
             transport=TRANSPORT_CODEX_NATIVE,
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
         )
 
     tokens = payload.get("tokens")
@@ -581,9 +597,8 @@ def _inspect_codex_store(env: Mapping[str, str]) -> CredentialInspection:
             metadata = {
                 "providerId": provider_id,
                 "accountId": account_id,
+                "nativeBaseUrl": _codex_native_base_url(env),
             }
-            if isinstance(account_id, str) and account_id.strip():
-                metadata["nativeBaseUrl"] = _codex_native_base_url(env)
             return _ready(
                 provider_id,
                 auth_kind=AUTH_KIND_OAUTH,
@@ -595,7 +610,6 @@ def _inspect_codex_store(env: Mapping[str, str]) -> CredentialInspection:
                 audience=claims.get("aud"),
                 scopes=scopes if isinstance(scopes, list) else [],
                 transport=TRANSPORT_CODEX_NATIVE,
-                fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
                 reason=(
                     "Codex provides OAuth access tokens, but public OpenAI-compatible `/v1/models` and `/v1/responses` may reject them or require different scopes."
                 ),
@@ -613,7 +627,10 @@ def _inspect_codex_store(env: Mapping[str, str]) -> CredentialInspection:
             path=str(auth_path),
             authorization=_bearer(api_key) or "",
             transport=TRANSPORT_OPENAI_COMPAT,
-            metadata={"providerId": PROVIDER_OPENAI},
+            metadata={
+                "providerId": PROVIDER_OPENAI,
+                "upstreamBaseUrl": OPENAI_COMPAT_BASE_URL,
+            },
         )
 
     return _missing(
@@ -622,7 +639,6 @@ def _inspect_codex_store(env: Mapping[str, str]) -> CredentialInspection:
         reason="codex auth store has no reusable API key or access token",
         path=str(auth_path),
         transport=TRANSPORT_CODEX_NATIVE,
-        fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
     )
 
 
@@ -645,6 +661,102 @@ def _opencode_models_cache_path(env: Mapping[str, str]) -> Path:
     if xdg_cache:
         return Path(xdg_cache).expanduser() / "opencode" / "models.json"
     return _home(env) / ".cache" / "opencode" / "models.json"
+
+
+def _opencode_auth_store_path(env: Mapping[str, str]) -> Path:
+    xdg_data = env.get("XDG_DATA_HOME", "").strip()
+    if xdg_data:
+        return Path(xdg_data).expanduser() / "opencode" / "auth.json"
+    return _home(env) / ".local" / "share" / "opencode" / "auth.json"
+
+
+def _opencode_auth_store(env: Mapping[str, str]) -> dict[str, Any]:
+    payload = _read_json_object(_opencode_auth_store_path(env))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _opencode_route_metadata_path(env: Mapping[str, str]) -> Path:
+    config_path = _opencode_config_path(env)
+    return config_path.with_name(f"{config_path.name}.modeio-route.json")
+
+
+def _opencode_route_metadata(env: Mapping[str, str]) -> dict[str, Any]:
+    payload = _read_json_object(_opencode_route_metadata_path(env))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _is_loopback_base_url(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        hostname = (urlparse(text).hostname or "").lower()
+    except Exception:
+        return False
+    return hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _opencode_provider_object(
+    payload: dict[str, Any] | None,
+    provider_id: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    providers = payload.get("provider")
+    if not isinstance(providers, dict):
+        return {}
+    provider_obj = providers.get(provider_id)
+    return provider_obj if isinstance(provider_obj, dict) else {}
+
+
+def _opencode_provider_base_url(
+    provider_obj: Mapping[str, Any],
+) -> str | None:
+    options_obj = provider_obj.get("options")
+    if isinstance(options_obj, Mapping):
+        for field_name in ("baseURL", "baseUrl"):
+            value = options_obj.get(field_name)
+            if isinstance(value, str) and value.strip():
+                return value.strip().rstrip("/")
+    for field_name in ("baseURL", "baseUrl"):
+        value = provider_obj.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip().rstrip("/")
+    return None
+
+
+def _opencode_default_upstream_base_url(provider_id: str) -> str | None:
+    if normalize_provider_id(provider_id) == PROVIDER_OPENAI:
+        return OPENAI_COMPAT_BASE_URL
+    return None
+
+
+def _opencode_preserved_upstream_base_url(
+    provider_id: str,
+    env: Mapping[str, str],
+    *,
+    payload: dict[str, Any] | None = None,
+    provider_obj: Mapping[str, Any] | None = None,
+) -> str | None:
+    metadata = _opencode_route_metadata(env)
+    providers = metadata.get("providers")
+    normalized_provider = normalize_provider_id(provider_id)
+    if isinstance(providers, dict):
+        entry = providers.get(normalized_provider)
+        if isinstance(entry, dict):
+            value = entry.get("originalBaseUrl")
+            if isinstance(value, str) and value.strip():
+                return value.strip().rstrip("/")
+
+    resolved_provider_obj = (
+        provider_obj
+        if isinstance(provider_obj, Mapping)
+        else _opencode_provider_object(payload, normalized_provider)
+    )
+    config_base_url = _opencode_provider_base_url(resolved_provider_obj)
+    if config_base_url and not _is_loopback_base_url(config_base_url):
+        return config_base_url
+    return _opencode_default_upstream_base_url(normalized_provider)
 
 
 def _opencode_current_provider(
@@ -702,17 +814,57 @@ def _inspect_opencode_provider(
             strategy="missing",
             reason="unable to determine current OpenCode provider",
             path=str(_opencode_config_path(env)),
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
         )
 
-    provider_obj = None
-    if isinstance(payload, dict):
-        providers = payload.get("provider")
-        provider_obj = (
-            providers.get(selected_provider) if isinstance(providers, dict) else None
+    provider_obj = _opencode_provider_object(payload, selected_provider)
+    upstream_base_url = _opencode_preserved_upstream_base_url(
+        selected_provider,
+        env,
+        payload=payload,
+        provider_obj=provider_obj,
+    )
+    base_metadata = {
+        "providerId": selected_provider,
+        "configPath": str(_opencode_config_path(env)),
+    }
+    if upstream_base_url:
+        base_metadata["upstreamBaseUrl"] = upstream_base_url
+    else:
+        return _missing(
+            selected_provider,
+            strategy="missing",
+            reason=(
+                f"OpenCode provider '{selected_provider}' has no recoverable upstream base URL"
+            ),
+            path=str(_opencode_config_path(env)),
+            metadata=base_metadata,
         )
-    if not isinstance(provider_obj, dict):
-        provider_obj = {}
+
+    auth_store_path = _opencode_auth_store_path(env)
+    auth_store = _opencode_auth_store(env)
+    auth_entry = auth_store.get(selected_provider)
+    if (
+        normalize_provider_id(selected_provider) == PROVIDER_OPENAI
+        and isinstance(auth_entry, dict)
+        and str(auth_entry.get("type") or "").strip() == AUTH_KIND_OAUTH
+    ):
+        metadata = dict(base_metadata)
+        metadata.update(
+            {
+                "authStorePath": str(auth_store_path),
+                "supported": False,
+                "unsupportedTransport": True,
+            }
+        )
+        return _missing(
+            selected_provider,
+            strategy="unsupported_transport",
+            reason=(
+                "OpenCode provider 'openai' is using OpenCode's native OAuth transport and cannot be rerouted through middleware preserve-provider mode."
+            ),
+            path=str(auth_store_path),
+            metadata=metadata,
+        )
 
     for candidate in (
         provider_obj.get("apiKey"),
@@ -733,7 +885,41 @@ def _inspect_opencode_provider(
                 auth_source=f"provider.{selected_provider}.options.apiKey",
                 path=str(_opencode_config_path(env)),
                 authorization=_bearer(candidate) or "",
-                metadata={"providerId": selected_provider, "configPath": str(_opencode_config_path(env))},
+                metadata=base_metadata,
+            )
+
+    if isinstance(auth_entry, dict):
+        access_token = auth_entry.get("access")
+        if isinstance(access_token, str) and access_token.strip():
+            metadata = dict(base_metadata)
+            metadata["authStorePath"] = str(auth_store_path)
+            account_id = auth_entry.get("accountId")
+            if isinstance(account_id, str) and account_id.strip():
+                metadata["accountId"] = account_id.strip()
+            return _ready(
+                selected_provider,
+                auth_kind=AUTH_KIND_OAUTH,
+                guaranteed=False,
+                strategy="auth-store-oauth",
+                auth_source=f"auth_store.{selected_provider}.access",
+                path=str(_opencode_auth_store_path(env)),
+                authorization=_bearer(access_token) or "",
+                metadata=metadata,
+            )
+
+        api_key = auth_entry.get("key")
+        if isinstance(api_key, str) and api_key.strip():
+            metadata = dict(base_metadata)
+            metadata["authStorePath"] = str(auth_store_path)
+            return _ready(
+                selected_provider,
+                auth_kind=AUTH_KIND_API_KEY,
+                guaranteed=True,
+                strategy="auth-store-api-key",
+                auth_source=f"auth_store.{selected_provider}.key",
+                path=str(_opencode_auth_store_path(env)),
+                authorization=_bearer(api_key) or "",
+                metadata=metadata,
             )
 
     env_candidates = _opencode_provider_envs(selected_provider, env)
@@ -747,7 +933,7 @@ def _inspect_opencode_provider(
                 strategy="provider-env",
                 auth_env=env_name,
                 authorization=_bearer(env_value) or "",
-                metadata={"providerId": selected_provider, "configPath": str(_opencode_config_path(env))},
+                metadata=base_metadata,
             )
 
     return _missing(
@@ -756,10 +942,8 @@ def _inspect_opencode_provider(
         reason=(
             f"OpenCode provider '{selected_provider}' has no reusable auth in config or the provider env vars are unset"
         ),
-        fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
         metadata={
-            "providerId": selected_provider,
-            "configPath": str(_opencode_config_path(env)),
+            **base_metadata,
             "envCandidates": env_candidates,
         },
     )
@@ -919,7 +1103,7 @@ def _openclaw_preserved_upstream_base_url(
 
 class OpenClawSelectionResolver:
     def __init__(self, health_store: CredentialHealthStore):
-        self._health_store = health_store
+        del health_store
 
     def resolve(
         self,
@@ -950,7 +1134,12 @@ class OpenClawSelectionResolver:
             matching.append((profile_id, credential))
 
         if not matching:
-            return self._fallback_provider_selection(env, selected_provider, "no_profiles")
+            return OpenClawSelection(
+                provider_id=selected_provider,
+                profile_id=None,
+                reason="no_profiles",
+                credential=None,
+            )
 
         default_profile = next(
             (
@@ -960,90 +1149,13 @@ class OpenClawSelectionResolver:
             ),
             None,
         )
-        now_ms = int(time.time() * 1000)
-        last_good: tuple[str, dict[str, Any]] | None = None
-        last_good_ts = -1
-        for profile_id, credential in matching:
-            health = self._health_store.get(selected_provider, profile_id)
-            if health and health.cooldown_until_ms and health.cooldown_until_ms > now_ms:
-                continue
-            if health and health.last_good_at_ms and health.last_good_at_ms > last_good_ts:
-                last_good = (profile_id, credential)
-                last_good_ts = health.last_good_at_ms
-
-        available = [
-            (profile_id, credential)
-            for profile_id, credential in matching
-            if not (
-                (health := self._health_store.get(selected_provider, profile_id))
-                and health.cooldown_until_ms
-                and health.cooldown_until_ms > now_ms
-            )
-        ]
-        default_available = next(
-            (
-                (profile_id, credential)
-                for profile_id, credential in available
-                if profile_id.endswith(":default")
-            ),
-            None,
-        )
-
-        chosen = last_good or default_available or (available[0] if available else default_profile or matching[0])
-        if not available and chosen == default_profile:
-            return self._fallback_provider_selection(env, selected_provider, "primary_in_cooldown")
-        reason = (
-            "last_good"
-            if last_good
-            else "default"
-            if default_available or (not available and default_profile)
-            else "first_available"
-        )
+        chosen = default_profile or matching[0]
+        reason = "default" if default_profile else "first_available"
         return OpenClawSelection(
             provider_id=selected_provider,
             profile_id=chosen[0],
             reason=reason,
             credential=chosen[1],
-        )
-
-    def _fallback_provider_selection(
-        self,
-        env: Mapping[str, str],
-        current_provider: str,
-        reason: str,
-    ) -> OpenClawSelection:
-        providers = _openclaw_models_cache_providers(env)
-        for provider_id, provider in providers.items():
-            normalized = normalize_provider_id(provider_id)
-            if normalized in {current_provider, PROVIDER_MODEIO_MIDDLEWARE}:
-                continue
-            if not isinstance(provider, dict):
-                continue
-            api_key = provider.get("apiKey")
-            base_url = provider.get("baseUrl")
-            models = provider.get("models")
-            if not isinstance(api_key, str) or not api_key.strip():
-                continue
-            if not isinstance(base_url, str) or not base_url.strip():
-                continue
-            if not isinstance(models, list) or not models:
-                continue
-            return OpenClawSelection(
-                provider_id=normalized,
-                profile_id=None,
-                reason=f"fallback_provider:{reason}",
-                credential={
-                    "provider": normalized,
-                    "apiKey": api_key.strip(),
-                    "baseUrl": base_url.strip(),
-                    "models": models,
-                },
-            )
-        return OpenClawSelection(
-            provider_id=current_provider,
-            profile_id=None,
-            reason=reason,
-            credential=None,
         )
 
 
@@ -1183,17 +1295,18 @@ def _openclaw_models_cache_inspection(
     )
 
 
-def _openclaw_env_fallback_inspection(
+def _openclaw_provider_env_inspection(
     provider_id: str,
     env: Mapping[str, str],
     *,
     api_family: str,
 ) -> CredentialInspection | None:
-    env_candidates = (
-        ("ANTHROPIC_API_KEY",)
-        if api_family == "anthropic-messages"
-        else ("OPENAI_API_KEY",)
-    )
+    normalized_provider = normalize_provider_id(provider_id)
+    env_candidates: tuple[str, ...] = ()
+    if normalized_provider == PROVIDER_ANTHROPIC:
+        env_candidates = ("ANTHROPIC_API_KEY",)
+    elif normalized_provider == PROVIDER_OPENAI:
+        env_candidates = ("OPENAI_API_KEY",)
     for env_name in env_candidates:
         env_value = env.get(env_name, "").strip()
         if not env_value:
@@ -1242,7 +1355,6 @@ def _inspect_openclaw_provider(
             provider_id,
             strategy="missing",
             reason="unable to determine current OpenClaw provider",
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
             metadata={"providerId": normalize_provider_id(provider_id)},
         )
 
@@ -1258,11 +1370,7 @@ def _inspect_openclaw_provider(
     api_family = _openclaw_current_api_family(current_provider, env)
     upstream_base_url = _openclaw_preserved_upstream_base_url(current_provider, env)
 
-    if (
-        current_provider == requested_provider
-        and selection.profile_id is not None
-        and isinstance(selection.credential, dict)
-    ):
+    if selection.profile_id is not None and isinstance(selection.credential, dict):
         inspection = _openclaw_profile_inspection(
             current_provider,
             env,
@@ -1281,7 +1389,7 @@ def _inspect_openclaw_provider(
     if inspection is not None:
         return inspection
 
-    inspection = _openclaw_env_fallback_inspection(
+    inspection = _openclaw_provider_env_inspection(
         requested_provider,
         env,
         api_family=requested_api_family,
@@ -1289,46 +1397,6 @@ def _inspect_openclaw_provider(
     if inspection is not None:
         return inspection
 
-    if selection.reason.startswith("fallback_provider:") and isinstance(selection.credential, dict):
-        models = selection.credential.get("models")
-        fallback_model_id = None
-        if isinstance(models, list):
-            for item in models:
-                if isinstance(item, dict) and isinstance(item.get("id"), str):
-                    fallback_model_id = item["id"]
-                    break
-        api_key = str(selection.credential.get("apiKey") or "").strip()
-        authorization = _bearer(api_key) or ""
-        resolved_headers: dict[str, str] | None = None
-        if api_family == "anthropic-messages" and not _anthropic_uses_bearer_auth(
-            api_key,
-            auth_kind=AUTH_KIND_API_KEY,
-        ):
-            resolved_headers = {"x-api-key": api_key} if api_key else None
-            authorization = ""
-        metadata = {
-            "providerId": current_provider,
-            "selectionReason": selection.reason,
-            "overrideBaseUrl": selection.credential.get("baseUrl"),
-            "fallbackModelId": fallback_model_id,
-            "apiFamily": api_family,
-        }
-        if upstream_base_url:
-            metadata["upstreamBaseUrl"] = upstream_base_url
-        return _ready(
-            current_provider,
-            auth_kind=AUTH_KIND_API_KEY,
-            guaranteed=False,
-            strategy="provider-fallback",
-            auth_source=f"models-cache:{current_provider}",
-            path=str(_openclaw_models_cache_path(env)),
-            authorization=authorization,
-            resolved_headers=resolved_headers,
-            reason=(
-                f"Primary OpenClaw provider is cooling down; reusing configured provider '{current_provider}' as a best-effort fallback."
-            ),
-            metadata=metadata,
-        )
     if selection.profile_id is None or not isinstance(selection.credential, dict):
         return _missing(
             requested_provider,
@@ -1336,10 +1404,9 @@ def _inspect_openclaw_provider(
             reason="unable to determine current OpenClaw provider"
             if selection.reason == "missing_provider"
             else (
-                "no reusable OpenClaw auth profile, cache API key, or supported env fallback "
+                "no reusable OpenClaw auth profile, cache API key, or provider env "
                 f"found for provider '{requested_provider}'"
             ),
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
             metadata={
                 "providerId": requested_provider,
                 "selectionReason": selection.reason,
@@ -1366,9 +1433,8 @@ def _inspect_openclaw_provider(
         current_provider,
         strategy="missing",
         reason=(
-            f"OpenClaw provider '{current_provider}' has no reusable auth profile, cache API key, or supported env fallback"
+            f"OpenClaw provider '{current_provider}' has no reusable auth profile, cache API key, or provider env"
         ),
-        fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
         metadata={
             "providerId": current_provider,
             "apiFamily": api_family,
@@ -1412,7 +1478,6 @@ class GenericProviderAdapter:
                     reason=(
                         f"OpenClaw provider family '{api_family}' is not supported by middleware yet."
                     ),
-                    fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
                     metadata=metadata,
                 )
             return _inspect_openclaw_provider(
@@ -1428,7 +1493,6 @@ class GenericProviderAdapter:
             reason=(
                 f"no native auth adapter is defined for client '{context.client_name or CLIENT_UNKNOWN}' and provider '{context.provider_id}'"
             ),
-            fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
         )
 
     def normalize_model_name(self, model_name: Any, context: AuthContext) -> Any:
@@ -1463,71 +1527,13 @@ class OpenAIProviderAdapter(GenericProviderAdapter):
                     path=codex.path,
                     authorization=codex.authorization or "",
                     transport=TRANSPORT_OPENAI_COMPAT,
+                    metadata={
+                        "providerId": PROVIDER_OPENAI,
+                        "upstreamBaseUrl": OPENAI_COMPAT_BASE_URL,
+                    },
                 )
         if context.client_name == CLIENT_OPENCODE:
-            direct = _inspect_opencode_provider(PROVIDER_OPENAI, context.env)
-            if direct.ready:
-                return direct
-
-            codex = _inspect_codex_store(context.env)
-            if codex.ready:
-                return CredentialInspection(
-                    provider_id=PROVIDER_OPENAI,
-                    auth_kind=codex.auth_kind,
-                    ready=True,
-                    guaranteed=False,
-                    strategy="shared-codex-oauth",
-                    transport=TRANSPORT_CODEX_NATIVE,
-                    fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
-                    reason=(
-                        "OpenCode has no reusable OpenAI API key for the current provider; reusing Codex OAuth as a best-effort native fallback."
-                    ),
-                    auth_source=codex.auth_source,
-                    path=codex.path,
-                    auth_env=codex.auth_env,
-                    authorization=codex.authorization,
-                    audience=codex.audience,
-                    scopes=codex.scopes,
-                    metadata={
-                        **codex.metadata,
-                        "providerId": PROVIDER_OPENAI,
-                        "sharedFrom": CLIENT_CODEX,
-                        "nativeBaseUrl": _codex_native_base_url(context.env),
-                    },
-                )
-
-            shared = _inspect_openclaw_provider(
-                PROVIDER_OPENAI_CODEX,
-                context.env,
-                context.health_store,
-            )
-            if shared.ready:
-                return CredentialInspection(
-                    provider_id=PROVIDER_OPENAI,
-                    auth_kind=shared.auth_kind,
-                    ready=True,
-                    guaranteed=False,
-                    strategy="shared-openclaw-profile",
-                    transport=TRANSPORT_CODEX_NATIVE,
-                    fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
-                    reason=(
-                        "OpenCode has no reusable OpenAI API key for the current provider; reusing the OpenClaw `openai-codex` profile as a best-effort native fallback."
-                    ),
-                    auth_source=shared.auth_source,
-                    path=shared.path,
-                    auth_env=shared.auth_env,
-                    authorization=shared.authorization,
-                    audience=shared.audience,
-                    scopes=shared.scopes,
-                    metadata={
-                        **shared.metadata,
-                        "providerId": PROVIDER_OPENAI,
-                        "sharedFrom": CLIENT_OPENCLAW,
-                        "nativeBaseUrl": _codex_native_base_url(context.env),
-                    },
-                )
-
-            return direct
+            return _inspect_opencode_provider(PROVIDER_OPENAI, context.env)
         return super().inspect(context)
 
 
@@ -1536,42 +1542,7 @@ class CodexNativeAdapter(GenericProviderAdapter):
 
     def inspect(self, context: AuthContext) -> CredentialInspection:
         if context.client_name == CLIENT_CODEX:
-            codex = _inspect_codex_store(context.env)
-            if codex.ready:
-                return codex
-            shared = _inspect_openclaw_provider(
-                PROVIDER_OPENAI_CODEX,
-                context.env,
-                context.health_store,
-            )
-            if shared.ready:
-                metadata = {
-                    **shared.metadata,
-                    "sharedFrom": CLIENT_OPENCLAW,
-                }
-                account_id = metadata.get("accountId") if isinstance(metadata, dict) else None
-                if isinstance(account_id, str) and account_id.strip():
-                    metadata["nativeBaseUrl"] = _codex_native_base_url(context.env)
-                return CredentialInspection(
-                    provider_id=PROVIDER_OPENAI_CODEX,
-                    auth_kind=shared.auth_kind,
-                    ready=True,
-                    guaranteed=False,
-                    strategy="shared-openclaw-profile",
-                    transport=TRANSPORT_CODEX_NATIVE,
-                    fallback_mode=FALLBACK_MODE_MANAGED_UPSTREAM,
-                    reason=(
-                        "Codex auth store is unavailable or stale; reusing the OpenClaw `openai-codex` profile as a best-effort native fallback."
-                    ),
-                    auth_source=shared.auth_source,
-                    path=shared.path,
-                    auth_env=shared.auth_env,
-                    authorization=shared.authorization,
-                    audience=shared.audience,
-                    scopes=shared.scopes,
-                    metadata=metadata,
-                )
-            return codex
+            return _inspect_codex_store(context.env)
         return super().inspect(context)
 
     def normalize_model_name(self, model_name: Any, context: AuthContext) -> Any:
@@ -1630,11 +1601,11 @@ class CredentialResolver:
         if client_name == CLIENT_OPENCODE:
             payload = _read_json_object(_opencode_config_path(resolved_env))
             provider_id = _opencode_current_provider(payload, resolved_env)
-            return normalize_provider_id(provider_id)
+            return normalize_provider_id(provider_id) or ""
         if client_name == CLIENT_OPENCLAW:
             provider_id = _openclaw_current_provider(resolved_env)
-            return normalize_provider_id(provider_id)
-        return PROVIDER_OPENAI
+            return normalize_provider_id(provider_id) or ""
+        return ""
 
     def inspect(
         self,
@@ -1731,24 +1702,5 @@ class CredentialResolver:
         return incoming_auth or None
 
     def record_failure(self, inspection: CredentialInspection, *, status_code: int) -> None:
-        profile_id = (
-            str(inspection.metadata.get("selectedProfileId"))
-            if isinstance(inspection.metadata.get("selectedProfileId"), str)
-            else None
-        )
-        if not profile_id:
-            return
-        if status_code == 429:
-            self._health_store.mark_cooldown(
-                provider_id=inspection.provider_id,
-                profile_id=profile_id,
-                reason="rate_limited",
-                cooldown_seconds=300,
-            )
-        elif status_code in {401, 403}:
-            self._health_store.mark_cooldown(
-                provider_id=inspection.provider_id,
-                profile_id=profile_id,
-                reason="auth_rejected",
-                cooldown_seconds=120,
-            )
+        del inspection
+        del status_code

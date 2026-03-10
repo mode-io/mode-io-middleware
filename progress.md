@@ -371,3 +371,31 @@
     - `bash ./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-refactor-postgate-nativeenv2-wheel`
     - passed
     - artifact root: `.artifacts/live-agent-refactor-postgate-nativeenv2-wheel/20260310T162342Z-1414`
+
+### Session: 2026-03-10 17:35 UTC strict harness-owned auth implementation
+- Investigated the remaining OpenCode live-routing gap with a kept sandbox and confirmed:
+  - the seeded sandbox config was patched correctly
+  - `provider.openai.options.baseURL` and `OPENAI_BASE_URL` were both ignored by the real OpenCode `openai` OAuth path
+  - upstream OpenCode source explains why: the built-in `openai` OAuth plugin rewrites requests internally to ChatGPT Codex
+- Implemented the contract correction:
+  - `modeio_middleware/cli/setup_lib/opencode.py`
+    - added OpenCode route-support classification
+    - refuse to patch selected provider `openai` when OpenCode auth store has `type: oauth`
+  - `modeio_middleware/core/provider_auth.py`
+    - OpenCode inspection now reports `unsupported_transport` for that same case
+  - `scripts/smoke_agent_matrix.py` and `scripts/smoke_matrix/runner.py`
+    - live smoke now skips unsupported OpenCode scenarios instead of claiming a false routed success
+  - `scripts/smoke_e2e.sh`
+    - setup smoke now uses an isolated temp HOME/XDG root so host OpenCode OAuth state does not contaminate temp-config setup checks
+  - docs updated in `README.md`, `QUICKSTART.md`, and `CONTRIBUTING.md`
+- Validation:
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- ./.venv/bin/python -m unittest tests.unit.test_setup_gateway tests.unit.test_client_auth tests.smoke.test_smoke_agent_matrix_support tests.smoke.test_smoke_opencode_flow tests.unit.test_upstream_client tests.integration.test_gateway_contract`
+    - `104` tests passed
+  - `./scripts/smoke_e2e.sh --live-openai-agents --keep-sandbox --artifacts-dir ./.artifacts/live-openai-strict-harness-final`
+    - passed
+    - artifact root: `.artifacts/live-openai-strict-harness-final/20260310T173238Z-71819`
+    - live outcomes:
+      - `codex`: `warning` / `productOk=true` (`auth store needs a fresh login`)
+      - `opencode`: `skipped` / `productOk=true` (`openai` OAuth transport unsupported for middleware routing)
+      - `openclaw:openai-completions`: passed
+      - `openclaw:anthropic-messages`: passed

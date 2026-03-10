@@ -16,7 +16,9 @@ def build_sandbox_paths(root: Path) -> Dict[str, Path]:
         "xdg_config": xdg_root / "config",
         "xdg_state": xdg_root / "state",
         "xdg_cache": xdg_root / "cache",
+        "home_local_share": home / ".local" / "share",
         "opencode_config": xdg_root / "config" / "opencode" / "opencode.json",
+        "opencode_auth_store": home / ".local" / "share" / "opencode" / "auth.json",
         "claude_settings": home / ".claude" / "settings.json",
         "openclaw_state": openclaw_state,
         "openclaw_config": openclaw_state / "openclaw.json",
@@ -29,7 +31,6 @@ def build_sandbox_env(
     paths: Dict[str, Path],
     *,
     gateway_base_url: str,
-    upstream_api_key: str = "",
 ) -> Dict[str, str]:
     allowlist = (
         "PATH",
@@ -43,12 +44,6 @@ def build_sandbox_env(
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
-        "OPENAI_API_KEY",
-        "OPENCODE_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "ZENMUX_API_KEY",
-        "OPENROUTER_API_KEY",
-        "MINIMAX_API_KEY",
     )
     env = {
         key: value
@@ -64,7 +59,7 @@ def build_sandbox_env(
             "XDG_CONFIG_HOME": str(paths["xdg_config"]),
             "XDG_STATE_HOME": str(paths["xdg_state"]),
             "XDG_CACHE_HOME": str(paths["xdg_cache"]),
-            "OPENAI_BASE_URL": f"{gateway_root_url}/clients/codex/v1",
+            "MODEIO_SMOKE_CODEX_BASE_URL": f"{gateway_root_url}/clients/codex/v1",
             "OPENCLAW_CONFIG_PATH": str(paths["openclaw_config"]),
             "OPENCLAW_STATE_DIR": str(paths["openclaw_state"]),
             "OPENCLAW_AGENT_DIR": str(paths["openclaw_models_cache"].parent),
@@ -72,9 +67,6 @@ def build_sandbox_env(
             "PYTHONUNBUFFERED": "1",
         }
     )
-    if upstream_api_key:
-        env["MODEIO_GATEWAY_UPSTREAM_API_KEY"] = upstream_api_key
-        env["MODEIO_TAP_UPSTREAM_API_KEY"] = upstream_api_key
     return env
 
 
@@ -103,6 +95,7 @@ def seed_opencode_state(real_home: Path, paths: Dict[str, Path]) -> Dict[str, ob
         "configSeeded": False,
         "cacheLinked": False,
         "stateLinked": False,
+        "authSeeded": False,
     }
     source_config = real_home / ".config" / "opencode" / "opencode.json"
     if source_config.exists():
@@ -127,6 +120,14 @@ def seed_opencode_state(real_home: Path, paths: Dict[str, Path]) -> Dict[str, ob
         target_state.symlink_to(source_state, target_is_directory=True)
         report["stateLinked"] = True
         report["statePath"] = str(source_state)
+
+    source_auth = real_home / ".local" / "share" / "opencode" / "auth.json"
+    if source_auth.exists():
+        target_auth = paths["opencode_auth_store"]
+        target_auth.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_auth, target_auth)
+        report["authSeeded"] = True
+        report["authPath"] = str(source_auth)
 
     return report
 
@@ -179,6 +180,38 @@ def _write_json_object(path: Path, payload: Dict[str, object]) -> None:
 
 def _ensure_object(value: Any) -> Dict[str, object]:
     return value if isinstance(value, dict) else {}
+
+
+def resolve_opencode_smoke_model(
+    *,
+    config_path: Path,
+    state_path: Path,
+    fallback_model: str,
+) -> str:
+    config_payload = _read_json_object(config_path)
+    config_model = config_payload.get("model")
+    if isinstance(config_model, str) and config_model.strip():
+        return config_model.strip()
+
+    state_payload = _read_json_object(state_path)
+    recent = state_payload.get("recent")
+    if isinstance(recent, list):
+        for entry in recent:
+            if not isinstance(entry, dict):
+                continue
+            provider_id = entry.get("providerID")
+            model_id = entry.get("modelID")
+            if not isinstance(provider_id, str) or not provider_id.strip():
+                continue
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            normalized_provider = provider_id.strip()
+            normalized_model = model_id.strip()
+            if "/" in normalized_model:
+                return normalized_model
+            return f"{normalized_provider}/{normalized_model}"
+
+    return fallback_model
 
 
 def _resolve_openclaw_cache_providers(

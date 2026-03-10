@@ -12,7 +12,6 @@ def build_inspection(**overrides: Any) -> SimpleNamespace:
         "guaranteed": True,
         "strategy": "test",
         "transport": "openai_compat",
-        "fallback_mode": "none",
         "reason": None,
         "auth_source": None,
         "path": None,

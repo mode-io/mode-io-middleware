@@ -104,7 +104,7 @@ class TestUpstreamClient(unittest.TestCase):
                     config=self.config,
                     endpoint_kind="chat_completions",
                     payload={"model": "gpt-test"},
-                    incoming_headers={},
+                    incoming_headers={"Authorization": "Bearer incoming-secret"},
                 )
 
         self.assertEqual(response.payload, {"ok": True})
@@ -130,7 +130,7 @@ class TestUpstreamClient(unittest.TestCase):
                 config=self.config,
                 endpoint_kind="chat_completions",
                 payload={"model": "gpt-test"},
-                incoming_headers={},
+                incoming_headers={"Authorization": "Bearer incoming-secret"},
             )
 
         self.assertEqual(response.headers["openai-request-id"], "req_123")
@@ -147,7 +147,7 @@ class TestUpstreamClient(unittest.TestCase):
                     config=self.config,
                     endpoint_kind="chat_completions",
                     payload={"model": "gpt-test"},
-                    incoming_headers={},
+                    incoming_headers={"Authorization": "Bearer incoming-secret"},
                 )
 
         self.assertEqual(error_ctx.exception.code, "MODEIO_UPSTREAM_INVALID_JSON")
@@ -166,7 +166,7 @@ class TestUpstreamClient(unittest.TestCase):
                     config=self.config,
                     endpoint_kind="chat_completions",
                     payload={"model": "gpt-test"},
-                    incoming_headers={},
+                    incoming_headers={"Authorization": "Bearer incoming-secret"},
                 )
 
         self.assertEqual(error_ctx.exception.status, 429)
@@ -183,7 +183,7 @@ class TestUpstreamClient(unittest.TestCase):
                         config=self.config,
                         endpoint_kind="chat_completions",
                         payload={"model": "gpt-test"},
-                        incoming_headers={},
+                        incoming_headers={"Authorization": "Bearer incoming-secret"},
                     )
 
         self.assertEqual(error_ctx.exception.code, "MODEIO_UPSTREAM_TIMEOUT")

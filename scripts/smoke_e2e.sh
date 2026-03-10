@@ -53,7 +53,7 @@ usage() {
   cat <<'EOF' >&2
 Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH]
 
-  --live                Run a generic live gateway smoke against a real upstream
+  --live                Deprecated generic gateway smoke; currently reported as skipped
   --live-agents         Run both live agent paths: OpenAI-compatible clients and Claude hooks
   --live-openai-agents  Run only Codex/OpenCode/OpenClaw live smoke through OpenAI-compatible middleware routes
   --live-claude         Run only Claude hook live smoke (no upstream model provider required)
@@ -316,6 +316,8 @@ run_setup_smoke() {
   local anthropic_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-anthropic.json"
   local opencode_json="$ARTIFACTS_DIR/opencode.json"
   local claude_settings_json="$ARTIFACTS_DIR/claude-settings.json"
+  local temp_home="$ARTIFACTS_DIR/setup-home"
+  local temp_xdg="$ARTIFACTS_DIR/setup-xdg"
 
   seed_openclaw_family_state "$openai_cfg" "$openai_models" "openai-completions"
   seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models" "anthropic-messages"
@@ -323,6 +325,11 @@ run_setup_smoke() {
   log "running setup/uninstall smoke (temp config paths)"
   (
     cd "$REPO_ROOT"
+    export HOME="$temp_home"
+    export XDG_CONFIG_HOME="$temp_xdg/config"
+    export XDG_STATE_HOME="$temp_xdg/state"
+    export XDG_CACHE_HOME="$temp_xdg/cache"
+    export XDG_DATA_HOME="$temp_xdg/data"
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --apply-opencode \
@@ -690,79 +697,9 @@ PY
 }
 
 run_live_gateway_smoke() {
-  local gateway_port=18787
-  local resolved_output=""
-  local resolved=()
-  if ! resolved_output="$(resolve_live_upstream_fields)"; then
-    live_gateway_status="failed"
-    return 1
-  fi
-  mapfile -t resolved <<< "$resolved_output"
-  local upstream_base_url="${resolved[0]}"
-  local upstream_model="${resolved[1]}"
-  local upstream_api_key="${resolved[2]}"
-  local upstream_source="${resolved[3]}"
-  local upstream_provider="${resolved[4]}"
-  local stdout_log="$ARTIFACTS_DIR/live-gateway.stdout.log"
-  local stderr_log="$ARTIFACTS_DIR/live-gateway.stderr.log"
-  local response_headers="$ARTIFACTS_DIR/live-gateway.headers.txt"
-  local response_body="$ARTIFACTS_DIR/live-gateway-response.json"
-  local http_code=""
-
-  log "running live gateway smoke against real upstream (source=${upstream_source} provider=${upstream_provider})"
-  live_gateway_status="failed"
-
-  local rc=0
-  (
-    cd "$REPO_ROOT"
-
-    MODEIO_GATEWAY_UPSTREAM_API_KEY="$upstream_api_key" \
-    "$PYTHON_BIN" scripts/middleware_gateway.py \
-      --host 127.0.0.1 \
-      --port "$gateway_port" \
-      --upstream-chat-url "${upstream_base_url%/}/chat/completions" \
-      --upstream-responses-url "${upstream_base_url%/}/responses" \
-      >"$stdout_log" \
-      2>"$stderr_log" &
-    local gateway_pid=$!
-
-    cleanup_live() {
-      kill "$gateway_pid" >/dev/null 2>&1 || true
-      wait "$gateway_pid" >/dev/null 2>&1 || true
-    }
-    trap cleanup_live EXIT
-
-    for _ in {1..30}; do
-      if curl -s "http://127.0.0.1:${gateway_port}/healthz" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 0.3
-    done
-
-    curl -sSf "http://127.0.0.1:${gateway_port}/healthz" >/dev/null
-
-    http_code="$(curl -sS -D "$response_headers" -o "$response_body" -w '%{http_code}' "http://127.0.0.1:${gateway_port}/v1/chat/completions" \
-      -H "Content-Type: application/json" \
-      -d "{\"model\":\"${upstream_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with LIVE_CHAT_SMOKE_OK only\"}]}" )"
-
-    if [[ ! "$http_code" =~ ^2 ]]; then
-      echo "[smoke] live gateway returned HTTP ${http_code}" >&2
-      if [[ -f "$response_body" ]]; then
-        echo "[smoke] response body:" >&2
-        cat "$response_body" >&2
-      fi
-      exit 1
-    fi
-
-    cleanup_live
-    trap - EXIT
-  ) || rc=$?
-
-  if [[ "$rc" -ne 0 ]]; then
-    return "$rc"
-  fi
-
-  live_gateway_status="passed"
+  log "skipping deprecated generic live gateway smoke; use --live-openai-agents, --live-claude, or --live-agents for harness-owned auth validation"
+  live_gateway_status="skipped"
+  return 0
 }
 
 run_live_agent_matrix_smoke() {

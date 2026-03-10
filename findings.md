@@ -359,3 +359,15 @@
   - auth reuse is still a separate concern because middleware must choose between direct selected-provider auth and shared native fallback
   - the OpenAI-specific native bridge for `opencode` remains the main special case, not a sign that `opencode` needs the same integration model as OpenClaw
   - the passing release smoke also showed that force-injecting a placeholder OpenCode API key is no longer required for the localhost setup path in this branch; preserving a missing key avoids one more auth-precedence edge case
+
+## Session: 2026-03-10 17:35 UTC strict harness-owned auth correction
+- OpenCode built-in `openai` with ChatGPT OAuth is not redirectable through middleware preserve-provider mode.
+  - Upstream OpenCode source (`packages/opencode/src/plugin/codex.ts`) rewrites the OAuth `openai` path with a custom `fetch` directly to `https://chatgpt.com/backend-api/codex/responses`.
+  - Because that happens inside OpenCode after provider setup, mutating `provider.openai.options.baseURL` or `OPENAI_BASE_URL` cannot force that path through middleware.
+- Middleware contract correction:
+  - OpenCode stays supported only when the selected provider is redirectable through its configured base URL.
+  - Built-in `openai` with OAuth is now explicitly unsupported instead of being treated as a routing bug or being rescued by fallback behavior.
+- Implementation result:
+  - OpenCode setup now returns `supported: false` with reason `provider_uses_internal_oauth_transport` for that case and leaves the config unpatched.
+  - Runtime auth inspection returns `strategy=unsupported_transport` for the same case so doctor/runtime no longer claim the path is reusable.
+  - Live smoke skips the unsupported OpenCode OAuth scenario and keeps the matrix green for the intended routed scenarios.
