@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { fetchJson } from "../../api";
 import { modeioMonitoringRoutes } from "../../apiRoutes";
+import { directionFilterToLifecycles, resultFilterToQueryParams } from "../../monitorFilters";
 import type { EventDetail, EventsResponse, MonitorFilters, StatsSnapshot } from "../../types";
 
 const EVENTS_LIMIT = 50;
@@ -12,23 +13,25 @@ export const TRAFFIC_DETAIL_QUERY_KEY = "traffic-detail";
 
 export function buildEventsUrl(filters: MonitorFilters): string {
   const params = new URLSearchParams({ limit: String(EVENTS_LIMIT) });
-  if (filters.status !== "all") {
-    params.set("status", filters.status);
+  const resultParams = resultFilterToQueryParams(filters.result);
+  if (resultParams.status) {
+    params.set("status", resultParams.status);
+  }
+  if (resultParams.impact) {
+    params.set("impact", resultParams.impact);
   }
   if (filters.clientName !== "all") {
     params.set("client", filters.clientName);
   }
-  if (filters.impact !== "all") {
-    params.set("impact", filters.impact);
-  }
-  if (filters.lifecycle !== "all") {
-    params.set("lifecycle", filters.lifecycle);
+  const lifecycles = directionFilterToLifecycles(filters.direction);
+  if (lifecycles && lifecycles.length === 1) {
+    params.set("lifecycle", lifecycles[0]);
   }
   return `${modeioMonitoringRoutes.events}?${params.toString()}`;
 }
 
 export function buildEventsQueryKey(filters: MonitorFilters) {
-  return [TRAFFIC_EVENTS_QUERY_KEY, filters.status, filters.clientName, filters.impact, filters.lifecycle] as const;
+  return [TRAFFIC_EVENTS_QUERY_KEY, filters.result, filters.clientName, filters.direction] as const;
 }
 
 export function buildDetailQueryKey(requestId: string | null) {

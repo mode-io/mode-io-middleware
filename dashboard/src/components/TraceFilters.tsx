@@ -9,17 +9,16 @@ interface TraceFiltersProps {
   onFiltersChange: (filters: MonitorFilters) => void;
 }
 
-const FILTER_FIELDS: MonitorFilterKey[] = ["status", "clientName", "lifecycle", "impact"];
+const FILTER_FIELDS: MonitorFilterKey[] = ["result", "clientName", "direction"];
 
 export function TraceFilters({ filters, locale, visibleCount, onFiltersChange }: TraceFiltersProps) {
   const copy = getCopy(locale);
   const hasFilters = hasActiveFilters(filters);
   const activeFilters = FILTER_FIELDS.filter((key) => filters[key] !== "all");
   const fieldLabels: Record<MonitorFilterKey, string> = {
-    status: copy.filters.status,
+    result: copy.filters.result,
     clientName: copy.filters.client,
-    lifecycle: copy.filters.lifecycle,
-    impact: copy.filters.impact,
+    direction: copy.filters.direction,
   };
 
   return (

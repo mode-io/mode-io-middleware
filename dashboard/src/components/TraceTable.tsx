@@ -1,4 +1,4 @@
-import { fmtClient, fmtImpact, fmtLifecycle, fmtStatus, getCopy } from "../i18n";
+import { deriveDirection, deriveResult, fmtClient, fmtLifecycle, fmtResult, getCopy } from "../i18n";
 import { summarizePluginLabel } from "../traceInsights";
 import { TraceFilters } from "./TraceFilters";
 import type { EventSummary, Locale, MonitorFilters } from "../types";
@@ -14,10 +14,6 @@ interface TraceTableProps {
   onSelect: (requestId: string) => void;
   usingDemo: boolean;
   onOpenPlugin?: (pluginName: string, profile: string) => void;
-}
-
-function StatusDot({ status }: { status: string }) {
-  return <span className={`status-dot status-dot--${status}`} />;
 }
 
 export function TraceTable({
@@ -51,10 +47,9 @@ export function TraceTable({
       <div className="trace-table__scroll">
         <table className="trace-table">
           <colgroup>
-            <col className="trace-table__col trace-table__col--status" />
+            <col className="trace-table__col trace-table__col--result" />
             <col className="trace-table__col trace-table__col--client" />
-            <col className="trace-table__col trace-table__col--lifecycle" />
-            <col className="trace-table__col trace-table__col--impact" />
+            <col className="trace-table__col trace-table__col--direction" />
             <col className="trace-table__col trace-table__col--plugin" />
             <col className="trace-table__col trace-table__col--duration" />
             <col className="trace-table__col trace-table__col--request-id" />
@@ -62,10 +57,9 @@ export function TraceTable({
           </colgroup>
           <thead>
             <tr>
-              <th className="col-status">{copy.table.status}</th>
+              <th className="col-result">{copy.table.result}</th>
               <th className="col-client">{copy.table.client}</th>
-              <th className="col-lifecycle">{copy.table.lifecycle}</th>
-              <th className="col-impact">{copy.table.impact}</th>
+              <th className="col-direction">{copy.table.direction}</th>
               <th className="col-plugin">{copy.table.plugin}</th>
               <th className="col-duration">{copy.table.duration}</th>
               <th className="col-id">{copy.table.requestId}</th>
@@ -75,33 +69,34 @@ export function TraceTable({
           <tbody>
             {loading && events.length === 0 ? (
               <tr>
-                <td colSpan={8} className="trace-table__message">
+                <td colSpan={7} className="trace-table__message">
                   {copy.table.loading}
                 </td>
               </tr>
             ) : null}
             {!loading && events.length === 0 ? (
               <tr>
-                <td colSpan={8} className="trace-table__message">
+                <td colSpan={7} className="trace-table__message">
                   {copy.table.empty}
                 </td>
               </tr>
             ) : null}
             {events.map((event) => {
               const selected = event.requestId === selectedRequestId;
+              const result = deriveResult(event.status, event.impact);
               return (
                 <tr
                   key={event.requestId}
                   className={`trace-table__row${selected ? " trace-table__row--selected" : ""}`}
                   onClick={() => onSelect(event.requestId)}
                 >
-                  <td className="col-status">
-                    <StatusDot status={event.status} />
-                    <span>{fmtStatus(event.status, locale)}</span>
+                  <td className="col-result">
+                    <span className={`result-tag result-tag--${result}`}>{fmtResult(event.status, event.impact, locale)}</span>
                   </td>
                   <td className="col-client">{fmtClient(event.clientName, locale)}</td>
-                  <td className="col-lifecycle">{fmtLifecycle(event.lifecycle, locale)}</td>
-                    <td className="col-impact">{fmtImpact(event.impact, locale)}</td>
+                  <td className="col-direction">
+                    <span className={`dir-tag dir-tag--${deriveDirection(event.lifecycle)}`}>{fmtLifecycle(event.lifecycle, locale)}</span>
+                  </td>
                     <td className="col-plugin mono" title={event.pluginNames.join(", ") || undefined}>
                       {event.primaryPlugin && onOpenPlugin ? (
                         <button
