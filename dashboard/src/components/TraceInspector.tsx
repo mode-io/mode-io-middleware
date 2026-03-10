@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-import { fmtAction, fmtClient, fmtImpact, fmtLifecycle, fmtStatus, getCopy } from "../i18n";
+import { deriveResult, fmtAction, fmtClient, fmtLifecycle, fmtResult, getCopy } from "../i18n";
+
 import { summarizePluginLabel } from "../traceInsights";
 import type { ChangeSummary, EventDetail, Locale } from "../types";
 import { formatDuration, formatTimestamp, stableJson } from "../utils";
@@ -218,10 +219,9 @@ export function TraceInspector({ detail, loading, locale, onOpenPlugin }: TraceI
   ];
   const pluginSummary = summarizePluginLabel(detail.primaryPlugin, detail.pluginNames);
   const metadataColumns = [
-    { key: "status", label: copy.table.status, value: fmtStatus(detail.status, locale) },
+    { key: "result", label: copy.inspector.result, value: fmtResult(detail.status, detail.impact, locale) },
     { key: "client", label: copy.inspector.client, value: fmtClient(detail.clientName, locale) },
-    { key: "lifecycle", label: copy.inspector.lifecycle, value: fmtLifecycle(detail.lifecycle, locale) },
-    { key: "impact", label: copy.inspector.impact, value: fmtImpact(detail.impact, locale) },
+    { key: "direction", label: copy.inspector.direction, value: fmtLifecycle(detail.lifecycle, locale) },
     { key: "pluginSummary", label: copy.inspector.pluginSummary, value: pluginSummary },
     { key: "duration", label: copy.table.duration, value: formatDuration(detail.durationMs, locale) },
     { key: "upstream", label: copy.inspector.upstream, value: detail.upstreamDurationMs != null ? formatDuration(detail.upstreamDurationMs, locale) : "-" },
@@ -241,16 +241,15 @@ export function TraceInspector({ detail, loading, locale, onOpenPlugin }: TraceI
       <div className="inspector-header">
         <div className="inspector-summary">
           <div className="inspector-summary__primary">
-            <span className={`status-dot status-dot--${detail.status}`} />
+            <span className={`status-dot status-dot--${deriveResult(detail.status, detail.impact)}`} />
             <strong className="mono">{detail.requestId}</strong>
           </div>
           <div className="inspector-meta-table-wrap">
             <table className="inspector-meta-table">
               <colgroup>
-                <col className="inspector-meta-table__col inspector-meta-table__col--status" />
+                <col className="inspector-meta-table__col inspector-meta-table__col--result" />
                 <col className="inspector-meta-table__col inspector-meta-table__col--client" />
-                <col className="inspector-meta-table__col inspector-meta-table__col--lifecycle" />
-                <col className="inspector-meta-table__col inspector-meta-table__col--impact" />
+                <col className="inspector-meta-table__col inspector-meta-table__col--direction" />
                 <col className="inspector-meta-table__col inspector-meta-table__col--plugin" />
                 <col className="inspector-meta-table__col inspector-meta-table__col--duration" />
                 <col className="inspector-meta-table__col inspector-meta-table__col--upstream" />

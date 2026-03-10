@@ -6,14 +6,16 @@ export function getCopy(locale: Locale) {
 }
 
 export {
+  deriveDirection,
+  deriveResult,
   fmtAction,
   fmtBoolean,
   fmtClient,
   fmtFilterMatchCount,
-  fmtImpact,
   fmtLifecycle,
   fmtPluginMode,
   fmtPluginSource,
   fmtPluginValidation,
+  fmtResult,
   fmtStatus,
 } from "./i18nFormatters";

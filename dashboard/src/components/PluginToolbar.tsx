@@ -1,5 +1,6 @@
 import { getCopy } from "../i18n";
 import type { Locale, PluginListFilters, PluginProfileSummary, PluginRuntimeSummary } from "../types";
+import { Select } from "./Select";
 
 interface PluginToolbarProps {
   locale: Locale;
@@ -45,16 +46,15 @@ export function PluginToolbar({
         </div>
 
         <div className="plugin-toolbar__controls">
-          <label className="filter-field">
+          <div className="filter-field">
             <span className="filter-field__label">{copy.plugins.selectedProfile}</span>
-            <select value={selectedProfile} aria-label={copy.plugins.selectedProfile} onChange={(event) => onProfileChange(event.target.value)}>
-              {profiles.map((profile) => (
-                <option key={profile.name} value={profile.name}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
-          </label>
+            <Select
+              value={selectedProfile}
+              options={profiles.map((profile) => ({ value: profile.name, label: profile.name }))}
+              onChange={onProfileChange}
+              aria-label={copy.plugins.selectedProfile}
+            />
+          </div>
 
           <label className="filter-field filter-field--search">
             <span className="filter-field__label">{copy.plugins.search}</span>

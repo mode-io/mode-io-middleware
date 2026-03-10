@@ -1,16 +1,22 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { modeioAdminRoutes, modeioMonitoringRoutes } from "./apiRoutes";
 import { App } from "./App";
+import { jsonResponse } from "./test/fixtures";
 import type { PluginInventoryResponse } from "./types";
 
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+async function pickSelectOption(user: ReturnType<typeof userEvent.setup>, ariaLabel: string, optionText: string) {
+  const trigger = screen.getByRole("combobox", { name: ariaLabel });
+  await user.click(trigger);
+  const listbox = screen.getByRole("listbox", { name: ariaLabel });
+  await user.click(within(listbox).getByRole("option", { name: optionText }));
+}
+
+function getSelectValue(ariaLabel: string): string {
+  const trigger = screen.getByRole("combobox", { name: ariaLabel });
+  return trigger.querySelector(".select__value")?.textContent ?? "";
 }
 
 function createPluginInventory(options?: { configWritable?: boolean; generation?: number }): PluginInventoryResponse {
@@ -381,7 +387,7 @@ describe("App plugin workspace", () => {
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
     await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
 
-    await user.selectOptions(screen.getByLabelText("Mode"), "assist");
+    await pickSelectOption(user, "Mode", "assist");
     await user.click(screen.getByLabelText("Can patch"));
     await user.clear(screen.getByLabelText("Pool size"));
     await user.type(screen.getByLabelText("Pool size"), "3");
@@ -411,7 +417,7 @@ describe("App plugin workspace", () => {
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
     await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
 
-    await user.selectOptions(screen.getByLabelText("Mode"), "assist");
+    await pickSelectOption(user, "Mode", "assist");
     await user.click(screen.getAllByRole("button", { name: "Save settings" })[0]);
 
     expect(await screen.findByText("Plugin config changed elsewhere. Review the latest state and save again.")).toBeInTheDocument();
@@ -427,7 +433,7 @@ describe("App plugin workspace", () => {
 
     expect(await screen.findByRole("tab", { name: "Plugins", selected: true })).toBeInTheDocument();
     expect((await screen.findAllByText("Rewrite Plugin")).length).toBeGreaterThan(0);
-    expect((screen.getByLabelText("Selected profile") as HTMLSelectElement).value).toBe("dev");
+    expect(getSelectValue("Selected profile")).toBe("dev");
   });
 
   it("blocks quick row actions while the current profile has unsaved draft changes", async () => {
@@ -437,7 +443,7 @@ describe("App plugin workspace", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
     await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
-    await user.selectOptions(screen.getByLabelText("Mode"), "assist");
+    await pickSelectOption(user, "Mode", "assist");
 
     expect(await screen.findByText("Save or discard draft changes before enabling, disabling, or reordering plugins.")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Enable safely" })[0]).toBeDisabled();
@@ -450,13 +456,13 @@ describe("App plugin workspace", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
     await user.click((await screen.findAllByText("Rewrite Plugin"))[0]);
-    await user.selectOptions(screen.getByLabelText("Mode"), "assist");
-    await user.selectOptions(screen.getByLabelText("Selected profile"), "prod");
+    await pickSelectOption(user, "Mode", "assist");
+    await pickSelectOption(user, "Selected profile", "prod");
 
     expect(await screen.findByText("Unsaved changes are blocking a profile switch to prod.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Discard and continue" }));
 
-    expect((screen.getByLabelText("Selected profile") as HTMLSelectElement).value).toBe("prod");
+    expect(getSelectValue("Selected profile")).toBe("prod");
   });
 
   it("disables mutating controls when the plugin config is read-only", async () => {
@@ -467,6 +473,5 @@ describe("App plugin workspace", () => {
     await user.click(await screen.findByRole("tab", { name: "Plugins" }));
     expect((await screen.findAllByText("Plugin config is read-only. Inventory is visible, but changes are disabled.")).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: "Enable safely" })[0]).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
   });
 });

@@ -22,29 +22,42 @@ export function fmtClient(clientName: string, locale: Locale): string {
   return map[clientName] ?? c.unknown;
 }
 
+export function deriveDirection(lifecycle: string): string {
+  if (lifecycle === "pre_request") return "inbound";
+  if (lifecycle === "post_response" || lifecycle === "stream") return "outbound";
+  if (lifecycle === "pre_and_post" || lifecycle === "pre_and_stream") return "both";
+  return "idle";
+}
+
 export function fmtLifecycle(lifecycle: string, locale: Locale): string {
   const c = getCopy(locale).common;
   const map: Record<string, string> = {
-    none: c.noIntervention,
-    pre_request: c.preRequest,
-    post_response: c.postResponse,
-    pre_and_post: c.preAndPost,
-    stream: c.stream,
-    pre_and_stream: c.preAndStream,
+    idle: c.dirIdle,
+    inbound: c.dirInbound,
+    outbound: c.dirOutbound,
+    both: c.dirBoth,
   };
-  return map[lifecycle] ?? (lifecycle || c.unknown);
+  return map[deriveDirection(lifecycle)] ?? (lifecycle || c.unknown);
 }
 
-export function fmtImpact(impact: string, locale: Locale): string {
+export function deriveResult(status: string, impact: string): string {
+  if (status === "blocked") return "denied";
+  if (status === "error") return "error";
+  if (impact === "modified" || impact === "mixed") return "edited";
+  if (impact === "warned") return "flagged";
+  return "clean";
+}
+
+export function fmtResult(status: string, impact: string, locale: Locale): string {
   const c = getCopy(locale).common;
   const map: Record<string, string> = {
-    pass_through: c.passThrough,
-    modified: c.modified,
-    blocked: c.blocked,
-    warned: c.warned,
-    mixed: c.mixed,
+    clean: c.impactClean,
+    edited: c.impactEdited,
+    denied: c.impactDenied,
+    flagged: c.impactFlagged,
+    error: c.impactError,
   };
-  return map[impact] ?? impact;
+  return map[deriveResult(status, impact)] ?? status;
 }
 
 export function fmtAction(action: string, locale: Locale): string {

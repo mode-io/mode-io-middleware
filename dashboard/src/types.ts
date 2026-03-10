@@ -129,17 +129,18 @@ export interface EventsResponse {
   nextCursor: number | null;
 }
 
-export type MonitorFilterKey = "status" | "clientName" | "impact" | "lifecycle";
-export type MonitorStatusFilter = "all" | TraceStatus;
+export type DisplayResult = "clean" | "edited" | "flagged" | "denied" | "error";
+export type DisplayDirection = "idle" | "inbound" | "outbound" | "both";
+
+export type MonitorFilterKey = "result" | "clientName" | "direction";
+export type MonitorResultFilter = "all" | DisplayResult;
 export type MonitorClientFilter = "all" | ClientName;
-export type MonitorImpactFilter = "all" | TraceImpact;
-export type MonitorLifecycleFilter = "all" | TraceLifecycle;
+export type MonitorDirectionFilter = "all" | DisplayDirection;
 
 export interface MonitorFilters {
-  status: MonitorStatusFilter;
+  result: MonitorResultFilter;
   clientName: MonitorClientFilter;
-  impact: MonitorImpactFilter;
-  lifecycle: MonitorLifecycleFilter;
+  direction: MonitorDirectionFilter;
 }
 
 export type PluginValidationStatus = "ok" | "warn" | "error";

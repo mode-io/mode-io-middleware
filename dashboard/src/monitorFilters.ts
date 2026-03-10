@@ -1,33 +1,56 @@
-import { fmtClient, fmtImpact, fmtLifecycle, fmtStatus, getCopy } from "./i18n";
+import { deriveDirection, deriveResult, fmtClient, getCopy } from "./i18n";
 import type {
+  DisplayDirection,
+  DisplayResult,
   EventSummary,
   Locale,
   MonitorClientFilter,
+  MonitorDirectionFilter,
   MonitorFilterKey,
   MonitorFilters,
-  MonitorImpactFilter,
-  MonitorLifecycleFilter,
-  MonitorStatusFilter,
+  MonitorResultFilter,
 } from "./types";
 
 export const DEFAULT_FILTERS: MonitorFilters = {
-  status: "all",
+  result: "all",
   clientName: "all",
-  impact: "all",
-  lifecycle: "all",
+  direction: "all",
 };
 
 export const FILTER_OPTIONS: {
-  status: MonitorStatusFilter[];
+  result: MonitorResultFilter[];
   clientName: MonitorClientFilter[];
-  impact: MonitorImpactFilter[];
-  lifecycle: MonitorLifecycleFilter[];
+  direction: MonitorDirectionFilter[];
 } = {
-  status: ["all", "completed", "blocked", "error", "stream_completed"],
+  result: ["all", "clean", "edited", "flagged", "denied", "error"],
   clientName: ["all", "codex", "opencode", "openclaw", "claude_code", "unknown"],
-  impact: ["all", "pass_through", "modified", "blocked", "warned", "mixed"],
-  lifecycle: ["all", "none", "pre_request", "post_response", "pre_and_post", "stream", "pre_and_stream"],
+  direction: ["all", "idle", "inbound", "outbound", "both"],
 };
+
+const RESULT_TO_PARAMS: Record<DisplayResult, { status?: string; impact?: string }> = {
+  clean: { impact: "pass_through" },
+  edited: { impact: "modified" },
+  flagged: { impact: "warned" },
+  denied: { status: "blocked" },
+  error: { status: "error" },
+};
+
+const DIRECTION_TO_LIFECYCLES: Record<DisplayDirection, string[]> = {
+  idle: ["none"],
+  inbound: ["pre_request"],
+  outbound: ["post_response", "stream"],
+  both: ["pre_and_post", "pre_and_stream"],
+};
+
+export function resultFilterToQueryParams(result: MonitorResultFilter): { status?: string; impact?: string } {
+  if (result === "all") return {};
+  return RESULT_TO_PARAMS[result] ?? {};
+}
+
+export function directionFilterToLifecycles(direction: MonitorDirectionFilter): string[] | null {
+  if (direction === "all") return null;
+  return DIRECTION_TO_LIFECYCLES[direction] ?? null;
+}
 
 export function setFilterValue<K extends MonitorFilterKey>(
   filters: MonitorFilters,
@@ -53,10 +76,9 @@ export function matchesMonitorFilters(
   filters: MonitorFilters,
 ): boolean {
   return (
-    (filters.status === "all" || event.status === filters.status) &&
+    (filters.result === "all" || deriveResult(event.status, event.impact) === filters.result) &&
     (filters.clientName === "all" || event.clientName === filters.clientName) &&
-    (filters.impact === "all" || event.impact === filters.impact) &&
-    (filters.lifecycle === "all" || event.lifecycle === filters.lifecycle)
+    (filters.direction === "all" || deriveDirection(event.lifecycle) === filters.direction)
   );
 }
 
@@ -71,17 +93,29 @@ export function formatFilterValue(key: MonitorFilterKey, value: MonitorFilters[M
     return copy.filters.all;
   }
 
-  if (key === "status") {
-    return fmtStatus(value, locale);
+  if (key === "result") {
+    const c = copy.common;
+    const map: Record<string, string> = {
+      clean: c.impactClean,
+      edited: c.impactEdited,
+      flagged: c.impactFlagged,
+      denied: c.impactDenied,
+      error: c.impactError,
+    };
+    return map[value] ?? value;
   }
   if (key === "clientName") {
     return fmtClient(value, locale);
   }
-  if (key === "lifecycle") {
-    return fmtLifecycle(value, locale);
-  }
-  if (key === "impact") {
-    return fmtImpact(value, locale);
+  if (key === "direction") {
+    const c = copy.common;
+    const map: Record<string, string> = {
+      idle: c.dirIdle,
+      inbound: c.dirInbound,
+      outbound: c.dirOutbound,
+      both: c.dirBoth,
+    };
+    return map[value] ?? value;
   }
   return value;
 }
@@ -89,10 +123,9 @@ export function formatFilterValue(key: MonitorFilterKey, value: MonitorFilters[M
 export function formatFilterChip(key: MonitorFilterKey, value: MonitorFilters[MonitorFilterKey], locale: Locale): string {
   const copy = getCopy(locale);
   const labelByKey: Record<MonitorFilterKey, string> = {
-    status: copy.filters.status,
+    result: copy.filters.result,
     clientName: copy.filters.client,
-    lifecycle: copy.filters.lifecycle,
-    impact: copy.filters.impact,
+    direction: copy.filters.direction,
   };
 
   return `${labelByKey[key]}: ${formatFilterValue(key, value, locale)}`;

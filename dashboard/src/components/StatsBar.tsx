@@ -1,6 +1,6 @@
 import { getCopy } from "../i18n";
 import { setFilterValue } from "../monitorFilters";
-import type { Locale, MonitorFilters, MonitorImpactFilter, MonitorStatusFilter, StatsSnapshot } from "../types";
+import type { DisplayResult, Locale, MonitorFilters, StatsSnapshot } from "../types";
 import { formatDuration } from "../utils";
 
 interface StatsBarProps {
@@ -24,20 +24,16 @@ function Stat({
   onClick?: () => void;
 }) {
   const cls = `statsbar__stat${accent ? ` statsbar__stat--${accent}` : ""}${active ? " statsbar__stat--active" : ""}`;
-  if (onClick) {
-    return (
-      <button className={cls} onClick={onClick} type="button">
-        <span className="statsbar__label">{label}</span>
-        <strong className="statsbar__value">{value}</strong>
-      </button>
-    );
-  }
-  return (
-    <div className={cls}>
+  const inner = (
+    <>
       <span className="statsbar__label">{label}</span>
       <strong className="statsbar__value">{value}</strong>
-    </div>
+    </>
   );
+  if (onClick) {
+    return <button className={cls} onClick={onClick} type="button">{inner}</button>;
+  }
+  return <div className={cls}>{inner}</div>;
 }
 
 export function StatsBar({ locale, stats, filters, onFiltersChange }: StatsBarProps) {
@@ -51,12 +47,8 @@ export function StatsBar({ locale, stats, filters, onFiltersChange }: StatsBarPr
   const errorCount = stats.byStatus["error"] ?? 0;
   const modifiedCount = stats.byImpact["modified"] ?? 0;
 
-  function toggleStatusFilter(status: MonitorStatusFilter) {
-    onFiltersChange(setFilterValue(filters, "status", filters.status === status ? "all" : status));
-  }
-
-  function toggleImpactFilter(impact: MonitorImpactFilter) {
-    onFiltersChange(setFilterValue(filters, "impact", filters.impact === impact ? "all" : impact));
+  function toggleResultFilter(result: DisplayResult) {
+    onFiltersChange(setFilterValue(filters, "result", filters.result === result ? "all" : result));
   }
 
   return (
@@ -67,22 +59,22 @@ export function StatsBar({ locale, stats, filters, onFiltersChange }: StatsBarPr
         label={copy.stats.modified}
         value={modifiedCount}
         accent="warn"
-        active={filters.impact === "modified"}
-        onClick={() => toggleImpactFilter("modified")}
+        active={filters.result === "edited"}
+        onClick={() => toggleResultFilter("edited")}
       />
       <Stat
         label={copy.stats.blocked}
         value={blockedCount}
         accent="danger"
-        active={filters.status === "blocked"}
-        onClick={() => toggleStatusFilter("blocked")}
+        active={filters.result === "denied"}
+        onClick={() => toggleResultFilter("denied")}
       />
       <Stat
         label={copy.stats.errors}
         value={errorCount}
         accent="danger"
-        active={filters.status === "error"}
-        onClick={() => toggleStatusFilter("error")}
+        active={filters.result === "error"}
+        onClick={() => toggleResultFilter("error")}
       />
       <Stat label={copy.stats.p50} value={formatDuration(stats.latencyMs.p50, locale)} />
       <Stat label={copy.stats.p95} value={formatDuration(stats.latencyMs.p95, locale)} />
