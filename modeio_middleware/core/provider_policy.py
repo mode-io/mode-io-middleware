@@ -258,11 +258,12 @@ class OpenCodeRoutePolicy:
 
 def resolve_opencode_route_policy(
     *,
-    config: Mapping[str, Any],
+    config: Mapping[str, Any] | None,
     auth_store: Mapping[str, Any],
     default_upstream_base_url: str | None,
 ) -> OpenCodeRoutePolicy:
-    model_name = config.get("model")
+    config_obj = config if isinstance(config, Mapping) else {}
+    model_name = config_obj.get("model")
     provider_id = None
     if isinstance(model_name, str) and "/" in model_name:
         prefix, _ = model_name.split("/", 1)
@@ -276,7 +277,7 @@ def resolve_opencode_route_policy(
         )
 
     normalized_provider = normalize_provider_id(provider_id)
-    provider_root = config.get("provider")
+    provider_root = config_obj.get("provider")
     provider_obj = provider_root.get(provider_id) if isinstance(provider_root, Mapping) else None
     upstream_base_url = provider_base_url(provider_obj)
     if not upstream_base_url or is_loopback_base_url(upstream_base_url):

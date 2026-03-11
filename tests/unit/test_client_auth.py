@@ -35,6 +35,19 @@ from modeio_middleware.core.provider_auth import (  # noqa: E402
 
 
 class TestClientAuth(unittest.TestCase):
+    def _patch_temp_home(self, temp_dir: str):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "HOME": temp_dir,
+                "XDG_CONFIG_HOME": str(Path(temp_dir) / ".config"),
+                "XDG_CACHE_HOME": str(Path(temp_dir) / ".cache"),
+                "XDG_DATA_HOME": str(Path(temp_dir) / ".local" / "share"),
+                "XDG_STATE_HOME": str(Path(temp_dir) / ".local" / "state"),
+            },
+            clear=False,
+        )
+
     def _write_openclaw_selected_provider(
         self,
         *,
@@ -189,7 +202,7 @@ class TestClientAuth(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+            with self._patch_temp_home(temp_dir):
                 authorization = resolve_client_upstream_authorization(
                     {},
                     client_name=CLIENT_OPENCODE,
@@ -229,12 +242,9 @@ class TestClientAuth(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.dict(
+            with self._patch_temp_home(temp_dir), mock.patch.dict(
                 os.environ,
-                {
-                    "HOME": temp_dir,
-                    "OPENCODE_API_KEY": "sk-opencode-provider",
-                },
+                {"OPENCODE_API_KEY": "sk-opencode-provider"},
                 clear=False,
             ):
                 authorization = resolve_client_upstream_authorization(
@@ -279,7 +289,7 @@ class TestClientAuth(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+            with self._patch_temp_home(temp_dir):
                 authorization = resolve_client_upstream_authorization(
                     {},
                     client_name=CLIENT_OPENCODE,
@@ -313,9 +323,9 @@ class TestClientAuth(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.dict(
+            with self._patch_temp_home(temp_dir), mock.patch.dict(
                 os.environ,
-                {"HOME": temp_dir, "OPENCODE_API_KEY": "sk-opencode-provider"},
+                {"OPENCODE_API_KEY": "sk-opencode-provider"},
                 clear=False,
             ):
                 inspection = inspect_opencode_native_auth("opencode")
@@ -360,7 +370,7 @@ class TestClientAuth(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+            with self._patch_temp_home(temp_dir):
                 inspection = inspect_opencode_native_auth("openai")
 
         self.assertFalse(inspection["ready"])
@@ -419,7 +429,7 @@ class TestClientAuth(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.dict(os.environ, {"HOME": temp_dir}, clear=False):
+            with self._patch_temp_home(temp_dir):
                 inspection = inspect_opencode_native_auth("openai")
 
         self.assertFalse(inspection["ready"])
