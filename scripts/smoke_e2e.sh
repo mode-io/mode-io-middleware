@@ -129,29 +129,6 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
-resolve_live_upstream_fields() {
-  "$PYTHON_BIN" - "$REPO_ROOT" <<'PY'
-import sys
-from pathlib import Path
-
-repo_root = Path(sys.argv[1])
-sys.path.insert(0, str(repo_root))
-
-from modeio_middleware.cli.setup_lib.upstream import resolve_live_upstream_selection
-
-selection = resolve_live_upstream_selection()
-if not selection.get("ready"):
-    raise SystemExit(
-        "[smoke] missing reusable live upstream for openai-compatible smoke "
-        f"(source={selection.get('source')} base={selection.get('baseUrl')} model={selection.get('model')}). "
-        "Set MODEIO_GATEWAY_UPSTREAM_BASE_URL/MODEL with a key, reuse an existing remote OpenCode/OpenClaw config, or set OPENAI_API_KEY."
-    )
-
-for key in ("baseUrl", "model", "apiKey", "source", "provider"):
-    print(selection.get(key) or "")
-PY
-}
-
 check_json_field() {
   local file="$1"
   local code="$2"
@@ -225,6 +202,37 @@ config_path.parent.mkdir(parents=True, exist_ok=True)
 models_cache_path.parent.mkdir(parents=True, exist_ok=True)
 config_path.write_text(json.dumps(config_payload, indent=2) + "\n", encoding="utf-8")
 models_cache_path.write_text(json.dumps(cache_payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+seed_opencode_state() {
+  local config_path="$1"
+
+  "$PYTHON_BIN" - "$config_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(
+    json.dumps(
+        {
+            "model": "openai/gpt-4.1",
+            "provider": {
+                "openai": {
+                    "options": {
+                        "apiKey": "sk-opencode-test",
+                        "baseURL": "https://api.openai.com/v1",
+                    }
+                }
+            },
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
 PY
 }
 
@@ -321,6 +329,7 @@ run_setup_smoke() {
 
   seed_openclaw_family_state "$openai_cfg" "$openai_models" "openai-completions"
   seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models" "anthropic-messages"
+  seed_opencode_state "$opencode_json"
 
   log "running setup/uninstall smoke (temp config paths)"
   (
@@ -333,7 +342,6 @@ run_setup_smoke() {
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --apply-opencode \
-      --create-opencode-config \
       --opencode-config-path "$opencode_json" \
       --apply-openclaw \
       --openclaw-config-path "$openai_cfg" \

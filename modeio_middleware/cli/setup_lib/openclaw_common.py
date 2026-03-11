@@ -301,7 +301,7 @@ def _legacy_previous_primary(existing_route_metadata: Dict[str, Any]) -> str | N
     return None
 
 
-def _normalize_api_family(provider_key: str, *provider_objects: Any) -> str:
+def _normalize_api_family(provider_key: str, *provider_objects: Any) -> str | None:
     for provider_object in provider_objects:
         if not isinstance(provider_object, dict):
             continue
@@ -311,9 +311,9 @@ def _normalize_api_family(provider_key: str, *provider_objects: Any) -> str:
     normalized_provider = _normalize_provider_id(provider_key)
     if normalized_provider == "anthropic":
         return "anthropic-messages"
-    if normalized_provider == "openai-codex":
-        return "openai-codex-responses"
-    return "openai-completions"
+    if normalized_provider == "openai":
+        return "openai-completions"
+    return None
 
 
 def _preserve_provider_metadata(existing_route_metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -341,5 +341,3 @@ def _preserve_metadata_entry(
         return {}
     entry = providers.get(provider_id)
     return copy.deepcopy(entry) if isinstance(entry, dict) else {}
-
-

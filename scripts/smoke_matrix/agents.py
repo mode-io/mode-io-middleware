@@ -33,14 +33,17 @@ def build_agent_command(
         ]
 
     if agent == "opencode":
-        opencode_model = model if "/" in model else f"openai/{model}"
+        if "/" not in model:
+            raise ValueError(
+                "OpenCode smoke requires an exact provider/model selection"
+            )
         return [
             "opencode",
             "run",
             "--format",
             "json",
             "--model",
-            opencode_model,
+            model,
             "--dir",
             str(repo_root),
             prompt,

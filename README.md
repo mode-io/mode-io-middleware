@@ -92,8 +92,8 @@ That flow keeps dev config and discovered plugins under `./.modeio-dev/` instead
 
 ```bash
 export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
-modeio-middleware-setup --apply-opencode --create-opencode-config
-modeio-middleware-setup --apply-openclaw --create-openclaw-config
+modeio-middleware-setup --apply-opencode
+modeio-middleware-setup --apply-openclaw
 modeio-middleware-setup --apply-claude --create-claude-settings
 ```
 

@@ -320,6 +320,25 @@ class TestSetupGateway(unittest.TestCase):
         self.assertFalse(result["supported"])
         self.assertEqual(result["reason"], "missing_upstream_base_url")
 
+    def test_apply_opencode_config_file_requires_active_provider(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "opencode.json"
+            path.write_text(
+                json.dumps({"provider": {"openai": {"options": {}}}}),
+                encoding="utf-8",
+            )
+
+            result = apply_opencode_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=False,
+                env={"HOME": temp_dir},
+            )
+
+        self.assertFalse(result["changed"])
+        self.assertFalse(result["supported"])
+        self.assertEqual(result["reason"], "missing_active_provider")
+
     def test_default_opencode_config_path_windows_prefers_appdata(self):
         path = default_opencode_config_path(
             os_name="windows",
@@ -677,6 +696,20 @@ class TestSetupGateway(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(updated, source)
 
+    def test_apply_openclaw_config_file_does_not_create_empty_file_when_route_is_unsupported(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "openclaw.json"
+
+            result = apply_openclaw_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=True,
+            )
+
+        self.assertFalse(result["supported"])
+        self.assertFalse(result["created"])
+        self.assertFalse(path.exists())
+
     def test_apply_and_uninstall_claude_settings_file(self):
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "settings.json"
@@ -725,6 +758,7 @@ class TestSetupGateway(unittest.TestCase):
         payload = json.loads(out.getvalue())
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error"]["type"], "validation_error")
+        self.assertIn("no longer supported", payload["error"]["message"])
 
     def test_main_json_validation_error_for_claude_create(self):
         out = io.StringIO()
@@ -740,6 +774,7 @@ class TestSetupGateway(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error"]["type"], "validation_error")
+        self.assertIn("no longer supported", payload["error"]["message"])
 
     def test_main_json_openclaw_apply_uses_explicit_temp_path(self):
         with TemporaryDirectory() as temp_dir:
@@ -747,16 +782,15 @@ class TestSetupGateway(unittest.TestCase):
             code, payload = self._run_main_json(
                 [
                     "--apply-openclaw",
-                    "--create-openclaw-config",
                     "--openclaw-config-path",
                     str(openclaw_path),
                 ]
             )
-            self.assertEqual(code, 0)
-            self.assertTrue(payload["success"])
-            self.assertIsNotNone(payload["openclaw"])
-            self.assertTrue(openclaw_path.exists())
-            self.assertIsNotNone(payload["openclaw"].get("modelsCache"))
+            self.assertEqual(code, 1)
+            self.assertFalse(payload["success"])
+            self.assertIsNone(payload.get("openclaw"))
+            self.assertFalse(openclaw_path.exists())
+            self.assertIn("existing, working OpenClaw config", payload["error"]["message"])
 
     def test_main_json_doctor_reports_required_checks(self):
         with TemporaryDirectory() as temp_dir:
@@ -788,6 +822,8 @@ class TestSetupGateway(unittest.TestCase):
         self.assertNotIn("upstreamApiKey", payload)
         self.assertNotIn("liveUpstream", payload)
         self.assertGreaterEqual(len(payload["checks"]), 1)
+        self.assertIn("routeSupport", payload["opencode"])
+        self.assertIn("routeSupport", payload["openclaw"])
 
     def test_main_json_doctor_fails_when_required_command_missing(self):
         code, payload = self._run_main_json(
@@ -830,6 +866,24 @@ class TestSetupGateway(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error"]["type"], "validation_error")
+
+    def test_main_json_setup_fails_when_openclaw_route_is_unsupported(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "openclaw.json"
+            config_path.write_text("{}", encoding="utf-8")
+            code, payload = self._run_main_json(
+                [
+                    "--apply-openclaw",
+                    "--openclaw-config-path",
+                    str(config_path),
+                    "--openclaw-models-cache-path",
+                    str(Path(temp_dir) / "models.json"),
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["success"])
+        self.assertFalse(payload["openclaw"]["supported"])
 
 
 if __name__ == "__main__":

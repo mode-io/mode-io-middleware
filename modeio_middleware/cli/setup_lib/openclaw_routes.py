@@ -85,6 +85,16 @@ def _resolve_preserve_provider_target(
         models_cache_provider_obj,
         metadata_entry,
     )
+    if not api_family:
+        return {
+            "supported": False,
+            "reason": "missing_api_family",
+            "currentPrimary": current_primary,
+            "providerId": normalized_provider_id,
+            "providerKey": provider_key,
+            "modelId": model_id,
+            "apiFamily": None,
+        }
     if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
         return {
             "supported": False,
@@ -726,4 +736,3 @@ def _remove_managed_models_cache_provider(
     else:
         updated["providers"] = providers_obj
     return updated, True, removed_base_url, "removed"
-

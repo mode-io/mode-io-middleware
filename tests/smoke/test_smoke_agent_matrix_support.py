@@ -110,19 +110,10 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(args.opencode_model, "")
         self.assertEqual(args.install_mode, "repo")
         self.assertEqual(args.install_target, "")
-        self.assertEqual(
-            args.openclaw_families,
-            "openai-completions,anthropic-messages",
-        )
-        self.assertEqual(args.openclaw_anthropic_provider, "anthropic")
-        self.assertEqual(
-            args.openclaw_anthropic_model,
-            "anthropic/claude-sonnet-4-6",
-        )
-        self.assertEqual(
-            args.openclaw_anthropic_base_url,
-            "https://api.anthropic.com",
-        )
+        self.assertEqual(args.openclaw_families, "current")
+        self.assertEqual(args.openclaw_anthropic_provider, "")
+        self.assertEqual(args.openclaw_anthropic_model, "")
+        self.assertEqual(args.openclaw_anthropic_base_url, "")
 
     def test_parse_args_accepts_wheel_install_mode(self):
         args = parse_args(
@@ -229,7 +220,6 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             resolved = resolve_opencode_smoke_model(
                 config_path=config_path,
                 state_path=state_path,
-                fallback_model="openai/gpt-4o-mini",
             )
 
             self.assertEqual(resolved, "openai/gpt-5.4")
@@ -257,31 +247,31 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             resolved = resolve_opencode_smoke_model(
                 config_path=config_path,
                 state_path=state_path,
-                fallback_model="openai/gpt-4o-mini",
             )
 
             self.assertEqual(resolved, "openai/gpt-5.4")
 
-    def test_resolve_opencode_smoke_model_uses_fallback_when_state_missing(self):
+    def test_resolve_opencode_smoke_model_raises_when_state_missing(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "opencode.json"
             state_path = root / "model.json"
             config_path.write_text("{}", encoding="utf-8")
 
-            resolved = resolve_opencode_smoke_model(
-                config_path=config_path,
-                state_path=state_path,
-                fallback_model="openai/gpt-4o-mini",
-            )
-
-            self.assertEqual(resolved, "openai/gpt-4o-mini")
+            with self.assertRaises(ValueError):
+                resolve_opencode_smoke_model(
+                    config_path=config_path,
+                    state_path=state_path,
+                )
 
     def test_parse_openclaw_families_rejects_invalid_values(self):
         with self.assertRaises(ValueError):
             _parse_openclaw_families("openai-completions,unsupported-family")
 
-    def test_resolve_openclaw_family_scenarios_prefers_matching_openai_provider(self):
+    def test_parse_openclaw_families_accepts_current_mode(self):
+        self.assertEqual(_parse_openclaw_families("current"), ("current",))
+
+    def test_resolve_openclaw_family_scenarios_follows_current_primary_only(self):
         with TemporaryDirectory() as temp_dir:
             paths = build_sandbox_paths(Path(temp_dir))
             paths["openclaw_config"].parent.mkdir(parents=True, exist_ok=True)
@@ -291,7 +281,21 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                     {
                         "agents": {
                             "defaults": {
-                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                                "model": {"primary": "zenmux/gpt-5.3-codex"}
+                            }
+                        },
+                        "models": {
+                            "providers": {
+                                "anthropic": {
+                                    "api": "anthropic-messages",
+                                    "baseUrl": "https://api.anthropic.com",
+                                    "models": [
+                                        {
+                                            "id": "anthropic/claude-sonnet-4-6",
+                                            "name": "Claude Sonnet 4.6",
+                                        }
+                                    ],
+                                }
                             }
                         }
                     }
@@ -303,11 +307,6 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                     {
                         "models": {
                             "providers": {
-                                "openrouter": {
-                                    "api": "openai-completions",
-                                    "baseUrl": "https://openrouter.ai/api/v1",
-                                    "models": [{"id": "auto", "name": "Auto"}],
-                                },
                                 "zenmux": {
                                     "api": "openai-completions",
                                     "baseUrl": "https://zenmux.ai/api/v1",
@@ -324,15 +323,21 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            auth_profiles_path = paths["openclaw_models_cache"].parent / "auth-profiles.json"
-            auth_profiles_path.write_text(
+            paths["openclaw_config"].with_name("openclaw.json.modeio-route.json").write_text(
                 json.dumps(
                     {
-                        "profiles": {
-                            "anthropic:manual": {
-                                "provider": "anthropic",
-                                "type": "manual",
-                                "token": "redacted-for-test",
+                        "providers": {
+                            "zenmux": {
+                                "providerId": "zenmux",
+                                "providerKey": "zenmux",
+                                "apiFamily": "openai-completions",
+                                "originalBaseUrl": "https://zenmux.ai/api/v1",
+                            },
+                            "anthropic": {
+                                "providerId": "anthropic",
+                                "providerKey": "anthropic",
+                                "apiFamily": "anthropic-messages",
+                                "originalBaseUrl": "https://api.anthropic.com",
                             }
                         }
                     }
@@ -340,45 +345,21 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            args = parse_args(
-                [
-                    "--model",
-                    "openai/gpt-5.4",
-                    "--openclaw-openai-model",
-                    "openai/gpt-5.3-codex",
-                ]
-            )
+            args = parse_args([])
             scenarios = _resolve_openclaw_family_scenarios(paths=paths, args=args)
 
-            openai_scenario = next(
-                item for item in scenarios if item.get("family") == "openai-completions"
-            )
-            self.assertEqual(openai_scenario["providerKey"], "zenmux")
-            self.assertEqual(openai_scenario["modelRef"], "zenmux/gpt-5.3-codex")
+            self.assertEqual(len(scenarios), 1)
+            scenario = scenarios[0]
+            self.assertEqual(scenario["family"], "openai-completions")
+            self.assertEqual(scenario["providerKey"], "zenmux")
+            self.assertEqual(scenario["modelRef"], "zenmux/gpt-5.3-codex")
             self.assertEqual(
-                openai_scenario["realBaseUrl"],
+                scenario["realBaseUrl"],
                 "https://zenmux.ai/api/v1",
             )
-            self.assertEqual(openai_scenario["source"], "existing_provider")
+            self.assertEqual(scenario["source"], "current_primary")
 
-            anthropic_scenario = next(
-                item for item in scenarios if item.get("family") == "anthropic-messages"
-            )
-            self.assertEqual(anthropic_scenario["providerKey"], "anthropic")
-            self.assertEqual(
-                anthropic_scenario["modelRef"],
-                "anthropic/claude-sonnet-4-6",
-            )
-            self.assertEqual(
-                anthropic_scenario["realBaseUrl"],
-                "https://api.anthropic.com",
-            )
-            self.assertEqual(
-                anthropic_scenario["source"],
-                "synthesized_from_auth_profile",
-            )
-
-    def test_resolve_openclaw_family_scenarios_prefers_specific_openai_provider_over_auto(self):
+    def test_resolve_openclaw_family_scenarios_skips_when_current_family_unsupported(self):
         with TemporaryDirectory() as temp_dir:
             paths = build_sandbox_paths(Path(temp_dir))
             paths["openclaw_config"].parent.mkdir(parents=True, exist_ok=True)
@@ -403,7 +384,7 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                                 "openrouter": {
                                     "api": "openai-completions",
                                     "baseUrl": "https://openrouter.ai/api/v1",
-                                    "models": [{"id": "auto", "name": "Auto"}],
+                                    "models": [{"id": "gpt-5.4", "name": "GPT 5.4"}],
                                 },
                                 "zenmux": {
                                     "api": "openai-completions",
@@ -419,11 +400,6 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                         }
                     }
                 ),
-                encoding="utf-8",
-            )
-            auth_profiles_path = paths["openclaw_models_cache"].parent / "auth-profiles.json"
-            auth_profiles_path.write_text(
-                json.dumps({"profiles": {}}),
                 encoding="utf-8",
             )
 
@@ -432,14 +408,59 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                 args=parse_args([]),
             )
 
-            openai_scenario = next(
-                item for item in scenarios if item.get("family") == "openai-completions"
+            self.assertEqual(len(scenarios), 1)
+            scenario = scenarios[0]
+            self.assertTrue(scenario["skipped"])
+            self.assertEqual(scenario["reason"], "unsupported_current_family")
+
+    def test_resolve_openclaw_family_scenarios_requires_current_primary_to_match_explicit_family(self):
+        with TemporaryDirectory() as temp_dir:
+            paths = build_sandbox_paths(Path(temp_dir))
+            paths["openclaw_config"].parent.mkdir(parents=True, exist_ok=True)
+            paths["openclaw_models_cache"].parent.mkdir(parents=True, exist_ok=True)
+            paths["openclaw_config"].write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai-codex/gpt-5.3-codex"}
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
             )
-            self.assertEqual(openai_scenario["providerKey"], "zenmux")
-            self.assertEqual(
-                openai_scenario["realBaseUrl"],
-                "https://zenmux.ai/api/v1",
+            paths["openclaw_models_cache"].write_text(
+                json.dumps(
+                    {
+                        "models": {
+                            "providers": {
+                                "zenmux": {
+                                    "api": "openai-completions",
+                                    "baseUrl": "https://zenmux.ai/api/v1",
+                                    "models": [
+                                        {
+                                            "id": "openai/gpt-5.3-codex",
+                                            "name": "GPT 5.3 Codex",
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
             )
+
+            scenarios = _resolve_openclaw_family_scenarios(
+                paths=paths,
+                args=parse_args(["--openclaw-families", "openai-completions"]),
+            )
+
+            self.assertEqual(len(scenarios), 1)
+            scenario = scenarios[0]
+            self.assertTrue(scenario["error"])
+            self.assertEqual(scenario["reason"], "current_primary_family_mismatch")
 
     def test_configure_openclaw_supported_family_updates_config_and_cache(self):
         with TemporaryDirectory() as temp_dir:

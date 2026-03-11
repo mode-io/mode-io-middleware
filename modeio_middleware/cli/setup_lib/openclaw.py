@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from modeio_middleware.cli.setup_lib.openclaw_common import (
-    OPENCLAW_AUTH_MODE_MANAGED,
     OPENCLAW_AUTH_MODE_NATIVE,
     OPENCLAW_CONFIG_FILENAMES,
     OPENCLAW_DEFAULT_API_KEY,
@@ -28,7 +27,6 @@ from modeio_middleware.cli.setup_lib.openclaw_transaction import (
 )
 
 __all__ = [
-    'OPENCLAW_AUTH_MODE_MANAGED',
     'OPENCLAW_AUTH_MODE_NATIVE',
     'OPENCLAW_CONFIG_FILENAMES',
     'OPENCLAW_DEFAULT_API_KEY',

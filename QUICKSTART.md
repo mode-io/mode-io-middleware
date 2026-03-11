@@ -73,8 +73,7 @@ export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
 
 ```bash
 modeio-middleware-setup \
-  --apply-opencode \
-  --create-opencode-config
+  --apply-opencode
 ```
 
 This works for redirectable OpenCode providers. If the active provider is built-in `openai` authenticated through ChatGPT OAuth, setup will report that the provider stays outside middleware preserve-provider mode.
@@ -83,8 +82,7 @@ This works for redirectable OpenCode providers. If the active provider is built-
 
 ```bash
 modeio-middleware-setup \
-  --apply-openclaw \
-  --create-openclaw-config
+  --apply-openclaw
 ```
 
 ### Claude Code

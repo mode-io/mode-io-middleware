@@ -352,6 +352,20 @@ def _context_upstream_plan(
     normalized_provider = normalize_provider_id(provider_id)
     metadata: dict[str, Any] = {"providerId": normalized_provider}
     if client_name == CLIENT_OPENCLAW:
+        if normalized_provider == PROVIDER_OPENAI_CODEX:
+            return ResolvedUpstreamPlan(
+                provider_id=normalized_provider,
+                transport_kind=TRANSPORT_CODEX_NATIVE,
+                api_family="openai-codex-responses",
+                unsupported_family="openai-codex-responses",
+                supported_families=tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES)),
+                metadata={
+                    **metadata,
+                    "apiFamily": "openai-codex-responses",
+                    "unsupportedFamily": True,
+                    "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
+                },
+            )
         api_family = _openclaw_current_api_family(normalized_provider, env)
         upstream_base_url = _openclaw_preserved_upstream_base_url(normalized_provider, env)
         if upstream_base_url:
@@ -544,21 +558,6 @@ def _inspect_codex_store(env: Mapping[str, str]) -> CredentialInspection:
     auth_path = _codex_auth_path(env)
     payload = _read_json_object(auth_path)
     if payload is None:
-        env_api_key = str(env.get("OPENAI_API_KEY") or "").strip()
-        if env_api_key:
-            return _ready(
-                PROVIDER_OPENAI,
-                auth_kind=AUTH_KIND_API_KEY,
-                guaranteed=True,
-                strategy="provider-env",
-                auth_env="OPENAI_API_KEY",
-                authorization=_bearer(env_api_key) or "",
-                transport=TRANSPORT_OPENAI_COMPAT,
-                metadata={
-                    "providerId": PROVIDER_OPENAI,
-                    "upstreamBaseUrl": OPENAI_COMPAT_BASE_URL,
-                },
-            )
         return _missing(
             provider_id,
             strategy="missing",
@@ -1054,7 +1053,7 @@ def _openclaw_current_provider(
 def _openclaw_current_api_family(
     provider_id: str,
     env: Mapping[str, str],
-) -> str:
+) -> str | None:
     metadata = _openclaw_route_provider_metadata(env, provider_id)
     api_family = metadata.get("apiFamily")
     if isinstance(api_family, str) and api_family.strip():
@@ -1084,9 +1083,9 @@ def _openclaw_current_api_family(
     normalized_provider = normalize_provider_id(provider_id)
     if normalized_provider == PROVIDER_ANTHROPIC:
         return "anthropic-messages"
-    if normalized_provider == PROVIDER_OPENAI_CODEX:
-        return "openai-codex-responses"
-    return "openai-completions"
+    if normalized_provider == PROVIDER_OPENAI:
+        return "openai-completions"
+    return None
 
 
 def _openclaw_preserved_upstream_base_url(
@@ -1104,6 +1103,63 @@ def _openclaw_preserved_upstream_base_url(
 class OpenClawSelectionResolver:
     def __init__(self, health_store: CredentialHealthStore):
         del health_store
+
+    def _configured_profile_id(
+        self,
+        *,
+        env: Mapping[str, str],
+        provider_id: str,
+    ) -> str | None:
+        config_payload = _read_json_object(_openclaw_state_dir(env) / "openclaw.json")
+        if not isinstance(config_payload, dict):
+            return None
+        models_obj = config_payload.get("models")
+        providers = models_obj.get("providers") if isinstance(models_obj, dict) else None
+        if not isinstance(providers, dict):
+            return None
+        normalized_provider = normalize_provider_id(provider_id)
+        for candidate_key, candidate_value in providers.items():
+            if normalize_provider_id(candidate_key) != normalized_provider:
+                continue
+            if not isinstance(candidate_value, dict):
+                continue
+            for field_name in ("profile", "preferredProfile"):
+                value = candidate_value.get(field_name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    def _ordered_profile_ids(
+        self,
+        *,
+        env: Mapping[str, str],
+        provider_id: str,
+    ) -> list[str]:
+        config_payload = _read_json_object(_openclaw_state_dir(env) / "openclaw.json")
+        if not isinstance(config_payload, dict):
+            return []
+        auth_obj = config_payload.get("auth")
+        order_obj = auth_obj.get("order") if isinstance(auth_obj, dict) else None
+        if not isinstance(order_obj, dict):
+            return []
+        normalized_provider = normalize_provider_id(provider_id)
+        raw_order = None
+        for candidate_key, candidate_value in order_obj.items():
+            if normalize_provider_id(candidate_key) == normalized_provider:
+                raw_order = candidate_value
+                break
+        if isinstance(raw_order, str) and raw_order.strip():
+            return [raw_order.strip()]
+        if not isinstance(raw_order, list):
+            return []
+        ordered: list[str] = []
+        for value in raw_order:
+            if not isinstance(value, str) or not value.strip():
+                continue
+            profile_id = value.strip()
+            if profile_id not in ordered:
+                ordered.append(profile_id)
+        return ordered
 
     def resolve(
         self,
@@ -1140,22 +1196,62 @@ class OpenClawSelectionResolver:
                 reason="no_profiles",
                 credential=None,
             )
-
-        default_profile = next(
-            (
-                (profile_id, credential)
-                for profile_id, credential in matching
-                if profile_id.endswith(":default")
-            ),
-            None,
+        matching_map = {profile_id: credential for profile_id, credential in matching}
+        configured_profile = self._configured_profile_id(
+            env=env,
+            provider_id=selected_provider,
         )
-        chosen = default_profile or matching[0]
-        reason = "default" if default_profile else "first_available"
+        if configured_profile is not None:
+            configured_credential = matching_map.get(configured_profile)
+            if isinstance(configured_credential, dict):
+                return OpenClawSelection(
+                    provider_id=selected_provider,
+                    profile_id=configured_profile,
+                    reason="configured_profile",
+                    credential=configured_credential,
+                )
+            return OpenClawSelection(
+                provider_id=selected_provider,
+                profile_id=None,
+                reason="configured_profile_missing",
+                credential=None,
+            )
+
+        ordered_profile_ids = self._ordered_profile_ids(
+            env=env,
+            provider_id=selected_provider,
+        )
+        for ordered_profile_id in ordered_profile_ids:
+            ordered_credential = matching_map.get(ordered_profile_id)
+            if isinstance(ordered_credential, dict):
+                return OpenClawSelection(
+                    provider_id=selected_provider,
+                    profile_id=ordered_profile_id,
+                    reason="auth_order",
+                    credential=ordered_credential,
+                )
+        if ordered_profile_ids:
+            return OpenClawSelection(
+                provider_id=selected_provider,
+                profile_id=None,
+                reason="ordered_profile_missing",
+                credential=None,
+            )
+
+        if len(matching) == 1:
+            chosen = matching[0]
+            return OpenClawSelection(
+                provider_id=selected_provider,
+                profile_id=chosen[0],
+                reason="single_profile",
+                credential=chosen[1],
+            )
+
         return OpenClawSelection(
             provider_id=selected_provider,
-            profile_id=chosen[0],
-            reason=reason,
-            credential=chosen[1],
+            profile_id=None,
+            reason="ambiguous_profiles",
+            credential=None,
         )
 
 
@@ -1299,7 +1395,7 @@ def _openclaw_provider_env_inspection(
     provider_id: str,
     env: Mapping[str, str],
     *,
-    api_family: str,
+    api_family: str | None,
 ) -> CredentialInspection | None:
     normalized_provider = normalize_provider_id(provider_id)
     env_candidates: tuple[str, ...] = ()
@@ -1363,6 +1459,23 @@ def _inspect_openclaw_provider(
         requested_provider,
         env,
     )
+    if requested_api_family is None:
+        return _missing(
+            requested_provider,
+            strategy="missing",
+            reason=(
+                f"OpenClaw provider '{requested_provider}' does not expose a supported API family in config, models cache, or route metadata"
+            ),
+            metadata={
+                "providerId": requested_provider,
+                "apiFamily": None,
+                **(
+                    {"upstreamBaseUrl": requested_upstream_base_url}
+                    if requested_upstream_base_url
+                    else {}
+                ),
+            },
+        )
 
     resolver = OpenClawSelectionResolver(health_store or CredentialHealthStore())
     selection = resolver.resolve(env=env, provider_id=provider_id)
@@ -1404,8 +1517,16 @@ def _inspect_openclaw_provider(
             reason="unable to determine current OpenClaw provider"
             if selection.reason == "missing_provider"
             else (
-                "no reusable OpenClaw auth profile, cache API key, or provider env "
-                f"found for provider '{requested_provider}'"
+                f"OpenClaw provider '{requested_provider}' has multiple auth profiles and no exact selected profile is persisted"
+                if selection.reason == "ambiguous_profiles"
+                else (
+                    f"OpenClaw provider '{requested_provider}' references a configured profile that is unavailable"
+                    if selection.reason in {"configured_profile_missing", "ordered_profile_missing"}
+                    else (
+                        "no reusable OpenClaw auth profile, cache API key, or provider env "
+                        f"found for provider '{requested_provider}'"
+                    )
+                )
             ),
             metadata={
                 "providerId": requested_provider,
@@ -1458,8 +1579,22 @@ class GenericProviderAdapter:
 
     def inspect(self, context: AuthContext) -> CredentialInspection:
         if context.client_name == CLIENT_OPENCLAW:
+            if normalize_provider_id(context.provider_id) == PROVIDER_OPENAI_CODEX:
+                return _missing(
+                    context.provider_id,
+                    strategy="unsupported_family",
+                    reason=(
+                        "OpenClaw provider family 'openai-codex-responses' is not supported by middleware yet."
+                    ),
+                    metadata={
+                        "providerId": normalize_provider_id(context.provider_id),
+                        "apiFamily": "openai-codex-responses",
+                        "unsupportedFamily": True,
+                        "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
+                    },
+                )
             api_family = _openclaw_current_api_family(context.provider_id, context.env)
-            if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
+            if api_family is not None and api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
                 metadata = {
                     "providerId": normalize_provider_id(context.provider_id),
                     "apiFamily": api_family,

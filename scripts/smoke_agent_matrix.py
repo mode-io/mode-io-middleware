@@ -38,9 +38,6 @@ from smoke_matrix.common import (
     write_text as _write_text,
 )
 from smoke_matrix.openclaw_family import (
-    DEFAULT_OPENCLAW_ANTHROPIC_BASE_URL,
-    DEFAULT_OPENCLAW_ANTHROPIC_MODEL,
-    DEFAULT_OPENCLAW_ANTHROPIC_PROVIDER,
     SUPPORTED_OPENCLAW_FAMILIES,
     parse_openclaw_families as _parse_openclaw_families,
     resolve_openclaw_family_scenarios as _resolve_openclaw_family_scenarios,
@@ -118,10 +115,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--openclaw-families",
-        default="openai-completions,anthropic-messages",
+        default="current",
         help=(
-            "Comma-separated OpenClaw families to exercise when openclaw is requested "
-            f"({', '.join(SUPPORTED_OPENCLAW_FAMILIES)})"
+            "OpenClaw families to exercise when openclaw is requested. Use 'current' "
+            "to follow the harness-selected provider/model, or pass an explicit "
+            f"comma-separated list ({', '.join(SUPPORTED_OPENCLAW_FAMILIES)})."
         ),
     )
     parser.add_argument(
@@ -136,18 +134,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--openclaw-anthropic-provider",
-        default=DEFAULT_OPENCLAW_ANTHROPIC_PROVIDER,
-        help="OpenClaw provider id used for the anthropic-messages family",
+        default="",
+        help="Optional exact OpenClaw provider id to force for the anthropic-messages family",
     )
     parser.add_argument(
         "--openclaw-anthropic-model",
-        default=DEFAULT_OPENCLAW_ANTHROPIC_MODEL,
-        help="OpenClaw model id/ref used for the anthropic-messages family",
+        default="",
+        help="Optional exact OpenClaw model id/ref to force for the anthropic-messages family",
     )
     parser.add_argument(
         "--openclaw-anthropic-base-url",
-        default=DEFAULT_OPENCLAW_ANTHROPIC_BASE_URL,
-        help="Upstream base URL used when synthesizing the OpenClaw anthropic family provider",
+        default="",
+        help="Optional upstream base URL override used with an explicit anthropic provider selection",
     )
     parser.add_argument(
         "--claude-model",
@@ -352,7 +350,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             or _resolve_opencode_smoke_model(
                 config_path=paths["opencode_config"],
                 state_path=paths["xdg_state"] / "opencode" / "model.json",
-                fallback_model=f"openai/{args.model}" if "/" not in args.model else args.model,
             )
         )
         report["agentModels"]["opencode"] = resolved_opencode_model
@@ -375,6 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "apiFamily",
                         "expectedTapPathFragment",
                         "source",
+                        "error",
                         "skipped",
                         "reason",
                     )
@@ -566,7 +564,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             openclaw_models_cache_path=paths["openclaw_models_cache"],
             claude_settings_path=paths["claude_settings"],
             timeout_seconds=args.command_timeout_seconds,
-            configure_openai_clients=needs_openai_agents,
+            configure_opencode=(
+                "opencode" in agents
+                and not (
+                    isinstance(opencode_native_report, dict)
+                    and opencode_native_report.get("supported") is False
+                )
+            ),
+            configure_openclaw=False,
             configure_claude=needs_claude,
         )
         report["setup"] = setup_payload

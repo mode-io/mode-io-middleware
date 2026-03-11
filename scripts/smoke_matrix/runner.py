@@ -117,7 +117,8 @@ def run_setup(
     openclaw_models_cache_path: Path,
     claude_settings_path: Path,
     timeout_seconds: int,
-    configure_openai_clients: bool,
+    configure_opencode: bool,
+    configure_openclaw: bool,
     configure_claude: bool,
 ) -> Dict[str, object]:
     report: Dict[str, object] = {
@@ -128,23 +129,31 @@ def run_setup(
         "commands": {},
     }
 
-    if configure_openai_clients:
+    if configure_opencode or configure_openclaw:
         routing_command = [
             *setup_command,
             "--json",
-            "--apply-opencode",
-            "--create-opencode-config",
-            "--opencode-config-path",
-            str(opencode_config_path),
-            "--apply-openclaw",
-            "--create-openclaw-config",
-            "--openclaw-config-path",
-            str(openclaw_config_path),
-            "--openclaw-models-cache-path",
-            str(openclaw_models_cache_path),
             "--gateway-base-url",
             gateway_base_url,
         ]
+        if configure_opencode:
+            routing_command.extend(
+                [
+                    "--apply-opencode",
+                    "--opencode-config-path",
+                    str(opencode_config_path),
+                ]
+            )
+        if configure_openclaw:
+            routing_command.extend(
+                [
+                    "--apply-openclaw",
+                    "--openclaw-config-path",
+                    str(openclaw_config_path),
+                    "--openclaw-models-cache-path",
+                    str(openclaw_models_cache_path),
+                ]
+            )
         routing_payload, routing_result = run_json_cli_command(
             command=routing_command,
             cwd=repo_root,
@@ -381,6 +390,7 @@ def run_agent_check(
 
     if transport_check_ok:
         outcome = "passed"
+        diagnostic = None
     elif diagnostic is None:
         diagnostic = "Agent run did not produce the expected successful upstream traffic."
 
@@ -436,7 +446,25 @@ def run_openclaw_family_checks(
                     "ok": True,
                     "outcome": "skipped",
                     "productOk": True,
-                    "diagnostic": str(scenario.get("reason") or "scenario skipped"),
+                    "diagnostic": str(
+                        scenario.get("reason") or "OpenClaw current state is unsupported for middleware smoke"
+                    ),
+                    "tap": {"window": {"eventCount": 0, "successCount": 0, "paths": []}},
+                }
+            )
+            continue
+        if bool(scenario.get("error")):
+            reports.append(
+                {
+                    "name": "openclaw",
+                    "reportName": str(scenario.get("name") or f"openclaw:{index}"),
+                    "family": scenario.get("family"),
+                    "ok": False,
+                    "outcome": "product_failed",
+                    "productOk": False,
+                    "diagnostic": str(
+                        scenario.get("reason") or "OpenClaw family scenario is unresolved"
+                    ),
                     "tap": {"window": {"eventCount": 0, "successCount": 0, "paths": []}},
                 }
             )

@@ -48,13 +48,13 @@ def default_opencode_config_path(
     return resolved_home / ".config" / "opencode" / "opencode.json"
 
 
-def current_opencode_provider_id(config: Dict[str, Any]) -> str:
+def current_opencode_provider_id(config: Dict[str, Any]) -> str | None:
     model_name = config.get("model")
     if isinstance(model_name, str) and "/" in model_name:
         provider_id, _ = model_name.split("/", 1)
         if provider_id.strip():
             return provider_id.strip()
-    return "openai"
+    return None
 
 
 def _normalize_provider_id(value: Any) -> str:
@@ -123,6 +123,14 @@ def _opencode_route_support(
 ) -> Dict[str, Any]:
     resolved_env = _env_mapping(env)
     provider_id = current_opencode_provider_id(config)
+    if not provider_id:
+        return {
+            "providerId": None,
+            "routeMode": OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER,
+            "supported": False,
+            "reason": "missing_active_provider",
+            "configPath": str(config_path),
+        }
     normalized_provider = _normalize_provider_id(provider_id)
     payload: Dict[str, Any] = {
         "providerId": provider_id,
@@ -226,6 +234,8 @@ def _write_provider_route_metadata(
 def apply_opencode_base_url(config: Dict[str, Any], gateway_base_url: str) -> Tuple[Dict[str, Any], bool]:
     updated = copy.deepcopy(config)
     provider_id = current_opencode_provider_id(updated)
+    if not provider_id:
+        raise SetupError("OpenCode config has no active provider/model to preserve")
     provider_obj = ensure_object(updated.get("provider"), "provider")
     selected_provider = ensure_object(
         provider_obj.get(provider_id), f"provider.{provider_id}"
@@ -257,6 +267,8 @@ def remove_opencode_base_url(
 ) -> Tuple[Dict[str, Any], bool, Optional[str], str]:
     updated = copy.deepcopy(config)
     provider_id = current_opencode_provider_id(updated)
+    if not provider_id:
+        return updated, False, None, "missing_active_provider"
 
     provider_obj = updated.get("provider")
     if not isinstance(provider_obj, dict):
@@ -301,7 +313,7 @@ def apply_opencode_config_file(
     existed = config_path.exists()
     if not existed and not create_if_missing:
         raise SetupError(
-            f"OpenCode config not found: {config_path}. Use --create-opencode-config to create it."
+            f"OpenCode config not found: {config_path}. Middleware expects an existing, working OpenCode config."
         )
 
     config_data: Dict[str, Any] = {}
@@ -313,7 +325,7 @@ def apply_opencode_config_file(
         config_path=config_path,
         env=env,
     )
-    provider_id = str(route_support.get("providerId") or current_opencode_provider_id(config_data))
+    provider_id = route_support.get("providerId") or current_opencode_provider_id(config_data)
     if not route_support.get("supported", True):
         return {
             "path": str(config_path),
@@ -327,6 +339,17 @@ def apply_opencode_config_file(
             "configPath": route_support.get("configPath"),
             "authStorePath": route_support.get("authStorePath"),
             "authType": route_support.get("authType"),
+        }
+    if not provider_id:
+        return {
+            "path": str(config_path),
+            "changed": False,
+            "created": False,
+            "backupPath": None,
+            "providerId": None,
+            "routeMode": OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER,
+            "supported": False,
+            "reason": "missing_active_provider",
         }
 
     original_base_url, had_explicit_base_url = _resolve_preserved_upstream_base_url(
@@ -392,6 +415,16 @@ def uninstall_opencode_config_file(
 
     config_data = read_json_file(config_path)
     provider_id = current_opencode_provider_id(config_data)
+    if not provider_id:
+        return {
+            "path": str(config_path),
+            "changed": False,
+            "backupPath": None,
+            "reason": "missing_active_provider",
+            "removedBaseUrl": None,
+            "providerId": None,
+            "routeMode": OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER,
+        }
     metadata = _read_route_metadata(config_path)
     providers = metadata.get("providers")
     entry = providers.get(_normalize_provider_id(provider_id)) if isinstance(providers, dict) else None

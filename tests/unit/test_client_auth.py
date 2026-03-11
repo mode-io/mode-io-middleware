@@ -63,6 +63,20 @@ class TestClientAuth(unittest.TestCase):
 
         self.assertIsNone(authorization)
 
+    def test_codex_bridge_does_not_fallback_to_openai_env(self):
+        with TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(
+                os.environ,
+                {"HOME": temp_dir, "OPENAI_API_KEY": "sk-openai-env"},
+                clear=False,
+            ):
+                authorization = resolve_client_upstream_authorization(
+                    {},
+                    client_name=CLIENT_CODEX,
+                )
+
+        self.assertIsNone(authorization)
+
     def test_codex_inspection_strips_authorization_from_public_payload(self):
         with TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / ".codex" / "auth.json"
@@ -579,7 +593,53 @@ class TestClientAuth(unittest.TestCase):
         self.assertEqual(inspection.authorization, "Bearer sk-ant-oat-subscription-token")
         self.assertEqual(inspection.resolved_headers, {})
 
-    def test_openclaw_selection_resolver_prefers_default_profile(self):
+    def test_openclaw_selection_resolver_uses_configured_auth_order(self):
+        resolver = OpenClawSelectionResolver(None)
+        with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
+            agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
+            agent_dir.mkdir(parents=True)
+            (state_dir / "openclaw.json").write_text(
+                json.dumps(
+                    {
+                        "auth": {
+                            "order": {
+                                "openai-codex": [
+                                    "openai-codex:backup",
+                                    "openai-codex:default",
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (agent_dir / "auth-profiles.json").write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "openai-codex:default": {
+                                "provider": "openai-codex",
+                                "access": "token-a",
+                            },
+                            "openai-codex:backup": {
+                                "provider": "openai-codex",
+                                "access": "token-b",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            selection = resolver.resolve(
+                env={"HOME": temp_dir},
+                provider_id="openai-codex",
+            )
+
+        self.assertEqual(selection.profile_id, "openai-codex:backup")
+        self.assertEqual(selection.reason, "auth_order")
+
+    def test_openclaw_selection_resolver_rejects_ambiguous_profiles_without_order(self):
         resolver = OpenClawSelectionResolver(None)
         with TemporaryDirectory() as temp_dir:
             agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
@@ -606,8 +666,9 @@ class TestClientAuth(unittest.TestCase):
                 provider_id="openai-codex",
             )
 
-        self.assertEqual(selection.profile_id, "openai-codex:default")
-        self.assertEqual(selection.reason, "default")
+        self.assertEqual(selection.provider_id, "openai-codex")
+        self.assertIsNone(selection.profile_id)
+        self.assertEqual(selection.reason, "ambiguous_profiles")
 
     def test_openclaw_selection_resolver_does_not_fallback_to_other_provider(self):
         resolver = OpenClawSelectionResolver(None)

@@ -26,9 +26,13 @@ from modeio_middleware.cli.setup_lib.common import (
     detect_os_name,
     derive_health_url,
     normalize_gateway_base_url,
+    read_json_file,
 )
 from modeio_middleware.cli.setup_lib.opencode import (
+    _opencode_route_support,
+    _resolve_preserved_upstream_base_url,
     apply_opencode_config_file,
+    current_opencode_provider_id,
     default_opencode_config_path,
     uninstall_opencode_config_file,
 )
@@ -40,6 +44,8 @@ from modeio_middleware.cli.setup_lib.openclaw import (
     uninstall_openclaw_config_file,
     uninstall_openclaw_models_cache_file,
 )
+from modeio_middleware.cli.setup_lib.openclaw_common import _read_route_metadata
+from modeio_middleware.cli.setup_lib.openclaw_routes import _resolve_preserve_provider_target
 from modeio_middleware.core.client_auth import (
     inspect_codex_native_auth,
     inspect_openclaw_native_auth,
@@ -231,6 +237,49 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
             "reason": None,
         },
     }
+    opencode_route_support: Dict[str, Any] = {
+        "supported": False,
+        "reason": "config_not_found",
+        "providerId": None,
+    }
+    if opencode_path.exists():
+        opencode_config = read_json_file(opencode_path)
+        opencode_route_support = _opencode_route_support(
+            config=opencode_config,
+            config_path=opencode_path,
+            env=dict(os.environ),
+        )
+        opencode_provider_id = current_opencode_provider_id(opencode_config)
+        if opencode_route_support.get("supported") and opencode_provider_id:
+            original_base_url, _ = _resolve_preserved_upstream_base_url(
+                opencode_config,
+                config_path=opencode_path,
+                provider_id=opencode_provider_id,
+            )
+            if not original_base_url:
+                opencode_route_support = {
+                    **opencode_route_support,
+                    "supported": False,
+                    "reason": "missing_upstream_base_url",
+                }
+
+    openclaw_route_support: Dict[str, Any] = {
+        "supported": False,
+        "reason": "config_not_found",
+    }
+    if openclaw_path.exists():
+        openclaw_config = read_json_file(openclaw_path)
+        openclaw_models_cache = (
+            read_json_file(openclaw_models_cache_path)
+            if openclaw_models_cache_path.exists()
+            else None
+        )
+        openclaw_route_support = _resolve_preserve_provider_target(
+            openclaw_config,
+            gateway_base_url,
+            models_cache_data=openclaw_models_cache,
+            existing_route_metadata=_read_route_metadata(openclaw_path),
+        )
 
     binaries = {
         name: shutil.which(name) for name in ("codex", "opencode", "openclaw", "claude")
@@ -267,6 +316,7 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
             "binaryPath": binaries["opencode"],
             "path": str(opencode_path),
             "configParentWritable": _path_parent_writable(opencode_path),
+            "routeSupport": opencode_route_support,
         },
         "openclaw": {
             "binaryFound": binaries["openclaw"] is not None,
@@ -277,6 +327,7 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
             "modelsCacheParentWritable": _path_parent_writable(
                 openclaw_models_cache_path
             ),
+            "routeSupport": openclaw_route_support,
         },
         "claude": {
             "binaryFound": binaries["claude"] is not None,
@@ -395,6 +446,8 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
                 create_if_missing=args.create_opencode_config,
                 env=dict(os.environ),
             )
+        if isinstance(report["opencode"], dict) and report["opencode"].get("supported") is False:
+            report["success"] = False
 
     if args.apply_openclaw:
         config_path = (
@@ -428,12 +481,24 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
                 create_if_missing=args.create_openclaw_config,
                 models_cache_path=models_cache_path,
             )
-            openclaw_report["modelsCache"] = apply_openclaw_models_cache_file(
-                models_cache_path=models_cache_path,
-                gateway_base_url=gateway_base_url,
-                config_path=config_path,
-            )
+            if openclaw_report.get("supported") is True:
+                openclaw_report["modelsCache"] = apply_openclaw_models_cache_file(
+                    models_cache_path=models_cache_path,
+                    gateway_base_url=gateway_base_url,
+                    config_path=config_path,
+                )
+            else:
+                openclaw_report["modelsCache"] = {
+                    "path": str(models_cache_path),
+                    "changed": False,
+                    "created": False,
+                    "backupPath": None,
+                    "reason": "config_route_unsupported",
+                    "routeMode": "preserve_provider",
+                }
             report["openclaw"] = openclaw_report
+        if isinstance(report["openclaw"], dict) and report["openclaw"].get("supported") is False:
+            report["success"] = False
 
     if args.apply_claude:
         claude_path = (
@@ -486,10 +551,12 @@ def _print_human_report(report: Dict[str, Any]) -> None:
             f"  codex: binary={report['codex'].get('binaryFound')} auth={report['codex'].get('authPresent')}"
         )
         print(
-            f"  opencode: binary={report['opencode'].get('binaryFound')} writable={report['opencode'].get('configParentWritable')}"
+            f"  opencode: binary={report['opencode'].get('binaryFound')} writable={report['opencode'].get('configParentWritable')} "
+            f"routeSupported={((report['opencode'].get('routeSupport') or {}).get('supported'))}"
         )
         print(
-            f"  openclaw: binary={report['openclaw'].get('binaryFound')} writable={report['openclaw'].get('configParentWritable')}"
+            f"  openclaw: binary={report['openclaw'].get('binaryFound')} writable={report['openclaw'].get('configParentWritable')} "
+            f"routeSupported={((report['openclaw'].get('routeSupport') or {}).get('supported'))}"
         )
         print(
             f"  claude: binary={report['claude'].get('binaryFound')} writable={report['claude'].get('configParentWritable')}"
@@ -618,7 +685,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--create-opencode-config",
         action="store_true",
-        help="Create OpenCode config if missing (requires --apply-opencode)",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--create-claude-settings",
@@ -628,7 +695,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--create-openclaw-config",
         action="store_true",
-        help="Create OpenClaw config if missing (requires --apply-openclaw)",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--force-remove-opencode-base-url",
@@ -694,18 +761,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
 
     validation_message = ""
-    if args.create_opencode_config and not args.apply_opencode:
-        validation_message = "--create-opencode-config requires --apply-opencode"
-    elif args.create_opencode_config and args.uninstall:
-        validation_message = "--create-opencode-config cannot be used with --uninstall"
+    if args.create_opencode_config:
+        validation_message = (
+            "--create-opencode-config is no longer supported; middleware expects an existing, working OpenCode config"
+        )
     elif args.create_claude_settings and not args.apply_claude:
         validation_message = "--create-claude-settings requires --apply-claude"
     elif args.create_claude_settings and args.uninstall:
         validation_message = "--create-claude-settings cannot be used with --uninstall"
-    elif args.create_openclaw_config and not args.apply_openclaw:
-        validation_message = "--create-openclaw-config requires --apply-openclaw"
-    elif args.create_openclaw_config and args.uninstall:
-        validation_message = "--create-openclaw-config cannot be used with --uninstall"
+    elif args.create_openclaw_config:
+        validation_message = (
+            "--create-openclaw-config is no longer supported; middleware expects an existing, working OpenClaw config"
+        )
     elif args.force_remove_opencode_base_url and not args.uninstall:
         validation_message = "--force-remove-opencode-base-url requires --uninstall"
     elif args.force_remove_claude_hook_url and not args.uninstall:

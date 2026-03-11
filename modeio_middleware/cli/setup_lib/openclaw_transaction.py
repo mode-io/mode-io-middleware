@@ -8,23 +8,18 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from modeio_middleware.cli.setup_lib.openclaw_common import (
-    OPENCLAW_AUTH_MODE_MANAGED,
     OPENCLAW_AUTH_MODE_NATIVE,
     OPENCLAW_MODEL_ID,
     OPENCLAW_ROUTE_MODE_PRESERVE_PROVIDER,
     SetupError,
     _read_route_metadata,
     _remove_route_metadata,
-    _resolve_managed_route_target,
     _write_route_metadata,
-    build_client_gateway_base_url,
     read_json_file,
     utc_timestamp,
     write_json_file,
 )
 from modeio_middleware.cli.setup_lib.openclaw_routes import (
-    _apply_managed_models_cache_provider,
-    _apply_managed_provider_route,
     _apply_preserve_provider_models_cache,
     _apply_preserve_provider_route,
     _remove_managed_models_cache_provider,
@@ -44,15 +39,9 @@ def apply_openclaw_provider_route(
     auth_mode: str = OPENCLAW_AUTH_MODE_NATIVE,
     existing_route_metadata: Dict[str, Any] | None = None,
 ) -> Tuple[Dict[str, Any], bool]:
+    if auth_mode != OPENCLAW_AUTH_MODE_NATIVE:
+        raise SetupError("OpenClaw managed mode is no longer supported")
     route_metadata = existing_route_metadata or {}
-    if auth_mode == OPENCLAW_AUTH_MODE_MANAGED:
-        return _apply_managed_provider_route(
-            config,
-            gateway_base_url,
-            auth_mode=auth_mode,
-            existing_route_metadata=route_metadata,
-        )
-
     route_target = _resolve_preserve_provider_target(
         config,
         gateway_base_url,
@@ -93,10 +82,12 @@ def apply_openclaw_config_file(
     auth_mode: str = OPENCLAW_AUTH_MODE_NATIVE,
     models_cache_path: Path | None = None,
 ) -> Dict[str, Any]:
+    if auth_mode != OPENCLAW_AUTH_MODE_NATIVE:
+        raise SetupError("OpenClaw managed mode is no longer supported")
     existed = config_path.exists()
     if not existed and not create_if_missing:
         raise SetupError(
-            f"OpenClaw config not found: {config_path}. Use --create-openclaw-config to create it."
+            f"OpenClaw config not found: {config_path}. Middleware expects an existing, working OpenClaw config."
         )
 
     config_data: Dict[str, Any] = {}
@@ -107,49 +98,6 @@ def apply_openclaw_config_file(
         models_cache_data = read_json_file(models_cache_path)
     existing_route_metadata = _read_route_metadata(config_path)
 
-    if auth_mode == OPENCLAW_AUTH_MODE_MANAGED:
-        route_target = _resolve_managed_route_target(
-            config_data,
-            auth_mode,
-            existing_route_metadata=existing_route_metadata,
-        )
-        updated, changed = _apply_managed_provider_route(
-            config_data,
-            gateway_base_url,
-            auth_mode=auth_mode,
-            existing_route_metadata=existing_route_metadata,
-        )
-        backup_path = None
-        if changed:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            if existed:
-                backup_path = config_path.with_name(f"{config_path.name}.bak.{utc_timestamp()}")
-                shutil.copy2(config_path, backup_path)
-            write_json_file(config_path, updated)
-            _write_route_metadata(
-                config_path,
-                {
-                    **route_target,
-                    "baseUrl": build_client_gateway_base_url(
-                        gateway_base_url,
-                        "openclaw",
-                        provider_name=route_target["nativeProvider"]
-                        if route_target["authMode"] == OPENCLAW_AUTH_MODE_NATIVE
-                        else None,
-                    ),
-                },
-            )
-        return {
-            "path": str(config_path),
-            "changed": changed,
-            "created": (not existed) and changed,
-            "backupPath": str(backup_path) if backup_path else None,
-            "authMode": route_target["authMode"],
-            "nativeProvider": route_target["nativeProvider"],
-            "routeModelId": route_target["routeModelId"],
-            "routeMode": "managed_provider",
-        }
-
     route_target = _resolve_preserve_provider_target(
         config_data,
         gateway_base_url,
@@ -157,13 +105,10 @@ def apply_openclaw_config_file(
         existing_route_metadata=existing_route_metadata,
     )
     if not route_target.get("supported"):
-        if not existed and create_if_missing:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            write_json_file(config_path, {})
         return {
             "path": str(config_path),
             "changed": False,
-            "created": (not existed) and create_if_missing,
+            "created": False,
             "backupPath": None,
             "authMode": OPENCLAW_AUTH_MODE_NATIVE,
             "providerId": route_target.get("providerId"),
@@ -294,6 +239,8 @@ def apply_openclaw_models_cache_file(
     route_model_id: str | None = None,
 ) -> Dict[str, Any]:
     del native_provider
+    if auth_mode not in {None, OPENCLAW_AUTH_MODE_NATIVE}:
+        raise SetupError("OpenClaw managed mode is no longer supported")
     existed = models_cache_path.exists()
 
     config_data: Dict[str, Any] = {}
@@ -301,36 +248,6 @@ def apply_openclaw_models_cache_file(
         config_data = read_json_file(models_cache_path)
 
     route_meta = _read_route_metadata(config_path)
-    if _managed_metadata_mode(route_meta) or auth_mode == OPENCLAW_AUTH_MODE_MANAGED:
-        resolved_auth_mode = str(route_meta.get("authMode") or auth_mode or OPENCLAW_AUTH_MODE_MANAGED)
-        resolved_native_provider = route_meta.get("nativeProvider")
-        resolved_route_model_id = str(route_meta.get("routeModelId") or route_model_id or OPENCLAW_MODEL_ID)
-        updated, changed = _apply_managed_models_cache_provider(
-            config_data,
-            gateway_base_url,
-            auth_mode=resolved_auth_mode,
-            native_provider=(
-                str(resolved_native_provider)
-                if isinstance(resolved_native_provider, str)
-                else None
-            ),
-            route_model_id=resolved_route_model_id,
-        )
-        backup_path = None
-        if changed:
-            models_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            if existed:
-                backup_path = models_cache_path.with_name(f"{models_cache_path.name}.bak.{utc_timestamp()}")
-                shutil.copy2(models_cache_path, backup_path)
-            write_json_file(models_cache_path, updated)
-        return {
-            "path": str(models_cache_path),
-            "changed": changed,
-            "created": (not existed) and changed,
-            "backupPath": str(backup_path) if backup_path else None,
-            "routeMode": "managed_provider",
-        }
-
     providers = route_meta.get("providers")
     if not isinstance(providers, dict) or not providers:
         return {
@@ -405,8 +322,8 @@ def uninstall_openclaw_models_cache_file(
 
     config_data = read_json_file(models_cache_path)
     route_meta = _read_route_metadata(config_path)
-    if _managed_metadata_mode(route_meta) or auth_mode == OPENCLAW_AUTH_MODE_MANAGED:
-        resolved_auth_mode = str(route_meta.get("authMode") or auth_mode or OPENCLAW_AUTH_MODE_MANAGED)
+    if _managed_metadata_mode(route_meta):
+        resolved_auth_mode = str(route_meta.get("authMode") or "managed")
         resolved_native_provider = route_meta.get("nativeProvider")
         updated, changed, removed_value, reason = _remove_managed_models_cache_provider(
             config_data,

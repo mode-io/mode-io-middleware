@@ -205,7 +205,6 @@ def resolve_opencode_smoke_model(
     *,
     config_path: Path,
     state_path: Path,
-    fallback_model: str,
 ) -> str:
     config_payload = _read_json_object(config_path)
     config_model = config_payload.get("model")
@@ -230,7 +229,9 @@ def resolve_opencode_smoke_model(
                 return normalized_model
             return f"{normalized_provider}/{normalized_model}"
 
-    return fallback_model
+    raise ValueError(
+        f"unable to determine OpenCode selected model from {config_path} or {state_path}"
+    )
 
 
 def _resolve_openclaw_cache_providers(
@@ -395,179 +396,3 @@ def upsert_openclaw_provider_model(provider_obj: Dict[str, object], model_id: st
 
     provider_obj["models"] = new_models
     return changed
-
-
-def apply_openclaw_live_model_to_config(payload: Dict[str, object], model_id: str) -> bool:
-    changed = False
-    normalized_model_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
-    models_obj = payload.get("models")
-    if not isinstance(models_obj, dict):
-        return changed
-
-    providers_obj = models_obj.get("providers")
-    if not isinstance(providers_obj, dict):
-        return changed
-
-    provider_obj = providers_obj.get("modeio-middleware")
-    if not isinstance(provider_obj, dict):
-        return changed
-
-    if upsert_openclaw_provider_model(provider_obj, normalized_model_id):
-        changed = True
-
-    target_ref = f"modeio-middleware/{normalized_model_id}"
-
-    agents_obj = payload.get("agents")
-    if not isinstance(agents_obj, dict):
-        agents_obj = {}
-        payload["agents"] = agents_obj
-        changed = True
-
-    defaults_obj = agents_obj.get("defaults")
-    if not isinstance(defaults_obj, dict):
-        defaults_obj = {}
-        agents_obj["defaults"] = defaults_obj
-        changed = True
-
-    model_obj = defaults_obj.get("model")
-    if not isinstance(model_obj, dict):
-        model_obj = {}
-        defaults_obj["model"] = model_obj
-        changed = True
-
-    if model_obj.get("primary") != target_ref:
-        model_obj["primary"] = target_ref
-        changed = True
-
-    defaults_models_obj = defaults_obj.get("models")
-    if not isinstance(defaults_models_obj, dict):
-        defaults_models_obj = {}
-        defaults_obj["models"] = defaults_models_obj
-        changed = True
-
-    route_obj = defaults_models_obj.get(target_ref)
-    if not isinstance(route_obj, dict):
-        route_obj = {}
-        defaults_models_obj[target_ref] = route_obj
-        changed = True
-
-    params_obj = route_obj.get("params")
-    if not isinstance(params_obj, dict):
-        params_obj = {}
-        route_obj["params"] = params_obj
-        changed = True
-
-    if params_obj.get("transport") != "sse":
-        params_obj["transport"] = "sse"
-        changed = True
-
-    stale_ref = "modeio-middleware/middleware-default"
-    if stale_ref in defaults_models_obj and stale_ref != target_ref:
-        del defaults_models_obj[stale_ref]
-        changed = True
-
-    return changed
-
-
-def apply_openclaw_live_model_to_cache(payload: Dict[str, object], model_id: str) -> bool:
-    changed = False
-    providers_obj = None
-
-    models_obj = payload.get("models")
-    if isinstance(models_obj, dict):
-        candidate = models_obj.get("providers")
-        if isinstance(candidate, dict):
-            providers_obj = candidate
-
-    if providers_obj is None:
-        candidate = payload.get("providers")
-        if isinstance(candidate, dict):
-            providers_obj = candidate
-
-    if not isinstance(providers_obj, dict):
-        return changed
-
-    provider_obj = providers_obj.get("modeio-middleware")
-    if not isinstance(provider_obj, dict):
-        return changed
-
-    if upsert_openclaw_provider_model(provider_obj, model_id):
-        changed = True
-    return changed
-
-
-def sync_openclaw_cache_provider(
-    payload: Dict[str, object],
-    provider_settings: Dict[str, object],
-) -> bool:
-    changed = False
-    providers_obj = None
-
-    models_obj = payload.get("models")
-    if isinstance(models_obj, dict):
-        candidate = models_obj.get("providers")
-        if isinstance(candidate, dict):
-            providers_obj = candidate
-
-    if providers_obj is None:
-        candidate = payload.get("providers")
-        if isinstance(candidate, dict):
-            providers_obj = candidate
-
-    if not isinstance(providers_obj, dict):
-        return changed
-
-    provider_obj = providers_obj.get("modeio-middleware")
-    if not isinstance(provider_obj, dict):
-        return changed
-
-    for key in ("baseUrl", "api", "apiKey", "authHeader"):
-        value = provider_settings.get(key)
-        if provider_obj.get(key) != value:
-            provider_obj[key] = value
-            changed = True
-    return changed
-
-
-def rewrite_openclaw_model_for_live(
-    *,
-    config_path: Path,
-    models_cache_path: Path,
-    model_id: str,
-) -> Dict[str, object]:
-    report = {
-        "modelId": model_id,
-        "configPath": str(config_path),
-        "modelsCachePath": str(models_cache_path),
-        "configChanged": False,
-        "modelsCacheChanged": False,
-    }
-
-    provider_settings: Dict[str, object] = {}
-
-    if config_path.exists():
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            if apply_openclaw_live_model_to_config(payload, model_id):
-                config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                report["configChanged"] = True
-            models_obj = payload.get("models")
-            providers_obj = models_obj.get("providers") if isinstance(models_obj, dict) else None
-            provider_obj = providers_obj.get("modeio-middleware") if isinstance(providers_obj, dict) else None
-            if isinstance(provider_obj, dict):
-                provider_settings = {
-                    key: provider_obj.get(key)
-                    for key in ("baseUrl", "api", "apiKey", "authHeader")
-                }
-
-    if models_cache_path.exists():
-        payload = json.loads(models_cache_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            changed = apply_openclaw_live_model_to_cache(payload, model_id)
-            if provider_settings:
-                changed = sync_openclaw_cache_provider(payload, provider_settings) or changed
-            if changed:
-                models_cache_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                report["modelsCacheChanged"] = True
-
-    return report
