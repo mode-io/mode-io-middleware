@@ -78,4 +78,5 @@ Run the fresh-install acceptance variant to exercise packaged middleware entrypo
 
 - Public external plugins are scaffolded as `stdio-jsonrpc` plugins.
 - Repo-local scripts under `scripts/` are source-checkout conveniences; installed users should prefer the packaged `middleware` controller command plus the plugin utility entrypoints.
+- When you are working from a repo-local editable install, prefer `python scripts/middleware.py ...` and other `python scripts/*.py` wrappers instead of installed console entrypoints.
 - When editing smoke tooling, keep artifact output machine-readable and avoid provider-specific assumptions in the default path.

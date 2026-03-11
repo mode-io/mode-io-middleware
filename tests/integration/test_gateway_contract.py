@@ -93,6 +93,19 @@ class TestGatewayContract(unittest.TestCase):
             gateway_stub.stop()
             upstream.stop()
 
+    def test_healthz_includes_dev_instance_id_when_present(self):
+        with mock.patch.dict(os.environ, {"MODEIO_DEV_INSTANCE_ID": "dev-instance-123"}):
+            upstream, gateway_stub = self._start_pair(
+                lambda _path, _payload: completion_payload("ok")
+            )
+            try:
+                status, _headers, payload = http_get_json(gateway_stub.base_url, "/healthz")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["devInstanceId"], "dev-instance-123")
+            finally:
+                gateway_stub.stop()
+                upstream.stop()
+
     def test_chat_modeio_metadata_not_forwarded_to_upstream(self):
         upstream, gateway_stub = self._start_pair(
             lambda _path, payload: completion_payload(payload["messages"][0]["content"])
