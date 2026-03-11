@@ -2,10 +2,13 @@
 
 ## Goal
 
-Provide a simple local middleware layer around provider calls:
+Provide a local middleware layer around an already-working harness/provider path:
 
-- pre-request hooks before upstream call
-- post-response hooks before client response
+- keep the harness in charge of auth, provider choice, model choice, and user workflow
+- normalize request and response payloads into a semantic plugin surface
+- allow plugins to observe, warn, modify, or block at the semantic layer
+- denormalize accepted rewrites back into the provider-native or harness-native contract
+- record observability around both directions of the flow
 
 Core runtime remains generic and plugin-based.
 
@@ -67,6 +70,7 @@ repo-root/
     http_transport.py
     connectors/
       base.py
+      anthropic_http.py
       claude_hooks.py
       openai_http.py
     core/
@@ -124,22 +128,28 @@ repo-root/
 
 ## Runtime data flow
 
-1. Gateway receives `POST /v1/chat/completions`
-2. Core validates request and parses `modeio` metadata
-3. Config resolver computes final plugin config (defaults + preset + profile override + request override)
-4. Registry resolves runtime spec (mode, capabilities, transport)
-5. Runtime manager leases a runtime from a per-spec pool (`pool_size`)
-6. Plugin manager runs pre-request hooks through runtime adapters
-7. Plugin manager runs post-response/stream hooks through runtime adapters
-8. Core forwards request to upstream provider with `httpx`
-9. Gateway returns provider-compatible JSON + middleware headers through ASGI transport
+HTTP request/response flow:
+
+1. Gateway receives a supported provider-shaped route such as `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/messages`, or a client-scoped `/clients/{client}/{provider}/v1/...` route.
+2. `http_transport.py` normalizes client-scoped routes into canonical `/v1/...` paths and injects the detected harness/provider context into request headers.
+3. A connector parses the native request, normalizes the model against the current harness-selected provider state, and builds a `CanonicalInvocation` with both:
+   - a normalized semantic payload for plugins
+   - a native payload snapshot for denormalization and debugging
+4. Core resolves profile/plugin runtime config and starts the plugin pipeline session.
+5. Plugin manager runs `pre.request` hooks against the normalized payload.
+6. If plugins emit semantic rewrite operations, plugin manager denormalizes the updated semantic payload back into provider-native request JSON before the upstream call.
+7. Upstream transport reuses explicit incoming auth when present; otherwise it reuses harness-native auth and the preserved provider route resolved from the active harness state.
+8. Core forwards the request upstream with `httpx`.
+9. Middleware normalizes the upstream response into the same semantic payload model and runs `post.response` hooks.
+10. If plugins emit semantic rewrite operations on the response, plugin manager denormalizes them back into provider-native or harness-facing response JSON.
+11. Gateway returns provider-compatible JSON plus middleware headers through the ASGI transport.
 
 Claude hook connector flow:
 
 1. Gateway receives `POST /connectors/claude/hooks`
-2. Connector normalizes Claude hook payload into canonical middleware hook input
-3. Core resolves profile/plugin runtime and executes plugin pipeline
-4. Connector maps policy decision back to Claude hook output contract
+2. Connector normalizes supported Claude hook events into canonical pre-request or post-response middleware invocations.
+3. Core resolves profile/plugin runtime and executes the same plugin pipeline against normalized prompt/response payloads.
+4. Connector maps policy output back to Claude's hook output contract instead of a provider HTTP response body.
 5. Gateway returns JSON decision + middleware headers
 
 ## Integration boundaries
@@ -147,6 +157,7 @@ Claude hook connector flow:
 - `plugins/base.py` defines plugin contract
 - Plugins can return dict payloads or typed `HookDecision`
 - Plugins can `allow`, `modify`, `warn`, or `block`
+- Connectors normalize provider-native or harness-native payloads into a semantic timeline; `plugin_manager.py` denormalizes accepted rewrites back into native request/response/event shapes.
 - `runtime/legacy_inprocess.py` is internal-only for bundled plugins and tests
 - Public external plugins run via `runtime/stdio_jsonrpc.py` using MPP v1
 - Core does not hardcode plugin-specific policy decisions
@@ -163,5 +174,5 @@ Claude hook connector flow:
 
 - v1 supports non-streaming and streaming passthrough
 - setup script supports safe OpenCode patch/unpatch with backup
-- Codex integration is environment-based (`OPENAI_BASE_URL`)
+- Codex integration is environment-based (`OPENAI_BASE_URL`) and is not part of the controller-managed attach/detach lifecycle yet
 - Claude integration uses native hooks transport (`/connectors/claude/hooks`) while preserving the same plugin protocol and policy runtime

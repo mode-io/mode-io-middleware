@@ -2,6 +2,8 @@
 
 This guide covers the normal operator workflow first, then source-checkout contributor notes at the end.
 
+Current behavior note: attachment is still explicit today (`inspect` -> `enable`). Middleware reuses the harness's existing auth/provider/model state; it does not take ownership of login, provider choice, or model choice for you.
+
 ## 1) Install
 
 From GitHub:
