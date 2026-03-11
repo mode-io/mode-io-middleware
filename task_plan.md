@@ -4,7 +4,7 @@
 Replace raw provider request/response bodies as the main middleware/plugin/trace surface with one normalized semantic payload contract, while preserving exact denormalization back to supported native connector shapes.
 
 ## Current Phase
-Phase 6
+Phase 8
 
 ## Phases
 
@@ -46,4 +46,17 @@ Phase 6
 - [x] Update unit/integration/smoke tests to the normalized contract.
 - [x] Run the full Python suite.
 - [x] Run offline smoke and the supported live smoke matrix.
+- **Status:** complete
+
+### Phase 7: Raw payload capture hardening
+- [x] Persist full raw request/response sidecars from live smoke instead of preview-only bodies.
+- [x] Import richer raw captures into the local-only payload corpus.
+- [x] Re-run the supported live smoke matrix with full-body capture enabled.
+- **Status:** complete
+
+### Phase 8: Corpus expansion and action-heavy capture
+- [x] Add a custom-prompt smoke seam so action-heavy captures can reuse the existing live sandbox/tap flow.
+- [x] Capture richer Codex/OpenCode/OpenClaw/Claude payloads with action-oriented prompts in temp workspaces.
+- [x] Add local canonical tool-use, tool-result, multimodal, and incomplete-response examples.
+- [x] Validate imported JSON captures and new public examples through normalize + denormalize roundtrips.
 - **Status:** complete

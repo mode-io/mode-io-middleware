@@ -79,7 +79,7 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             token="CLAUDE_TOKEN",
             model="openai/gpt-5.3-codex",
             claude_model="sonnet",
-            repo_root=Path("/tmp/repo"),
+            work_dir=Path("/tmp/repo"),
             codex_output_path=Path("/tmp/codex-last-message.txt"),
             claude_settings_path=Path("/tmp/claude-settings.json"),
             timeout_seconds=30,
@@ -93,6 +93,20 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         )
         self.assertIn("--model", command)
         self.assertEqual(command[command.index("--model") + 1], "sonnet")
+
+    def test_build_agent_command_uses_custom_prompt_template(self):
+        command = build_agent_command(
+            agent="codex",
+            token="ACTION_TOKEN",
+            model="gpt-5.4",
+            claude_model="sonnet",
+            work_dir=Path("/tmp/work"),
+            codex_output_path=Path("/tmp/codex-last-message.txt"),
+            claude_settings_path=None,
+            timeout_seconds=30,
+            prompt_text="Create a file with {token} in it, then reply with {token}.",
+        )
+        self.assertEqual(command[-1], "Create a file with ACTION_TOKEN in it, then reply with ACTION_TOKEN.")
 
     def test_parse_args_defaults_include_claude(self):
         import smoke_agent_matrix  # noqa: E402
@@ -119,10 +133,19 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(args.opencode_base_url, "")
         self.assertEqual(args.install_mode, "repo")
         self.assertEqual(args.install_target, "")
+        self.assertEqual(args.agent_work_dir, "")
+        self.assertEqual(args.prompt_file, "")
         self.assertEqual(args.openclaw_families, "current")
         self.assertEqual(args.openclaw_anthropic_provider, "")
         self.assertEqual(args.openclaw_anthropic_model, "")
         self.assertEqual(args.openclaw_anthropic_base_url, "")
+
+    def test_parse_args_accepts_prompt_file_and_agent_work_dir(self):
+        args = parse_args(
+            ["--prompt-file", "/tmp/prompt.txt", "--agent-work-dir", "/tmp/workspace"]
+        )
+        self.assertEqual(args.prompt_file, "/tmp/prompt.txt")
+        self.assertEqual(args.agent_work_dir, "/tmp/workspace")
 
     def test_parse_args_accepts_wheel_install_mode(self):
         args = parse_args(

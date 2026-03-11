@@ -172,6 +172,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Repository root containing the smoke harness checkout",
     )
     parser.add_argument(
+        "--agent-work-dir",
+        default="",
+        help=(
+            "Optional working directory for harness commands. Defaults to the repository root; "
+            "use this to capture action-heavy payloads safely in a temp workspace."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-file",
+        default="",
+        help=(
+            "Optional file containing a custom prompt template. If it contains '{token}', "
+            "that placeholder is replaced; otherwise the smoke token instruction is appended."
+        ),
+    )
+    parser.add_argument(
         "--install-mode",
         choices=("repo", "wheel", "path", "git"),
         default="repo",
@@ -221,12 +237,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _load_prompt_text(prompt_file: str) -> str | None:
+    path_value = prompt_file.strip()
+    if not path_value:
+        return None
+    path = Path(path_value).expanduser().resolve()
+    return path.read_text(encoding="utf-8")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     started_at = _utc_stamp()
     run_id = f"{started_at.lower()}-{os.getpid()}"
 
     repo_root = Path(args.repo_root).expanduser().resolve()
+    agent_work_dir = (
+        Path(args.agent_work_dir).expanduser().resolve()
+        if args.agent_work_dir.strip()
+        else repo_root
+    )
+    prompt_text = _load_prompt_text(args.prompt_file)
     artifacts_root = Path(args.artifacts_dir).expanduser().resolve()
     run_dir = artifacts_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +286,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "runtime": {
             "mode": args.install_mode,
             "installTarget": args.install_target or None,
+        },
+        "prompt": {
+            "customPromptFile": str(Path(args.prompt_file).expanduser().resolve())
+            if args.prompt_file.strip()
+            else None,
+            "agentWorkDir": str(agent_work_dir),
         },
         "sandbox": {},
         "gateway": {},
@@ -630,6 +666,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _run_openclaw_family_checks(
                         controller_command=runtime.controller_command,
                         repo_root=repo_root,
+                        work_dir=agent_work_dir,
                         env=env,
                         controller_config_path=controller_config_path,
                         openclaw_config_path=paths["openclaw_config"],
@@ -643,6 +680,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         gateway_host=args.gateway_host,
                         gateway_port=gateway_port,
                         scenarios=openclaw_family_scenarios,
+                        prompt_text=prompt_text,
                     )
                 )
                 continue
@@ -674,6 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     claude_model=args.claude_model,
                     repo_root=repo_root,
+                    work_dir=agent_work_dir,
                     run_dir=run_dir,
                     env=env,
                     timeout_seconds=args.command_timeout_seconds,
@@ -694,6 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         else tap_jsonl_path
                     ),
+                    prompt_text=prompt_text,
                 )
             )
 

@@ -63,3 +63,36 @@
   - full suite passed (`259` tests)
   - supported live smoke passed again
   - the local corpus now contains richer raw captures for Codex, OpenCode, OpenClaw, and Claude
+
+### Phase 8: Corpus expansion and action-heavy capture
+- **Status:** complete
+- Actions taken:
+  - added `--prompt-file` and `--agent-work-dir` to `scripts/smoke_agent_matrix.py` and threaded them through the smoke command builder/runner so live captures can reuse the existing sandbox/tap stack with richer prompts
+  - added local-only helpers under `.local/payloads/`:
+    - `capture_action_payloads.py`
+    - `validate_captured_payloads.py`
+  - captured richer action-oriented live payloads:
+    - Codex: repeated `/responses` turns with tool definitions and long SSE response bodies
+    - OpenCode: real `/responses` action flow that created `tmp/action-smoke/*` files in the temp workspace
+    - Claude: real hook-side action flow that created `tmp/action-smoke/*` files in the temp workspace
+    - OpenClaw: richer supported-family chat-completions traffic with an action-oriented prompt
+  - expanded the local canonical `public/` corpus with tool-use, tool-result, multimodal, and incomplete-response examples for OpenAI and Anthropic families
+  - refreshed the sampled corpus after importing the new captures
+- Validation:
+  - `./.venv/bin/python -m unittest discover tests -p 'test_*.py'`
+  - local replay/roundtrip validation for the new public examples:
+    - OpenAI chat-completions tool-call request/response
+    - OpenAI responses tool-call request/response
+    - OpenAI responses multimodal request
+    - OpenAI responses incomplete response
+    - Anthropic messages tool-use request/response
+    - Anthropic messages tool-result request
+    - Anthropic messages image request
+  - local helper validation summaries:
+    - OpenCode action capture: `validated=7`, `failureCount=0`
+    - Claude action capture: `validated=4`, `failureCount=0`
+    - OpenClaw action capture: `validated=3`, `failureCount=0`
+    - Codex action capture: `validated=3`, `failureCount=0`
+- Result:
+  - full suite passed (`261` tests)
+  - the local corpus now includes richer action-heavy captures and broader canonical family coverage without changing middleware product behavior
