@@ -37,17 +37,18 @@ Run a live gateway check against a real upstream:
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 ```
 
-Check whether the current machine is ready for live acceptance smoke:
+Check whether the current machine is ready for controller-based live acceptance smoke:
 
 ```bash
-modeio-middleware-setup --doctor --json \
-  --require-commands codex,opencode,openclaw,claude
+middleware inspect opencode --json
+middleware inspect openclaw --json
+middleware inspect claude --json
 ```
 
-Live agent smoke assumes Codex/OpenCode/OpenClaw/Claude are already installed and authenticated on the host. Middleware reuses harness-owned auth only and does not provide a managed upstream fallback.
+Live agent smoke assumes OpenCode/OpenClaw/Claude are already installed and authenticated on the host. Middleware reuses harness-owned auth only and does not provide a managed upstream fallback.
 For OpenCode, live smoke covers only redirectable selected providers. Built-in `openai` with ChatGPT OAuth remains outside middleware preserve-provider routing and should show up as unsupported rather than silently passing.
 
-Run the OpenAI-compatible client matrix only in environments where Codex/OpenCode/OpenClaw are installed and authenticated:
+Run the OpenCode/OpenClaw controller matrix only in environments where those CLIs are installed and authenticated:
 
 ```bash
 ./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
@@ -61,13 +62,13 @@ Run the Claude hook matrix when only Claude integration needs live validation:
 
 OpenClaw setup preserves the active supported provider in place. Unsupported provider families fail clearly instead of switching to middleware-owned auth.
 
-Run the full agent matrix only in environments where all client CLIs are installed and authenticated:
+Run the full supported controller matrix only in environments where all supported client CLIs are installed and authenticated:
 
 ```bash
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 ```
 
-Run the fresh-install acceptance variant to exercise packaged middleware entrypoints from a temp virtualenv. This assumes the host already has `codex`, `opencode`, `openclaw`, and `claude` installed and authenticated:
+Run the fresh-install acceptance variant to exercise packaged middleware entrypoints from a temp virtualenv. This assumes the host already has `opencode`, `openclaw`, and `claude` installed and authenticated:
 
 ```bash
 ./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
@@ -76,5 +77,5 @@ Run the fresh-install acceptance variant to exercise packaged middleware entrypo
 ## Notes
 
 - Public external plugins are scaffolded as `stdio-jsonrpc` plugins.
-- Repo-local scripts under `scripts/` are source-checkout conveniences; installed users should prefer the packaged `modeio-middleware-*` console entrypoints.
+- Repo-local scripts under `scripts/` are source-checkout conveniences; installed users should prefer the packaged `middleware` controller command plus the plugin utility entrypoints.
 - When editing smoke tooling, keep artifact output machine-readable and avoid provider-specific assumptions in the default path.

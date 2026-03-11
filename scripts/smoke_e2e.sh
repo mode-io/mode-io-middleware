@@ -63,8 +63,8 @@ usage() {
 Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH] [--opencode-provider ID --opencode-model MODEL --opencode-base-url URL] [--openclaw-families LIST] [--openclaw-openai-provider ID --openclaw-openai-model MODEL] [--openclaw-anthropic-provider ID --openclaw-anthropic-model MODEL --openclaw-anthropic-base-url URL]
 
   --live                Deprecated generic gateway smoke; currently reported as skipped
-  --live-agents         Run both live agent paths: OpenAI-compatible clients and Claude hooks
-  --live-openai-agents  Run only Codex/OpenCode/OpenClaw live smoke through OpenAI-compatible middleware routes
+  --live-agents         Run the supported controller matrix: OpenCode, OpenClaw, and Claude
+  --live-openai-agents  Run only OpenCode/OpenClaw live smoke through the middleware controller
   --live-claude         Run only Claude hook live smoke (no upstream model provider required)
   --install-mode MODE   Runtime install mode for the middleware under test: repo|wheel|path|git
   --install-target VAL  Optional wheel/path/git target used with --install-mode
@@ -287,11 +287,24 @@ config_payload = {
 cache_payload = {
     "models": {"providers": {provider: provider_payload}},
 }
+profile_id = f"{provider}:default"
+profiles_payload = {
+    "profiles": {
+        profile_id: {
+            "provider": provider,
+            "apiKey": f"sk-smoke-{provider}",
+        }
+    }
+}
 
 config_path.parent.mkdir(parents=True, exist_ok=True)
 models_cache_path.parent.mkdir(parents=True, exist_ok=True)
 config_path.write_text(json.dumps(config_payload, indent=2) + "\n", encoding="utf-8")
 models_cache_path.write_text(json.dumps(cache_payload, indent=2) + "\n", encoding="utf-8")
+(models_cache_path.parent / "auth-profiles.json").write_text(
+    json.dumps(profiles_payload, indent=2) + "\n",
+    encoding="utf-8",
+)
 PY
 }
 
@@ -304,19 +317,36 @@ import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
+route_metadata_path = config_path.with_name(f"{config_path.name}.modeio-route.json")
 config_path.parent.mkdir(parents=True, exist_ok=True)
 config_path.write_text(
     json.dumps(
         {
-            "model": "openai/gpt-4.1",
+            "model": "opencode/gpt-4.1",
             "provider": {
-                "openai": {
+                "opencode": {
                     "options": {
                         "apiKey": "sk-opencode-test",
-                        "baseURL": "https://api.openai.com/v1",
+                        "baseURL": "https://opencode.ai/zen/v1",
                     }
                 }
             },
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+route_metadata_path.write_text(
+    json.dumps(
+        {
+            "providers": {
+                "opencode": {
+                    "providerId": "opencode",
+                    "originalBaseUrl": "https://opencode.ai/zen/v1",
+                    "routeMode": "preserve_provider",
+                }
+            }
         },
         indent=2,
     )
@@ -408,20 +438,24 @@ run_setup_smoke() {
   local openai_models="$openai_dir/agents/main/agent/models.json"
   local anthropic_cfg="$anthropic_dir/openclaw.json"
   local anthropic_models="$anthropic_dir/agents/main/agent/models.json"
-  local openai_setup_json="$ARTIFACTS_DIR/setup-openclaw-openai.json"
-  local openai_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-openai.json"
-  local anthropic_setup_json="$ARTIFACTS_DIR/setup-openclaw-anthropic.json"
-  local anthropic_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-anthropic.json"
-  local opencode_json="$ARTIFACTS_DIR/opencode.json"
-  local claude_settings_json="$ARTIFACTS_DIR/claude-settings.json"
+  local controller_config="$ARTIFACTS_DIR/controller/middleware.json"
+  local opencode_enable_json="$ARTIFACTS_DIR/enable-opencode.json"
+  local openai_enable_json="$ARTIFACTS_DIR/enable-openclaw-openai.json"
+  local claude_enable_json="$ARTIFACTS_DIR/enable-claude.json"
+  local disable_all_json="$ARTIFACTS_DIR/disable-all.json"
+  local anthropic_enable_json="$ARTIFACTS_DIR/enable-openclaw-anthropic.json"
+  local anthropic_disable_json="$ARTIFACTS_DIR/disable-openclaw-anthropic.json"
   local temp_home="$ARTIFACTS_DIR/setup-home"
   local temp_xdg="$ARTIFACTS_DIR/setup-xdg"
+  local opencode_json="$temp_xdg/config/opencode/opencode.json"
+  local claude_settings_json="$temp_home/.claude/settings.json"
+  local controller_port="18787"
 
   seed_openclaw_family_state "$openai_cfg" "$openai_models" "openai-completions"
   seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models" "anthropic-messages"
   seed_opencode_state "$opencode_json"
 
-  log "running setup/uninstall smoke (temp config paths)"
+  log "running controller enable/disable smoke (temp config paths)"
   (
     cd "$REPO_ROOT"
     export HOME="$temp_home"
@@ -429,63 +463,73 @@ run_setup_smoke() {
     export XDG_STATE_HOME="$temp_xdg/state"
     export XDG_CACHE_HOME="$temp_xdg/cache"
     export XDG_DATA_HOME="$temp_xdg/data"
-    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+    "$PYTHON_BIN" scripts/middleware.py \
+      enable opencode \
       --json \
-      --apply-opencode \
+      --config "$controller_config" \
+      --host 127.0.0.1 \
+      --port "$controller_port" \
       --opencode-config-path "$opencode_json" \
-      --apply-openclaw \
+      >"$opencode_enable_json"
+
+    "$PYTHON_BIN" scripts/middleware.py \
+      enable openclaw \
+      --json \
+      --config "$controller_config" \
+      --host 127.0.0.1 \
+      --port "$controller_port" \
       --openclaw-config-path "$openai_cfg" \
       --openclaw-models-cache-path "$openai_models" \
-      --apply-claude \
-      --create-claude-settings \
-      --claude-settings-path "$claude_settings_json" \
-      >"$openai_setup_json"
+      >"$openai_enable_json"
 
-    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+    "$PYTHON_BIN" scripts/middleware.py \
+      enable claude \
       --json \
-      --uninstall \
-      --apply-opencode \
-      --opencode-config-path "$opencode_json" \
-      --apply-openclaw \
-      --openclaw-config-path "$openai_cfg" \
-      --openclaw-models-cache-path "$openai_models" \
-      --apply-claude \
+      --config "$controller_config" \
+      --host 127.0.0.1 \
+      --port "$controller_port" \
       --claude-settings-path "$claude_settings_json" \
-      >"$openai_uninstall_json"
+      >"$claude_enable_json"
 
-    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+    "$PYTHON_BIN" scripts/middleware.py \
+      disable --all \
       --json \
-      --apply-openclaw \
+      --config "$controller_config" \
+      >"$disable_all_json"
+
+    "$PYTHON_BIN" scripts/middleware.py \
+      enable openclaw \
+      --json \
+      --config "$controller_config" \
+      --host 127.0.0.1 \
+      --port "$controller_port" \
       --openclaw-config-path "$anthropic_cfg" \
       --openclaw-models-cache-path "$anthropic_models" \
-      >"$anthropic_setup_json"
+      >"$anthropic_enable_json"
 
-    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+    "$PYTHON_BIN" scripts/middleware.py \
+      disable openclaw \
       --json \
-      --uninstall \
-      --apply-openclaw \
-      --openclaw-config-path "$anthropic_cfg" \
-      --openclaw-models-cache-path "$anthropic_models" \
-      >"$anthropic_uninstall_json"
+      --config "$controller_config" \
+      >"$anthropic_disable_json"
   )
 
-  check_json_field "$openai_setup_json" "payload['success'] is True"
-  check_json_field "$openai_setup_json" "payload['opencode']['changed'] is True"
-  check_json_field "$openai_setup_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$openai_setup_json" "payload['openclaw']['apiFamily'] == 'openai-completions'"
-  check_json_field "$openai_setup_json" "payload['claude']['changed'] is True"
+  check_json_field "$opencode_enable_json" "payload['success'] is True"
+  check_json_field "$opencode_enable_json" "payload['attachment']['changed'] is True"
+  check_json_field "$openai_enable_json" "payload['success'] is True"
+  check_json_field "$openai_enable_json" "payload['attachment']['changed'] is True"
+  check_json_field "$openai_enable_json" "payload['inspection']['apiFamily'] == 'openai-completions'"
+  check_json_field "$claude_enable_json" "payload['success'] is True"
+  check_json_field "$claude_enable_json" "payload['attachment']['changed'] is True"
 
-  check_json_field "$openai_uninstall_json" "payload['success'] is True"
-  check_json_field "$openai_uninstall_json" "payload['opencode']['changed'] is True"
-  check_json_field "$openai_uninstall_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$openai_uninstall_json" "payload['claude']['changed'] is True"
+  check_json_field "$disable_all_json" "payload['success'] is True"
+  check_json_field "$disable_all_json" "'opencode' in payload['harnesses']"
+  check_json_field "$disable_all_json" "'openclaw' in payload['harnesses']"
+  check_json_field "$disable_all_json" "'claude' in payload['harnesses']"
 
-  check_json_field "$anthropic_setup_json" "payload['success'] is True"
-  check_json_field "$anthropic_setup_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$anthropic_setup_json" "payload['openclaw']['apiFamily'] == 'anthropic-messages'"
-
-  check_json_field "$anthropic_uninstall_json" "payload['success'] is True"
-  check_json_field "$anthropic_uninstall_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$anthropic_enable_json" "payload['success'] is True"
+  check_json_field "$anthropic_enable_json" "payload['inspection']['apiFamily'] == 'anthropic-messages'"
+  check_json_field "$anthropic_disable_json" "payload['success'] is True"
   setup_smoke_status="passed"
 }
 
@@ -496,10 +540,12 @@ run_openclaw_cli_smoke() {
   local openai_models_cache="$openai_dir/agents/main/agent/models.json"
   local anthropic_cfg="$anthropic_dir/openclaw.json"
   local anthropic_models_cache="$anthropic_dir/agents/main/agent/models.json"
+  local controller_config="$ARTIFACTS_DIR/openclaw-cli-controller.json"
   local openai_models_json="$ARTIFACTS_DIR/openclaw-openai-models.json"
   local anthropic_models_json="$ARTIFACTS_DIR/openclaw-anthropic-models.json"
   local openai_validate_log="$ARTIFACTS_DIR/openclaw-openai-validate.log"
   local anthropic_validate_log="$ARTIFACTS_DIR/openclaw-anthropic-validate.log"
+  local controller_port="18788"
 
   seed_openclaw_family_state "$openai_cfg" "$openai_models_cache" "openai-completions"
   seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models_cache" "anthropic-messages"
@@ -508,9 +554,12 @@ run_openclaw_cli_smoke() {
 
   (
     cd "$REPO_ROOT"
-    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+    "$PYTHON_BIN" scripts/middleware.py \
+      enable openclaw \
       --json \
-      --apply-openclaw \
+      --config "$controller_config" \
+      --host 127.0.0.1 \
+      --port "$controller_port" \
       --openclaw-config-path "$openai_cfg" \
       --openclaw-models-cache-path "$openai_models_cache" \
       >/dev/null
@@ -525,9 +574,18 @@ run_openclaw_cli_smoke() {
     OPENCLAW_AGENT_DIR="$(dirname "$openai_models_cache")" \
     openclaw models list --json >"$openai_models_json"
 
-    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+    "$PYTHON_BIN" scripts/middleware.py \
+      disable openclaw \
       --json \
-      --apply-openclaw \
+      --config "$controller_config" \
+      >/dev/null
+
+    "$PYTHON_BIN" scripts/middleware.py \
+      enable openclaw \
+      --json \
+      --config "$controller_config" \
+      --host 127.0.0.1 \
+      --port "$controller_port" \
       --openclaw-config-path "$anthropic_cfg" \
       --openclaw-models-cache-path "$anthropic_models_cache" \
       >/dev/null
@@ -541,6 +599,12 @@ run_openclaw_cli_smoke() {
     OPENCLAW_STATE_DIR="$anthropic_dir" \
     OPENCLAW_AGENT_DIR="$(dirname "$anthropic_models_cache")" \
     openclaw models list --json >"$anthropic_models_json"
+
+    "$PYTHON_BIN" scripts/middleware.py \
+      disable openclaw \
+      --json \
+      --config "$controller_config" \
+      >/dev/null
   )
 
   check_json_field "$openai_models_json" "payload['count'] >= 1"
@@ -805,6 +869,28 @@ run_live_agent_matrix_smoke() {
   local artifact_leaf="$2"
   local label="$3"
   local status_var="$4"
+  local effective_opencode_provider="${live_agents_opencode_provider}"
+  local effective_opencode_model="${live_agents_opencode_model}"
+  local effective_opencode_base_url="${live_agents_opencode_base_url}"
+  local effective_openclaw_families="${live_agents_openclaw_families}"
+  local effective_openclaw_openai_provider="${live_agents_openclaw_openai_provider}"
+  local effective_openclaw_openai_model="${live_agents_openclaw_openai_model}"
+  local effective_openclaw_anthropic_provider="${live_agents_openclaw_anthropic_provider}"
+  local effective_openclaw_anthropic_model="${live_agents_openclaw_anthropic_model}"
+  local effective_openclaw_anthropic_base_url="${live_agents_openclaw_anthropic_base_url}"
+
+  if [[ "$agent_subset" == *"opencode"* && -z "$effective_opencode_provider" ]]; then
+    effective_opencode_provider="opencode"
+    [[ -n "$effective_opencode_model" ]] || effective_opencode_model="opencode/gpt-5.3-codex"
+    [[ -n "$effective_opencode_base_url" ]] || effective_opencode_base_url="https://opencode.ai/zen/v1"
+  fi
+
+  if [[ "$agent_subset" == *"openclaw"* && -z "$effective_openclaw_families" ]]; then
+    effective_openclaw_families="openai-completions"
+    [[ -n "$effective_openclaw_openai_provider" ]] || effective_openclaw_openai_provider="zenmux"
+    [[ -n "$effective_openclaw_openai_model" ]] || effective_openclaw_openai_model="gpt-5.3-codex"
+  fi
+
   local smoke_args=(
     scripts/smoke_agent_matrix.py
     --agents "$agent_subset"
@@ -825,32 +911,32 @@ run_live_agent_matrix_smoke() {
     smoke_args+=(--install-target "$live_agents_install_target")
   fi
 
-  if [[ -n "$live_agents_opencode_provider" ]]; then
-    smoke_args+=(--opencode-provider "$live_agents_opencode_provider")
+  if [[ -n "$effective_opencode_provider" ]]; then
+    smoke_args+=(--opencode-provider "$effective_opencode_provider")
   fi
-  if [[ -n "$live_agents_opencode_model" ]]; then
-    smoke_args+=(--opencode-model "$live_agents_opencode_model")
+  if [[ -n "$effective_opencode_model" ]]; then
+    smoke_args+=(--opencode-model "$effective_opencode_model")
   fi
-  if [[ -n "$live_agents_opencode_base_url" ]]; then
-    smoke_args+=(--opencode-base-url "$live_agents_opencode_base_url")
+  if [[ -n "$effective_opencode_base_url" ]]; then
+    smoke_args+=(--opencode-base-url "$effective_opencode_base_url")
   fi
-  if [[ -n "$live_agents_openclaw_families" ]]; then
-    smoke_args+=(--openclaw-families "$live_agents_openclaw_families")
+  if [[ -n "$effective_openclaw_families" ]]; then
+    smoke_args+=(--openclaw-families "$effective_openclaw_families")
   fi
-  if [[ -n "$live_agents_openclaw_openai_provider" ]]; then
-    smoke_args+=(--openclaw-openai-provider "$live_agents_openclaw_openai_provider")
+  if [[ -n "$effective_openclaw_openai_provider" ]]; then
+    smoke_args+=(--openclaw-openai-provider "$effective_openclaw_openai_provider")
   fi
-  if [[ -n "$live_agents_openclaw_openai_model" ]]; then
-    smoke_args+=(--openclaw-openai-model "$live_agents_openclaw_openai_model")
+  if [[ -n "$effective_openclaw_openai_model" ]]; then
+    smoke_args+=(--openclaw-openai-model "$effective_openclaw_openai_model")
   fi
-  if [[ -n "$live_agents_openclaw_anthropic_provider" ]]; then
-    smoke_args+=(--openclaw-anthropic-provider "$live_agents_openclaw_anthropic_provider")
+  if [[ -n "$effective_openclaw_anthropic_provider" ]]; then
+    smoke_args+=(--openclaw-anthropic-provider "$effective_openclaw_anthropic_provider")
   fi
-  if [[ -n "$live_agents_openclaw_anthropic_model" ]]; then
-    smoke_args+=(--openclaw-anthropic-model "$live_agents_openclaw_anthropic_model")
+  if [[ -n "$effective_openclaw_anthropic_model" ]]; then
+    smoke_args+=(--openclaw-anthropic-model "$effective_openclaw_anthropic_model")
   fi
-  if [[ -n "$live_agents_openclaw_anthropic_base_url" ]]; then
-    smoke_args+=(--openclaw-anthropic-base-url "$live_agents_openclaw_anthropic_base_url")
+  if [[ -n "$effective_openclaw_anthropic_base_url" ]]; then
+    smoke_args+=(--openclaw-anthropic-base-url "$effective_openclaw_anthropic_base_url")
   fi
 
   if [[ "$live_agents_keep_sandbox" -eq 1 ]]; then
@@ -930,9 +1016,9 @@ main() {
 
   if [[ "$run_live_openai_agents" -eq 1 ]]; then
     if ! run_live_agent_matrix_smoke \
-      "codex,opencode,openclaw" \
+      "opencode,openclaw" \
       "live-openai-agent-matrix" \
-      "live OpenAI-compatible agent smoke (codex/opencode/openclaw via middleware)" \
+      "live middleware controller smoke (opencode/openclaw)" \
       "live_openai_agent_matrix_status"; then
       smoke_failures=1
     fi

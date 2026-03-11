@@ -164,6 +164,68 @@ class TestHarnessAdapters(unittest.TestCase):
         )
         self.assertTrue(attachment.details["routeSupport"]["supported"])
 
+    def test_openclaw_inspect_current_state_honors_override_paths(self):
+        adapter = HarnessAdapterRegistry().adapter_for("openclaw")
+        with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "custom-state"
+            config_path = state_dir / "openclaw.json"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                json.dumps(
+                    build_openclaw_config(
+                        primary="openai/gpt-4.1",
+                        providers={
+                            "openai": build_openclaw_provider(
+                                api="openai-completions",
+                                base_url="https://api.openai.com/v1",
+                            )
+                        },
+                    )
+                ),
+                encoding="utf-8",
+            )
+            models_cache_path = state_dir / "agents" / "main" / "agent" / "models.json"
+            models_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            models_cache_path.write_text(
+                json.dumps(
+                    build_openclaw_models_cache(
+                        providers={
+                            "openai": build_openclaw_provider(
+                                api="openai-completions",
+                                base_url="https://api.openai.com/v1",
+                            )
+                        }
+                    )
+                ),
+                encoding="utf-8",
+            )
+            auth_profiles_path = models_cache_path.parent / "auth-profiles.json"
+            auth_profiles_path.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "openai:default": {
+                                "provider": "openai",
+                                "type": "bearer",
+                                "token": "sk-test-openclaw",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inspection = adapter.inspect_current_state(
+                env={"HOME": temp_dir},
+                config_path=config_path,
+                models_cache_path=models_cache_path,
+            )
+
+        self.assertTrue(inspection.ready)
+        self.assertEqual(inspection.selection.provider_id, "openai")
+        self.assertEqual(inspection.selection.model_id, "gpt-4.1")
+        self.assertEqual(inspection.selection.api_family, "openai-completions")
+
 
 if __name__ == "__main__":
     unittest.main()

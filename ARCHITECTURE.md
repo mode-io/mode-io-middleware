@@ -24,11 +24,10 @@ repo-root/
   QUICKSTART.md
   README.md
   scripts/
-    middleware_gateway.py
+    middleware.py
     new_plugin.py
     release_check.sh
     run_plugin_conformance.py
-    setup_middleware_gateway.py
     smoke_agent_matrix.py
     validate_plugin_manifest.py
     smoke_matrix/
@@ -46,10 +45,20 @@ repo-root/
         MODEIO_PLUGIN_MANIFEST.schema.json
         MODEIO_PLUGIN_MESSAGE.schema.json
     cli/
+      controller_process.py
+      controller_service.py
+      controller_state.py
       gateway.py
+      harness_adapters/
+        base.py
+        claude.py
+        codex.py
+        opencode.py
+        openclaw.py
+        registry.py
+      middleware.py
       new_plugin.py
       plugin_conformance.py
-      setup.py
       validate_plugin_manifest.py
       setup_lib/
         common.py

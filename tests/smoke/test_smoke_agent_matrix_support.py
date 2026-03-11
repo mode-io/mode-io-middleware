@@ -110,7 +110,7 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             ),
         ):
             args = smoke_agent_matrix.parse_args([])
-        self.assertEqual(args.agents, "codex,opencode,openclaw,claude")
+        self.assertEqual(args.agents, "opencode,openclaw,claude")
         self.assertEqual(args.claude_model, "sonnet")
         self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
         self.assertEqual(args.model, "gpt-4o-mini")
@@ -303,6 +303,43 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             self.assertEqual(
                 route_payload["providers"]["zenmux"]["originalBaseUrl"],
                 "https://zenmux.ai/api/v1",
+            )
+
+    def test_configure_opencode_supported_provider_preserves_real_base_url(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "opencode.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "opencode/gpt-5.4",
+                        "provider": {
+                            "opencode": {
+                                "options": {
+                                    "baseURL": "https://opencode.ai/zen/v1",
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            configure_opencode_supported_provider(
+                config_path=config_path,
+                provider_id="opencode",
+                model_ref="opencode/gpt-5.4",
+                base_url="http://127.0.0.1:41001",
+                real_base_url="https://opencode.ai/zen/v1",
+            )
+
+            route_payload = json.loads(
+                config_path.with_name("opencode.json.modeio-route.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                route_payload["providers"]["opencode"]["originalBaseUrl"],
+                "https://opencode.ai/zen/v1",
             )
 
     def test_resolve_opencode_smoke_model_raises_when_state_missing(self):

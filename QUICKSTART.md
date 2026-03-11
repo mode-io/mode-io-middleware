@@ -25,80 +25,52 @@ python -m pip install --upgrade pip
 python -m pip install -e . build
 ```
 
-## 2) Start the gateway
+## 2) Inspect current harness state
 
-The bundled default config starts with no active plugins enabled.
+Middleware assumes your harness is already working. It does not log you in, pick a provider, or pick a model for you.
 
 ```bash
-modeio-middleware-gateway \
-  --host 127.0.0.1 \
-  --port 8787 \
-  --upstream-chat-url "https://api.openai.com/v1/chat/completions" \
-  --upstream-responses-url "https://api.openai.com/v1/responses"
+middleware inspect opencode --json
+middleware inspect openclaw --json
+middleware inspect claude --json
 ```
 
 ### Source-checkout maintainer flow
 
-If you are working from the repo and want a deterministic local runtime, use the maintainer wrapper instead:
+If you are working from the repo and want a deterministic local runtime, use the repo wrapper instead:
 
 ```bash
-python scripts/dev_gateway.py --fresh
+python scripts/middleware.py inspect opencode --json
 ```
 
-What it does:
-
-- stores config and discovered plugins under `./.modeio-dev/`
-- keeps traces ephemeral because the request journal is still in-memory
-- avoids accidental reuse of `~/.config/modeio`
-- serves the canonical review URL at `http://127.0.0.1:8787/modeio/dashboard`
-
-Useful maintainer commands:
-
-```bash
-python scripts/dev_gateway.py status
-python scripts/dev_gateway.py reset
-python scripts/dev_gateway.py --build-dashboard
-```
-
-## 3) Configure local client routing
-
-### Codex CLI
-
-```bash
-modeio-middleware-setup --health-check --json
-export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
-```
+## 3) Enable supported harnesses
 
 ### OpenCode
 
 ```bash
-modeio-middleware-setup \
-  --apply-opencode
+middleware enable opencode
 ```
 
-This works for redirectable OpenCode providers. If the active provider is built-in `openai` authenticated through ChatGPT OAuth, setup will report that the provider stays outside middleware preserve-provider mode.
+This works for redirectable OpenCode providers. If the active provider is unsupported, `middleware enable opencode` fails clearly and leaves the harness unchanged.
 
 ### OpenClaw
 
 ```bash
-modeio-middleware-setup \
-  --apply-openclaw
+middleware enable openclaw
 ```
 
 ### Claude Code
 
 ```bash
-modeio-middleware-setup \
-  --apply-claude \
-  --create-claude-settings
+middleware enable claude
 ```
 
-This writes `~/.claude/settings.json` hook entries for `UserPromptSubmit` and `Stop`
-to `POST http://127.0.0.1:8787/connectors/claude/hooks`.
+This writes the Claude hook entries to the current middleware server.
 
 ## 4) Verify the gateway
 
 ```bash
+middleware status --json
 curl -s http://127.0.0.1:8787/healthz
 ```
 
@@ -166,10 +138,12 @@ The bundled default config also ships with a disabled external example plugin. I
 ## 7) Use a custom config
 
 ```bash
-modeio-middleware-gateway --config /path/to/middleware.json
+middleware status --config /path/to/middleware.json --json
 ```
 
-Path resolution rules:
+The controller stores `controller.json`, `controller.pid`, and `controller.log` beside the selected middleware config.
+
+Path resolution rules for plugin manifests and relative command paths still follow the config location:
 
 - `manifest` paths are resolved relative to the config file.
 - `command` arguments that point at existing local files are also resolved relative to the config file.
@@ -177,19 +151,17 @@ Path resolution rules:
 ## 8) Uninstall or roll back local routing
 
 ```bash
-modeio-middleware-setup \
-  --uninstall \
-  --apply-opencode \
-  --apply-openclaw \
-  --apply-claude
+middleware disable openclaw
+middleware disable --all
 ```
 
 ## 9) Contributor validation
 
 ```bash
 # Optional readiness check before live smoke
-modeio-middleware-setup --doctor --json \
-  --require-commands codex,opencode,openclaw,claude
+middleware inspect opencode --json
+middleware inspect openclaw --json
+middleware inspect claude --json
 
 # Full Python test suite
 python -m unittest discover tests -p 'test_*.py'
@@ -203,13 +175,13 @@ python -m unittest discover tests -p 'test_*.py'
 # Live upstream traversal check
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 
-# OpenAI-compatible client matrix using harness-owned auth only
+# Supported controller matrix for OpenCode/OpenClaw
 ./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
 
 # Claude-only hook matrix (no separate OpenAI-compatible upstream required)
 ./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
 
-# Full Codex/OpenCode/OpenClaw/Claude matrix (local or self-hosted only)
+# Full supported controller matrix
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 
 # Fresh-install acceptance path for the middleware only (client CLIs stay host-installed)
@@ -224,8 +196,7 @@ OpenClaw setup preserves the active supported provider in place. Unsupported pro
 If you are working from a source checkout and want the repo-local helper equivalents, use:
 
 ```bash
-python scripts/dev_gateway.py
-python scripts/setup_middleware_gateway.py --health-check
+python scripts/middleware.py status --json
 ```
 
 For live frontend editing against the same middleware state:

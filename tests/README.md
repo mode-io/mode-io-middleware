@@ -10,7 +10,7 @@ Additional validation layers live outside `unittest discover` entrypoints:
 
 - `./scripts/release_check.sh` for built-artifact and packaged-resource validation
 - `./scripts/smoke_e2e.sh --live`, `--live-openai-agents`, `--live-claude`, or `--live-agents` for manual or nightly live-routing validation (with native client auth preferred over middleware-owned upstream keys)
-- `modeio-middleware-setup --doctor --json ...` for machine-readable local readiness checks before live acceptance
+- `middleware inspect <harness> --json` for machine-readable local readiness checks before live acceptance
 
 ## Support Layer
 

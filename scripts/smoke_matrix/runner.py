@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import gzip
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -31,10 +29,7 @@ from smoke_matrix.common import (
 from smoke_matrix.models import OpenClawFamilyScenario, SmokeAgentReport
 from smoke_matrix.openclaw_family import _slug_token_part
 from smoke_matrix.outcome import classify_agent_outcome
-from smoke_matrix.sandbox import (
-    build_sandbox_env as _build_sandbox_env,
-    configure_openclaw_supported_family as _configure_openclaw_supported_family,
-)
+from smoke_matrix.sandbox import configure_openclaw_supported_family as _configure_openclaw_supported_family
 
 def run_json_cli_command(
     *,
@@ -61,25 +56,18 @@ def run_json_cli_command(
     return payload, result
 
 
-def run_doctor(
+def _controller_common_args(
     *,
-    setup_command: Sequence[str],
-    repo_root: Path,
-    env: Dict[str, str],
-    agents: Sequence[str],
-    gateway_base_url: str,
+    controller_config_path: Path,
     opencode_config_path: Path,
     openclaw_config_path: Path,
     openclaw_models_cache_path: Path,
     claude_settings_path: Path,
-    timeout_seconds: int,
-) -> Dict[str, object]:
+    codex_config_path: Path | None = None,
+) -> list[str]:
     command = [
-        *setup_command,
-        "--json",
-        "--doctor",
-        "--gateway-base-url",
-        gateway_base_url,
+        "--config",
+        str(controller_config_path),
         "--opencode-config-path",
         str(opencode_config_path),
         "--openclaw-config-path",
@@ -88,12 +76,46 @@ def run_doctor(
         str(openclaw_models_cache_path),
         "--claude-settings-path",
         str(claude_settings_path),
-        "--require-commands",
-        ",".join(agents),
     ]
-    if "codex" in agents:
-        command.append("--require-codex-auth")
+    if codex_config_path is not None:
+        command.extend(["--codex-config-path", str(codex_config_path)])
+    return command
 
+
+def run_controller_inspect(
+    *,
+    controller_command: Sequence[str],
+    repo_root: Path,
+    env: Dict[str, str],
+    controller_config_path: Path,
+    opencode_config_path: Path,
+    openclaw_config_path: Path,
+    openclaw_models_cache_path: Path,
+    claude_settings_path: Path,
+    codex_config_path: Path | None,
+    timeout_seconds: int,
+    harness_name: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+) -> Dict[str, object]:
+    command = [
+        *controller_command,
+        "inspect",
+        *( [harness_name] if harness_name else [] ),
+        "--json",
+        *_controller_common_args(
+            controller_config_path=controller_config_path,
+            opencode_config_path=opencode_config_path,
+            openclaw_config_path=openclaw_config_path,
+            openclaw_models_cache_path=openclaw_models_cache_path,
+            claude_settings_path=claude_settings_path,
+            codex_config_path=codex_config_path,
+        ),
+    ]
+    if host is not None:
+        command.extend(["--host", host])
+    if port is not None:
+        command.extend(["--port", str(port)])
     payload, result = run_json_cli_command(
         command=command,
         cwd=repo_root,
@@ -102,107 +124,143 @@ def run_doctor(
     )
     if int(result["exitCode"]) != 0 or not payload.get("success"):
         raise RuntimeError(
-            f"doctor failed: exit={result['exitCode']} payload={payload}"
+            f"inspect failed: exit={result['exitCode']} payload={payload}"
         )
     return payload
 
 
-def run_setup(
+def run_controller_enable(
     *,
-    setup_command: Sequence[str],
+    controller_command: Sequence[str],
     repo_root: Path,
     env: Dict[str, str],
-    gateway_base_url: str,
-    claude_gateway_base_url: str,
+    harness_name: str,
+    controller_config_path: Path,
     opencode_config_path: Path,
     openclaw_config_path: Path,
     openclaw_models_cache_path: Path,
     claude_settings_path: Path,
+    codex_config_path: Path | None,
     timeout_seconds: int,
-    configure_opencode: bool,
-    configure_openclaw: bool,
-    configure_claude: bool,
+    host: str,
+    port: int,
+    allow_remote_admin: bool = False,
 ) -> Dict[str, object]:
-    report: Dict[str, object] = {
-        "success": True,
-        "opencode": None,
-        "openclaw": None,
-        "claude": None,
-        "commands": {},
-    }
+    command = [
+        *controller_command,
+        "enable",
+        harness_name,
+        "--json",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        *_controller_common_args(
+            controller_config_path=controller_config_path,
+            opencode_config_path=opencode_config_path,
+            openclaw_config_path=openclaw_config_path,
+            openclaw_models_cache_path=openclaw_models_cache_path,
+            claude_settings_path=claude_settings_path,
+            codex_config_path=codex_config_path,
+        ),
+    ]
+    if allow_remote_admin:
+        command.append("--allow-remote-admin")
+    payload, result = run_json_cli_command(
+        command=command,
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(result["exitCode"]) != 0 or not payload.get("success"):
+        raise RuntimeError(
+            f"enable failed for {harness_name}: exit={result['exitCode']} payload={payload}"
+        )
+    return payload
 
-    if configure_opencode or configure_openclaw:
-        routing_command = [
-            *setup_command,
+
+def run_controller_disable(
+    *,
+    controller_command: Sequence[str],
+    repo_root: Path,
+    env: Dict[str, str],
+    harness_name: str,
+    controller_config_path: Path,
+    timeout_seconds: int,
+) -> Dict[str, object]:
+    payload, result = run_json_cli_command(
+        command=[
+            *controller_command,
+            "disable",
+            harness_name,
             "--json",
-            "--gateway-base-url",
-            gateway_base_url,
-        ]
-        if configure_opencode:
-            routing_command.extend(
-                [
-                    "--apply-opencode",
-                    "--opencode-config-path",
-                    str(opencode_config_path),
-                ]
-            )
-        if configure_openclaw:
-            routing_command.extend(
-                [
-                    "--apply-openclaw",
-                    "--openclaw-config-path",
-                    str(openclaw_config_path),
-                    "--openclaw-models-cache-path",
-                    str(openclaw_models_cache_path),
-                ]
-            )
-        routing_payload, routing_result = run_json_cli_command(
-            command=routing_command,
-            cwd=repo_root,
-            env=env,
-            timeout_seconds=timeout_seconds,
+            "--config",
+            str(controller_config_path),
+        ],
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(result["exitCode"]) != 0 or not payload.get("success"):
+        raise RuntimeError(
+            f"disable failed for {harness_name}: exit={result['exitCode']} payload={payload}"
         )
-        if int(routing_result["exitCode"]) != 0 or not routing_payload.get("success"):
-            raise RuntimeError(
-                f"setup command failed: exit={routing_result['exitCode']} payload={routing_payload}"
-            )
-        report.update(
-            {
-                "opencode": routing_payload.get("opencode"),
-                "openclaw": routing_payload.get("openclaw"),
-            }
-        )
-        commands = routing_payload.get("commands")
-        if isinstance(commands, dict):
-            report["commands"].update(commands)
+    return payload
 
-    if configure_claude:
-        claude_command = [
-            *setup_command,
+
+def run_controller_disable_all(
+    *,
+    controller_command: Sequence[str],
+    repo_root: Path,
+    env: Dict[str, str],
+    controller_config_path: Path,
+    timeout_seconds: int,
+) -> Dict[str, object]:
+    payload, result = run_json_cli_command(
+        command=[
+            *controller_command,
+            "disable",
+            "--all",
             "--json",
-            "--apply-claude",
-            "--create-claude-settings",
-            "--claude-settings-path",
-            str(claude_settings_path),
-            "--gateway-base-url",
-            claude_gateway_base_url,
-        ]
-        claude_payload, claude_result = run_json_cli_command(
-            command=claude_command,
-            cwd=repo_root,
-            env=env,
-            timeout_seconds=timeout_seconds,
+            "--config",
+            str(controller_config_path),
+        ],
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(result["exitCode"]) != 0 or not payload.get("success"):
+        raise RuntimeError(
+            f"disable --all failed: exit={result['exitCode']} payload={payload}"
         )
-        if int(claude_result["exitCode"]) != 0 or not claude_payload.get("success"):
-            raise RuntimeError(
-                f"setup command failed: exit={claude_result['exitCode']} payload={claude_payload}"
-            )
-        report["claude"] = claude_payload.get("claude")
-        commands = claude_payload.get("commands")
-        if isinstance(commands, dict) and commands.get("claudeHookUrl"):
-            report["commands"]["claudeHookUrl"] = commands.get("claudeHookUrl")
+    return payload
 
-    return report
+
+def run_controller_status(
+    *,
+    controller_command: Sequence[str],
+    repo_root: Path,
+    env: Dict[str, str],
+    controller_config_path: Path,
+    timeout_seconds: int,
+) -> Dict[str, object]:
+    payload, result = run_json_cli_command(
+        command=[
+            *controller_command,
+            "status",
+            "--json",
+            "--config",
+            str(controller_config_path),
+        ],
+        cwd=repo_root,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    if int(result["exitCode"]) != 0 or not payload.get("success"):
+        raise RuntimeError(
+            f"status failed: exit={result['exitCode']} payload={payload}"
+        )
+    return payload
 
 
 def start_logged_process(
@@ -396,16 +454,20 @@ def run_agent_check(
 
 def run_openclaw_family_checks(
     *,
-    setup_command: Sequence[str],
+    controller_command: Sequence[str],
     repo_root: Path,
     env: Dict[str, str],
-    gateway_base_url: str,
+    controller_config_path: Path,
     openclaw_config_path: Path,
     openclaw_models_cache_path: Path,
+    opencode_config_path: Path,
+    claude_settings_path: Path,
+    codex_config_path: Path | None,
     run_dir: Path,
     run_id: str,
     timeout_seconds: int,
     gateway_host: str,
+    gateway_port: int,
     scenarios: Sequence[OpenClawFamilyScenario],
 ) -> List[Dict[str, object]]:
     reports: List[Dict[str, object]] = []
@@ -416,9 +478,9 @@ def run_openclaw_family_checks(
                     "name": "openclaw",
                     "reportName": scenario.name or f"openclaw:{index}",
                     "family": scenario.family,
-                    "ok": True,
-                    "outcome": "skipped",
-                    "productOk": True,
+                    "ok": False,
+                    "outcome": "product_failed",
+                    "productOk": False,
                     "diagnostic": str(
                         scenario.reason or "OpenClaw current state is unsupported for middleware smoke"
                     ),
@@ -513,26 +575,21 @@ def run_openclaw_family_checks(
             scenario_patch_path = run_dir / f"{family_slug}-scenario.json"
             _write_json(scenario_patch_path, scenario_patch)
 
-            setup_payload, setup_result = run_json_cli_command(
-                command=[
-                    *setup_command,
-                    "--json",
-                    "--apply-openclaw",
-                    "--openclaw-config-path",
-                    str(openclaw_config_path),
-                    "--openclaw-models-cache-path",
-                    str(openclaw_models_cache_path),
-                    "--gateway-base-url",
-                    gateway_base_url,
-                ],
-                cwd=repo_root,
+            enable_payload = run_controller_enable(
+                controller_command=controller_command,
+                repo_root=repo_root,
                 env=env,
+                harness_name="openclaw",
+                controller_config_path=controller_config_path,
+                opencode_config_path=opencode_config_path,
+                openclaw_config_path=openclaw_config_path,
+                openclaw_models_cache_path=openclaw_models_cache_path,
+                claude_settings_path=claude_settings_path,
+                codex_config_path=codex_config_path,
                 timeout_seconds=timeout_seconds,
+                host=gateway_host,
+                port=gateway_port,
             )
-            if int(setup_result["exitCode"]) != 0 or not setup_payload.get("success"):
-                raise RuntimeError(
-                    f"openclaw family setup failed for {family}: exit={setup_result['exitCode']} payload={setup_payload}"
-                )
 
             agent_report = run_agent_check(
                 agent="openclaw",
@@ -559,7 +616,7 @@ def run_openclaw_family_checks(
             agent_report["tap"]["logPath"] = str(tap_jsonl_path)
             agent_report["tap"]["stdoutPath"] = str(tap_stdout_path)
             agent_report["scenarioPatch"] = scenario_patch
-            agent_report["setup"] = setup_payload.get("openclaw")
+            agent_report["controller"] = enable_payload
             reports.append(agent_report)
         except Exception as error:
             reports.append(
@@ -582,6 +639,17 @@ def run_openclaw_family_checks(
                 }
             )
         finally:
+            try:
+                run_controller_disable(
+                    controller_command=controller_command,
+                    repo_root=repo_root,
+                    env=env,
+                    harness_name="openclaw",
+                    controller_config_path=controller_config_path,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:
+                pass
             stop_process(tap_process)
             close_handle(tap_log_handle)
     return reports

@@ -61,14 +61,20 @@ class CodexHarnessAdapter(HarnessAdapter):
     harness_name = CLIENT_CODEX
     binary_name = "codex"
     attachment_kind = ATTACHMENT_KIND_ENV_SESSION
+    controller_supported = False
+    controller_unsupported_reason = (
+        "Codex controller mode is not supported yet. Codex still requires session-style OPENAI_BASE_URL routing."
+    )
 
     def inspect_current_state(
         self,
         *,
         env: Mapping[str, str] | None = None,
         os_name: str | None = None,
+        config_path: Path | None = None,
+        models_cache_path: Path | None = None,
     ) -> HarnessInspection:
-        del os_name
+        del os_name, config_path, models_cache_path
         resolved_env = dict(env or {})
         inspection = _RESOLVER.inspect(client_name=CLIENT_CODEX, env=resolved_env)
         payload = inspection.to_public_dict()

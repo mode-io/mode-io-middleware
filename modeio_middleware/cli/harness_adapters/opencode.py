@@ -55,17 +55,25 @@ class OpenCodeHarnessAdapter(HarnessAdapter):
         *,
         env: Mapping[str, str] | None = None,
         os_name: str | None = None,
+        config_path: Path | None = None,
+        models_cache_path: Path | None = None,
     ) -> HarnessInspection:
-        del os_name
+        del models_cache_path
         resolved_env = dict(env or {})
+        resolved_config_path = self._resolved_config_path(
+            env=resolved_env,
+            os_name=os_name,
+            config_path=config_path,
+        )
+        if config_path is not None:
+            resolved_env.setdefault("MODEIO_OPENCODE_CONFIG_PATH", str(resolved_config_path))
         inspection = _RESOLVER.inspect(client_name=CLIENT_OPENCODE, env=resolved_env)
         payload = inspection.to_public_dict()
         details = dict(payload)
         provider_id = payload.get("providerId")
         model_id = None
-        config_path = default_opencode_config_path(env=resolved_env)
-        if config_path.exists():
-            config = read_json_file(config_path)
+        if resolved_config_path.exists():
+            config = read_json_file(resolved_config_path)
             model_name = config.get("model")
             if isinstance(model_name, str) and "/" in model_name:
                 provider_id, model_id = model_name.split("/", 1)

@@ -13,8 +13,7 @@ from smoke_matrix.common import run_command_capture, write_text
 @dataclass
 class RuntimeEnvironment:
     mode: str
-    setup_command: Sequence[str]
-    gateway_command: Sequence[str]
+    controller_command: Sequence[str]
     env: Dict[str, str]
     report: Dict[str, object]
 
@@ -141,13 +140,9 @@ def prepare_runtime(
     if install_mode == "repo":
         return RuntimeEnvironment(
             mode="repo",
-            setup_command=[
+            controller_command=[
                 sys.executable,
-                str(repo_root / "scripts" / "setup_middleware_gateway.py"),
-            ],
-            gateway_command=[
-                sys.executable,
-                str(repo_root / "scripts" / "middleware_gateway.py"),
+                str(repo_root / "scripts" / "middleware.py"),
             ],
             env=base_env,
             report={
@@ -208,13 +203,11 @@ def prepare_runtime(
     runtime_env["PATH"] = f"{bin_dir}{os.pathsep}{base_env.get('PATH', '')}"
     report["pythonBin"] = str(venv_python)
     report["binDir"] = str(bin_dir)
-    report["setupCommand"] = str(bin_dir / "modeio-middleware-setup")
-    report["gatewayCommand"] = str(bin_dir / "modeio-middleware-gateway")
+    report["controllerCommand"] = str(bin_dir / "middleware")
 
     return RuntimeEnvironment(
         mode=install_mode,
-        setup_command=[str(bin_dir / "modeio-middleware-setup")],
-        gateway_command=[str(bin_dir / "modeio-middleware-gateway")],
+        controller_command=[str(bin_dir / "middleware")],
         env=runtime_env,
         report=report,
     )

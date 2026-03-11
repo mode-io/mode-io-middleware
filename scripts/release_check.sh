@@ -89,10 +89,18 @@ MANIFEST_PATH="${RESOURCE_PATHS[1]}"
 PLUGIN_PATH="${RESOURCE_PATHS[2]}"
 
 log "checking installed console entrypoints"
-PATH="${VENV_BIN}:${PATH}" modeio-middleware-gateway --help >/dev/null
-PATH="${VENV_BIN}:${PATH}" modeio-middleware-setup --json >/dev/null
-PATH="${VENV_BIN}:${PATH}" modeio-middleware-setup --doctor --json >/dev/null
+PATH="${VENV_BIN}:${PATH}" middleware --help >/dev/null
+PATH="${VENV_BIN}:${PATH}" middleware inspect --json >/dev/null
+PATH="${VENV_BIN}:${PATH}" middleware status --json >/dev/null
 PATH="${VENV_BIN}:${PATH}" modeio-middleware-new-plugin --help >/dev/null
+if PATH="${VENV_BIN}:${PATH}" command -v modeio-middleware-gateway >/dev/null 2>&1; then
+  echo "[release-check] unexpected legacy gateway entrypoint is still installed" >&2
+  exit 1
+fi
+if PATH="${VENV_BIN}:${PATH}" command -v modeio-middleware-setup >/dev/null 2>&1; then
+  echo "[release-check] unexpected legacy setup entrypoint is still installed" >&2
+  exit 1
+fi
 
 log "validating bundled example plugin"
 PATH="${VENV_BIN}:${PATH}" modeio-middleware-validate-plugin "$MANIFEST_PATH" >/dev/null
