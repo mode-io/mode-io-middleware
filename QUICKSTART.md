@@ -29,6 +29,17 @@ python -m pip install -e . build
 
 Middleware assumes your harness is already working. It does not log you in, pick a provider, or pick a model for you.
 
+Current controller support landscape:
+
+| Harness | `middleware inspect` | `middleware enable` / `disable` | Works today when... |
+| --- | --- | --- | --- |
+| `Codex CLI` | ✅ Yes | ❌ No | Runtime support exists, but Codex is not part of the controller lifecycle yet |
+| `Claude Code` | ✅ Yes | ✅ Yes | Claude is already logged in and working |
+| `OpenCode` | ✅ Yes | ⚠️ Partial | The current selected provider is a reroutable API-key or proxy-style provider |
+| `OpenClaw` | ✅ Yes | ⚠️ Partial | The current selected provider is a supported OpenAI-compatible or Anthropic-compatible provider |
+
+If the current selected harness state is unsupported, `middleware enable <harness>` fails clearly and leaves that harness unchanged.
+
 ```bash
 middleware inspect opencode --json
 middleware inspect openclaw --json

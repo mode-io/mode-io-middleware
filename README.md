@@ -28,6 +28,19 @@ Built-in monitor with live traces, filters, before/after payload inspection, hoo
 
 Middleware expects an already-working harness and reuses that harness's own auth. It does not log you in, choose a different provider for you, or fall back to a different auth path if your current client setup is unsupported.
 
+### Current controller support landscape
+
+This branch establishes the support boundary for the new `middleware` controller command.
+
+| Harness | `middleware inspect` | `middleware enable` / `disable` | Works today when... | Not yet |
+| --- | --- | --- | --- | --- |
+| `Codex CLI` | ✅ Yes | ❌ No | Runtime support exists outside the new controller lifecycle | Controller-managed Codex attach/detach |
+| `Claude Code` | ✅ Yes | ✅ Yes | Claude is already logged in and working normally | None in the current controller scope |
+| `OpenCode` | ✅ Yes | ⚠️ Partial | The current selected provider is a normal API-key or proxy-style provider that can be rerouted, such as the built-in `opencode` provider with API-key auth | Built-in `openai` with ChatGPT OAuth, built-in `anthropic` with subscription OAuth, Anthropic-style provider paths |
+| `OpenClaw` | ✅ Yes | ⚠️ Partial | The current selected provider is a normal OpenAI-compatible or Anthropic-compatible provider | OpenClaw's built-in Codex or ChatGPT-style provider path |
+
+Compatibility expansion is intentionally paused at this matrix for now.
+
 | Client | Status |
 | --- | --- |
 | `Codex CLI` | ⚠️ Not yet supported in controller mode |
