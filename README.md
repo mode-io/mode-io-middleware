@@ -116,6 +116,15 @@ modeio-middleware-setup --apply-openclaw
 modeio-middleware-setup --apply-claude --create-claude-settings
 ```
 
+From a source checkout, prefer the repo-local Python helpers instead of editable console scripts:
+
+```bash
+export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
+python scripts/setup_middleware_gateway.py --apply-opencode
+python scripts/setup_middleware_gateway.py --apply-openclaw
+python scripts/setup_middleware_gateway.py --apply-claude --create-claude-settings
+```
+
 3. Verify health and open the dashboard:
 
 ```bash
@@ -189,6 +198,8 @@ python -m unittest discover tests -p 'test_*.py'
 ./scripts/smoke_e2e.sh --artifacts-dir ./.artifacts/manual-smoke
 ./scripts/release_check.sh
 ```
+
+If you are validating from a source checkout on a repo-local editable install, prefer `python scripts/setup_middleware_gateway.py --doctor --json ...` over the installed `modeio-middleware-setup` entrypoint.
 
 Live routing check against a real upstream:
 

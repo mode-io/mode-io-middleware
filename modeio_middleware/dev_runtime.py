@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Mapping
 
 DEV_RUNTIME_DIRNAME = ".modeio-dev"
+DEV_INSTANCE_ID_ENV = "MODEIO_DEV_INSTANCE_ID"
 DEFAULT_GATEWAY_HOST = "127.0.0.1"
 DEFAULT_GATEWAY_PORT = 8787
 DEFAULT_DASHBOARD_DEV_PORT = 4173
@@ -53,6 +55,11 @@ def should_use_dev_runtime(
     return True
 
 
+def dev_instance_id(runtime_home: Path) -> str:
+    normalized = str(runtime_home.expanduser().resolve())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
 def apply_dev_runtime_env(
     *,
     runtime_home: Path,
@@ -65,6 +72,7 @@ def apply_dev_runtime_env(
         and not resolved_env.get("MODEIO_MIDDLEWARE_CONFIG")
     ):
         resolved_env["MODEIO_HOME"] = str(runtime_home)
+    resolved_env[DEV_INSTANCE_ID_ENV] = dev_instance_id(runtime_home)
     return resolved_env
 
 

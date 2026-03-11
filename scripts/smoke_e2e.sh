@@ -62,7 +62,7 @@ usage() {
   cat <<'EOF' >&2
 Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH] [--opencode-provider ID --opencode-model MODEL --opencode-base-url URL] [--openclaw-families LIST] [--openclaw-openai-provider ID --openclaw-openai-model MODEL] [--openclaw-anthropic-provider ID --openclaw-anthropic-model MODEL --openclaw-anthropic-base-url URL]
 
-  --live                Deprecated generic gateway smoke; currently reported as skipped
+  --live                Run direct live gateway smoke against a real OpenAI-compatible upstream using API-key auth
   --live-agents         Run both live agent paths: OpenAI-compatible clients and Claude hooks
   --live-openai-agents  Run only Codex/OpenCode/OpenClaw live smoke through OpenAI-compatible middleware routes
   --live-claude         Run only Claude hook live smoke (no upstream model provider required)
@@ -795,9 +795,145 @@ PY
 }
 
 run_live_gateway_smoke() {
-  log "skipping deprecated generic live gateway smoke; use --live-openai-agents, --live-claude, or --live-agents for harness-owned auth validation"
-  live_gateway_status="skipped"
-  return 0
+  local output_json="$ARTIFACTS_DIR/live-gateway-smoke.json"
+  local upstream_base_url="${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-https://api.openai.com/v1}"
+  local live_model="${MODEIO_GATEWAY_UPSTREAM_MODEL:-gpt-4o-mini}"
+  local live_api_key="${MODEIO_GATEWAY_UPSTREAM_API_KEY:-${OPENAI_API_KEY:-}}"
+
+  if [[ -z "$live_api_key" ]]; then
+    echo "[smoke] missing live upstream API key; set MODEIO_GATEWAY_UPSTREAM_API_KEY or OPENAI_API_KEY" >&2
+    return 1
+  fi
+
+  log "running live gateway smoke against ${upstream_base_url%/}"
+
+  MODEIO_LIVE_UPSTREAM_BASE_URL="${upstream_base_url%/}" \
+  MODEIO_LIVE_MODEL="$live_model" \
+  MODEIO_LIVE_API_KEY="$live_api_key" \
+  "$PYTHON_BIN" - "$REPO_ROOT" >"$output_json" <<'PY'
+import json
+import os
+import sys
+import threading
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root))
+
+from modeio_middleware.cli.gateway import create_server
+from modeio_middleware.core.engine import GatewayRuntimeConfig
+from modeio_middleware.core.profiles import DEFAULT_PROFILE
+
+upstream_base_url = os.environ["MODEIO_LIVE_UPSTREAM_BASE_URL"].rstrip("/")
+model = os.environ["MODEIO_LIVE_MODEL"].strip() or "gpt-4o-mini"
+api_key = os.environ["MODEIO_LIVE_API_KEY"].strip()
+
+if not api_key:
+    raise SystemExit("missing MODEIO_LIVE_API_KEY")
+
+chat_token = "MODEIO_LIVE_CHAT_OK"
+
+
+def request(host, port, method, path, body=None, headers=None):
+    url = f"http://{host}:{port}{path}"
+    payload = None
+    req_headers = headers or {}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        req_headers = {"Content-Type": "application/json", **req_headers}
+
+    req = urllib.request.Request(url, data=payload, method=method, headers=req_headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.status, dict(resp.headers.items()), resp.read()
+    except urllib.error.HTTPError as error:
+        body_data = error.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"request failed: {method} {path} -> {error.code} {body_data}")
+
+
+cfg = GatewayRuntimeConfig(
+    upstream_chat_completions_url=f"{upstream_base_url}/chat/completions",
+    upstream_responses_url=f"{upstream_base_url}/responses",
+    upstream_timeout_seconds=60,
+    upstream_api_key_env="MODEIO_GATEWAY_UPSTREAM_API_KEY",
+    default_profile=DEFAULT_PROFILE,
+    profiles={DEFAULT_PROFILE: {"plugins": []}},
+    plugins={},
+)
+
+gateway = create_server("127.0.0.1", 0, cfg)
+gateway_host, gateway_port = gateway.server_address
+gateway_thread = threading.Thread(target=gateway.serve_forever, daemon=True)
+gateway_thread.start()
+
+try:
+    health_status, _, health_body = request(gateway_host, gateway_port, "GET", "/healthz")
+    chat_status, chat_headers, chat_body = request(
+        gateway_host,
+        gateway_port,
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Reply with only the exact text {chat_token}",
+                }
+            ],
+            "modeio": {"profile": DEFAULT_PROFILE},
+        },
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+
+    chat_payload = json.loads(chat_body.decode("utf-8"))
+    assistant_message = (
+        chat_payload.get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+    )
+
+    normalized_headers = {k.lower(): v for k, v in chat_headers.items()}
+    summary = {
+        "health": {
+            "status": health_status,
+            "ok": json.loads(health_body.decode("utf-8")).get("ok"),
+        },
+        "chat": {
+            "status": chat_status,
+            "assistantPreview": str(assistant_message)[:200],
+            "containsToken": chat_token in str(assistant_message),
+            "contractHeadersPresent": all(
+                key in normalized_headers
+                for key in [
+                    "x-modeio-contract-version",
+                    "x-modeio-request-id",
+                    "x-modeio-profile",
+                    "x-modeio-upstream-called",
+                ]
+            ),
+            "upstreamCalled": normalized_headers.get("x-modeio-upstream-called"),
+        },
+        "upstream": {
+            "baseUrl": upstream_base_url,
+            "model": model,
+        },
+    }
+    print(json.dumps(summary))
+finally:
+    gateway.shutdown()
+    gateway.server_close()
+    gateway_thread.join(timeout=2)
+PY
+
+  check_json_field "$output_json" "payload['health']['status'] == 200 and payload['health']['ok'] is True"
+  check_json_field "$output_json" "payload['chat']['status'] == 200"
+  check_json_field "$output_json" "payload['chat']['containsToken'] is True"
+  check_json_field "$output_json" "payload['chat']['contractHeadersPresent'] is True"
+  check_json_field "$output_json" "payload['chat']['upstreamCalled'] == 'true'"
+  live_gateway_status="passed"
 }
 
 run_live_agent_matrix_smoke() {

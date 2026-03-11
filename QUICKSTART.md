@@ -96,6 +96,22 @@ modeio-middleware-setup \
 This writes `~/.claude/settings.json` hook entries for `UserPromptSubmit` and `Stop`
 to `POST http://127.0.0.1:8787/connectors/claude/hooks`.
 
+### Source-checkout maintainer equivalents
+
+If you are working from the repo in a local editable environment, prefer the Python wrapper scripts instead of the installed console entrypoints:
+
+```bash
+python scripts/setup_middleware_gateway.py --health-check --json
+python scripts/setup_middleware_gateway.py --apply-opencode
+python scripts/setup_middleware_gateway.py --apply-openclaw
+python scripts/setup_middleware_gateway.py --apply-claude --create-claude-settings
+python scripts/new_plugin.py my-policy
+python scripts/validate_plugin_manifest.py ./plugins_external/my_policy/manifest.json
+python scripts/run_plugin_conformance.py \
+  ./plugins_external/my_policy/manifest.json \
+  python3 ./plugins_external/my_policy/plugin.py
+```
+
 ## 4) Verify the gateway
 
 ```bash

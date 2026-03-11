@@ -17,11 +17,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from modeio_middleware.dev_runtime import (  # noqa: E402
+    DEV_INSTANCE_ID_ENV,
     DEFAULT_GATEWAY_HOST,
     DEFAULT_GATEWAY_PORT,
     apply_dev_runtime_env,
     dashboard_bundle_exists,
     dashboard_bundle_is_stale,
+    dev_instance_id,
     health_url,
     reset_dev_runtime,
     resolve_dev_runtime_paths,
@@ -63,10 +65,13 @@ def _health_status(url: str, timeout_seconds: int = 1) -> dict[str, object]:
             "statusCode": None,
             "message": f"connection_failed:{type(error).__name__}",
         }
+    if not isinstance(payload, dict):
+        payload = {}
     return {
-        "ok": bool(isinstance(payload, dict) and payload.get("ok") is True),
+        "ok": bool(payload.get("ok") is True),
         "statusCode": response.status,
-        "message": "healthy" if isinstance(payload, dict) and payload.get("ok") is True else "unhealthy_payload",
+        "message": "healthy" if payload.get("ok") is True else "unhealthy_payload",
+        "devInstanceId": payload.get("devInstanceId"),
     }
 
 
@@ -78,6 +83,20 @@ def _status_payload(
 ) -> dict[str, object]:
     host, port = _resolve_gateway_target(gateway_args)
     paths = resolve_dev_runtime_paths(REPO_ROOT, runtime_home)
+    expected_dev_instance_id = dev_instance_id(paths.runtime_home) if using_dev_runtime else None
+    health = _health_status(health_url(host, port))
+    if expected_dev_instance_id is not None:
+        health["expectedDevInstanceId"] = expected_dev_instance_id
+        actual_dev_instance_id = health.get("devInstanceId")
+        if isinstance(actual_dev_instance_id, str):
+            matches_expected = actual_dev_instance_id == expected_dev_instance_id
+            health["matchesExpectedInstance"] = matches_expected
+            if health.get("ok") is True and not matches_expected:
+                health["message"] = "healthy_different_dev_runtime"
+        else:
+            health["matchesExpectedInstance"] = None
+            if health.get("ok") is True:
+                health["message"] = "healthy_runtime_identity_unknown"
     return {
         "mode": "repo-local-dev" if using_dev_runtime else "explicit-runtime-override",
         "repoRoot": str(paths.repo_root),
@@ -91,7 +110,7 @@ def _status_payload(
         "dashboardBundleStale": dashboard_bundle_is_stale(paths),
         "reviewUrl": review_url(host, port),
         "viteUrl": vite_dashboard_url(),
-        "health": _health_status(health_url(host, port)),
+        "health": health,
     }
 
 
@@ -179,6 +198,7 @@ def _run_start(argv: Sequence[str]) -> int:
     if using_dev_runtime:
         env_updates = apply_dev_runtime_env(runtime_home=paths.runtime_home, env=os.environ)
         os.environ["MODEIO_HOME"] = env_updates["MODEIO_HOME"]
+        os.environ[DEV_INSTANCE_ID_ENV] = env_updates[DEV_INSTANCE_ID_ENV]
 
     try:
         from modeio_middleware.cli.gateway import main as gateway_main
