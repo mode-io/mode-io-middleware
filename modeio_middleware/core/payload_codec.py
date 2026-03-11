@@ -956,6 +956,8 @@ def _set_responses_action(native: Dict[str, Any], metadata: Dict[str, Any], attr
 def _set_anthropic_block(native: Dict[str, Any], metadata: Dict[str, Any], text: str) -> None:
     if metadata.get("message_index") is None:
         carrier_root = native.get("system")
+        if not isinstance(carrier_root, list):
+            carrier_root = native.get("content")
     else:
         messages = native.get("messages")
         message_index = metadata.get("message_index")
@@ -965,7 +967,10 @@ def _set_anthropic_block(native: Dict[str, Any], metadata: Dict[str, Any], text:
         carrier_root = message.get("content") if isinstance(message, dict) else None
     if metadata.get("content_mode") == "string":
         if metadata.get("message_index") is None:
-            native["system"] = text
+            if "system" in native or "messages" in native:
+                native["system"] = text
+            else:
+                native["content"] = text
         else:
             native["messages"][metadata["message_index"]]["content"] = text
         return
