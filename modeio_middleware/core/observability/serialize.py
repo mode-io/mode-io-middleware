@@ -113,11 +113,19 @@ def serialize_detail(record: RequestTraceRecord) -> dict[str, Any]:
             "before": record.original_request_body,
             "after": record.effective_request_body,
             "change": serialize_change(record.request_change),
+            "native": {
+                "before": record.native_request_body,
+                "after": record.effective_native_request_body,
+            },
         },
         "response": {
             "before": record.original_response_body,
             "after": record.effective_response_body,
             "change": serialize_change(record.response_change),
+            "native": {
+                "before": record.native_response_body,
+                "after": record.effective_native_response_body,
+            },
         },
         "preActions": list(record.pre_actions),
         "postActions": list(record.post_actions),

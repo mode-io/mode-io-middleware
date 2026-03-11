@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from modeio_middleware.core.contracts import HOOK_ACTION_ALLOW, VALID_HOOK_ACTIONS
+from modeio_middleware.core.payload_mutations import normalize_semantic_operations
 
 
 @dataclass
@@ -13,11 +14,7 @@ class HookDecision:
     action: str = HOOK_ACTION_ALLOW
     findings: List[Dict[str, Any]] = field(default_factory=list)
     message: Optional[str] = None
-    request_body: Optional[Dict[str, Any]] = None
-    request_headers: Optional[Dict[str, Any]] = None
-    response_body: Optional[Dict[str, Any]] = None
-    response_headers: Optional[Dict[str, Any]] = None
-    event: Optional[Dict[str, Any]] = None
+    operations: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _coerce_findings(raw: Any) -> List[Dict[str, Any]]:
@@ -40,16 +37,8 @@ def _to_payload(payload: Any) -> Dict[str, Any]:
             "findings": payload.findings,
             "message": payload.message,
         }
-        if payload.request_body is not None:
-            result["request_body"] = payload.request_body
-        if payload.request_headers is not None:
-            result["request_headers"] = payload.request_headers
-        if payload.response_body is not None:
-            result["response_body"] = payload.response_body
-        if payload.response_headers is not None:
-            result["response_headers"] = payload.response_headers
-        if payload.event is not None:
-            result["event"] = payload.event
+        if payload.operations:
+            result["operations"] = payload.operations
         return result
 
     if payload is None:
@@ -76,20 +65,7 @@ def normalize_decision_payload(payload: Any, *, stream: bool) -> Dict[str, Any]:
         "action": action,
         "findings": _coerce_findings(data.get("findings")),
         "message": message,
+        "operations": normalize_semantic_operations(data.get("operations")),
     }
-
-    if stream:
-        if "event" in data:
-            normalized["event"] = data["event"]
-        return normalized
-
-    if "request_body" in data:
-        normalized["request_body"] = data["request_body"]
-    if "request_headers" in data:
-        normalized["request_headers"] = data["request_headers"]
-    if "response_body" in data:
-        normalized["response_body"] = data["response_body"]
-    if "response_headers" in data:
-        normalized["response_headers"] = data["response_headers"]
 
     return normalized

@@ -28,14 +28,28 @@ class _ModifyBothPlugin(MiddlewarePlugin):
     name = "modify_both"
 
     def pre_request(self, hook_input):
-        body = hook_input["request_body"]
-        body["messages"][0]["content"] = "rewritten prompt"
-        return {"action": "patch", "request_body": body}
+        return {
+            "action": "modify",
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "target": "prompt",
+                    "text": "rewritten prompt",
+                }
+            ],
+        }
 
     def post_response(self, hook_input):
-        body = hook_input["response_body"]
-        body["choices"][0]["message"]["content"] = "rewritten response"
-        return {"action": "patch", "response_body": body}
+        return {
+            "action": "modify",
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "target": "response",
+                    "text": "rewritten response",
+                }
+            ],
+        }
 
 
 class _BlockPlugin(MiddlewarePlugin):
@@ -121,7 +135,7 @@ class TestMonitoringApi(unittest.TestCase):
             self.assertEqual(detail["clientName"], "unknown")
             self.assertEqual(detail["lifecycle"], "none")
             self.assertEqual(
-                detail["request"]["before"]["messages"][0]["content"],
+                detail["request"]["before"]["views"]["prompt"]["text"],
                 "hello monitoring",
             )
 
@@ -183,15 +197,16 @@ class TestMonitoringApi(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertEqual(detail["lifecycle"], "pre_and_post")
-            self.assertEqual(detail["impact"], "mixed")
+            self.assertEqual(detail["impact"], "modified")
             self.assertEqual(detail["primaryPlugin"], "modify_both")
             self.assertTrue(detail["request"]["change"]["changed"])
             self.assertTrue(detail["response"]["change"]["changed"])
             self.assertEqual(
-                detail["request"]["after"]["messages"][0]["content"], "rewritten prompt"
+                detail["request"]["after"]["views"]["prompt"]["text"],
+                "rewritten prompt",
             )
             self.assertEqual(
-                detail["response"]["after"]["choices"][0]["message"]["content"],
+                detail["response"]["after"]["views"]["response"]["text"],
                 "rewritten response",
             )
             self.assertEqual(len(detail["hookExecutions"]), 2)

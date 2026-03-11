@@ -31,6 +31,8 @@ class CanonicalInvocation:
     on_plugin_error: Optional[str]
     plugin_overrides: Dict[str, Dict[str, Any]]
     incoming_headers: Dict[str, str]
+    normalized_payload: Dict[str, Any] = field(default_factory=dict)
+    native_payload: Dict[str, Any] = field(default_factory=dict)
     request_body: Dict[str, Any] = field(default_factory=dict)
     response_body: Dict[str, Any] = field(default_factory=dict)
     connector_context: Dict[str, Any] = field(default_factory=dict)

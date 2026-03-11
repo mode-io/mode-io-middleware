@@ -13,6 +13,11 @@ sys.path.insert(0, str(TESTS_DIR))
 
 from modeio_middleware.core.contracts import ENDPOINT_CHAT_COMPLETIONS  # noqa: E402
 from modeio_middleware.core.decision import HookDecision  # noqa: E402
+from modeio_middleware.core.payload_codec import (  # noqa: E402
+    normalize_request_payload,
+    normalize_response_payload,
+    normalize_stream_event_payload,
+)
 from modeio_middleware.core.plugin_manager import PluginManager  # noqa: E402
 from modeio_middleware.core.services.telemetry import PluginTelemetry  # noqa: E402
 from modeio_middleware.plugins.base import MiddlewarePlugin  # noqa: E402
@@ -23,21 +28,40 @@ class _ModifyPlugin(MiddlewarePlugin):
     name = "modify"
 
     def pre_request(self, hook_input):
-        body = dict(hook_input["request_body"])
-        body["model"] = "rewritten-model"
-        return {"action": "modify", "request_body": body}
+        return {
+            "action": "modify",
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "target": "prompt",
+                    "text": "rewritten prompt",
+                }
+            ],
+        }
 
     def post_response(self, hook_input):
-        body = dict(hook_input["response_body"])
-        body["tag"] = "done"
-        return {"action": "modify", "response_body": body}
+        return {
+            "action": "modify",
+            "operations": [
+                {
+                    "op": "append_text",
+                    "target": "response",
+                    "text": " [done]",
+                }
+            ],
+        }
 
     def post_stream_event(self, hook_input):
-        event = dict(hook_input["event"])
-        payload = dict(event.get("payload") or {})
-        payload["tag"] = "stream"
-        event["payload"] = payload
-        return {"action": "modify", "event": event}
+        return {
+            "action": "modify",
+            "operations": [
+                {
+                    "op": "append_text",
+                    "target": "response",
+                    "text": "!",
+                }
+            ],
+        }
 
 
 class _ErrorPlugin(MiddlewarePlugin):
@@ -110,6 +134,53 @@ class TestPluginManager(unittest.TestCase):
         register_plugin_module("modeio_middleware.tests.plugins.decision", _DecisionPlugin)
         register_plugin_module("modeio_middleware.tests.plugins.invalid_action", _InvalidActionPlugin)
 
+    def _request_payload(self):
+        body = {
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        normalized = normalize_request_payload(
+            endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
+            source="openai_gateway",
+            request_body=body,
+            connector_context={},
+        ).to_public_dict()
+        return body, normalized, {"request_body": body}
+
+    def _response_payload(self):
+        body = {
+            "id": "resp",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "original response"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        normalized = normalize_response_payload(
+            endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
+            source="openai_gateway",
+            response_body=body,
+            connector_context={},
+        ).to_public_dict()
+        return body, normalized, {"response_body": body}
+
+    def _stream_event_payload(self):
+        event = {
+            "data_type": "json",
+            "payload": {
+                "choices": [{"delta": {"content": "stream"}}],
+            },
+        }
+        normalized = normalize_stream_event_payload(
+            endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
+            source="openai_gateway",
+            event=event,
+            request_context={},
+        ).to_public_dict()
+        return event, normalized, {"event": event}
+
     def test_resolve_active_plugins_enabled_order(self):
         manager = PluginManager(
             {
@@ -137,13 +208,16 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["modify"], {})
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},
@@ -151,7 +225,7 @@ class TestPluginManager(unittest.TestCase):
         )
 
         self.assertFalse(result.blocked)
-        self.assertEqual(result.body["model"], "rewritten-model")
+        self.assertEqual(result.body["messages"][0]["content"], "rewritten prompt")
         self.assertIn("modify:modify", result.actions)
 
     def test_resolve_active_plugins_reuses_runtime_instances(self):
@@ -202,13 +276,16 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["modify"], {})
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},
@@ -220,7 +297,7 @@ class TestPluginManager(unittest.TestCase):
         )
 
         self.assertFalse(result.blocked)
-        self.assertEqual(result.body["model"], "gpt-test")
+        self.assertEqual(result.body["messages"][0]["content"], "hello")
         self.assertIn("modify:warn", result.actions)
 
     def test_apply_pre_request_error_fail_safe_blocks(self):
@@ -233,13 +310,16 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["error"], {})
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="prod",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},
@@ -259,13 +339,16 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["block"], {})
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},
@@ -284,6 +367,7 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["modify"], {})
+        response_body, normalized_payload, native_payload = self._response_payload()
 
         result = manager.apply_post_response(
             active,
@@ -291,13 +375,18 @@ class TestPluginManager(unittest.TestCase):
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
             request_context={},
-            response_body={"id": "resp"},
+            response_body=response_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             response_headers={},
             shared_state={},
             on_plugin_error="warn",
         )
         self.assertFalse(result.blocked)
-        self.assertEqual(result.body["tag"], "done")
+        self.assertEqual(
+            result.body["choices"][0]["message"]["content"],
+            "original response [done]",
+        )
         self.assertIn("modify:modify", result.actions)
 
     def test_apply_post_stream_event_modify(self):
@@ -310,6 +399,7 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["modify"], {})
+        event, normalized_payload, native_payload = self._stream_event_payload()
 
         result = manager.apply_post_stream_event(
             active,
@@ -317,13 +407,17 @@ class TestPluginManager(unittest.TestCase):
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
             request_context={},
-            event={"data_type": "json", "payload": {"id": "evt1"}},
+            event=event,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             shared_state={},
             on_plugin_error="warn",
         )
 
         self.assertFalse(result.blocked)
-        self.assertEqual(result.event["payload"]["tag"], "stream")
+        self.assertEqual(
+            result.event["payload"]["choices"][0]["delta"]["content"], "stream!"
+        )
         self.assertIn("modify:modify", result.actions)
 
     def test_apply_pre_request_accepts_hookdecision_payload(self):
@@ -336,13 +430,16 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["decision"], {})
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},
@@ -364,13 +461,16 @@ class TestPluginManager(unittest.TestCase):
         )
         active = manager.resolve_active_plugins(["modify"], {})
         telemetry = PluginTelemetry()
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},
@@ -393,13 +493,16 @@ class TestPluginManager(unittest.TestCase):
             }
         )
         active = manager.resolve_active_plugins(["defer"], {})
+        request_body, normalized_payload, native_payload = self._request_payload()
 
         result = manager.apply_pre_request(
             active,
             request_id="req1",
             endpoint_kind=ENDPOINT_CHAT_COMPLETIONS,
             profile="dev",
-            request_body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+            request_body=request_body,
+            normalized_payload=normalized_payload,
+            native_payload=native_payload,
             request_headers={},
             context={},
             shared_state={},

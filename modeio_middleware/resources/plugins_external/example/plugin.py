@@ -30,8 +30,13 @@ def _invoke_decision(params: dict) -> dict:
             }
         }
 
-    request_body = hook_input.get("request_body", {})
-    model = request_body.get("model", "unknown-model")
+    payload = hook_input.get("payload", {})
+    metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+    native = hook_input.get("native", {})
+    native_request = native.get("request_body", {}) if isinstance(native, dict) else {}
+    model = native_request.get("model", "unknown-model")
+    prompt_view = payload.get("views", {}).get("prompt", {}) if isinstance(payload, dict) else {}
+    prompt_text = prompt_view.get("text", "") if isinstance(prompt_view, dict) else ""
     return {
         "decision": {
             "action": "annotate",
@@ -42,7 +47,7 @@ def _invoke_decision(params: dict) -> dict:
                     "severity": "low",
                     "confidence": 1.0,
                     "reason": "shipped example plugin observed a request",
-                    "evidence": [f"model={model}"],
+                    "evidence": [f"model={model}", f"prompt={prompt_text[:80]}", f"source={metadata.get('connectorContext', {}).get('source', 'unknown')}"],
                 }
             ],
         }

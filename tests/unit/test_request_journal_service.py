@@ -8,6 +8,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = REPO_ROOT
 sys.path.insert(0, str(PACKAGE_DIR))
 
+from modeio_middleware.core.payload_codec import (  # noqa: E402
+    normalize_request_payload,
+    normalize_response_payload,
+)
 from modeio_middleware.core.observability.models import RequestJournalConfig  # noqa: E402
 from modeio_middleware.core.observability.service import RequestJournalService  # noqa: E402
 
@@ -27,6 +31,13 @@ class TestRequestJournalService(unittest.TestCase):
 
     def test_records_completed_request_with_change_summary(self):
         service = self._service()
+        request_body = {"messages": [{"content": "hello"}], "api_key": "secret"}
+        request_payload = normalize_request_payload(
+            endpoint_kind="chat_completions",
+            source="openai_gateway",
+            request_body=request_body,
+            connector_context={},
+        ).to_public_dict()
         service.start_request(
             request_id="req-1",
             source="openai_gateway",
@@ -36,27 +47,50 @@ class TestRequestJournalService(unittest.TestCase):
             phase="request",
             profile="dev",
             stream=False,
-            request_body={"messages": [{"content": "hello"}], "api_key": "secret"},
+            request_payload=request_payload,
+            native_request_body=request_body,
         )
+        effective_request_body = {
+            "messages": [{"role": "user", "content": "hello world"}],
+            "api_key": "secret",
+        }
         service.record_pre_result(
             request_id="req-1",
-            effective_request_body={
-                "messages": [{"content": "hello world"}],
-                "api_key": "secret",
-            },
+            effective_request_payload=normalize_request_payload(
+                endpoint_kind="chat_completions",
+                source="openai_gateway",
+                request_body=effective_request_body,
+                connector_context={},
+            ).to_public_dict(),
+            effective_native_request_body=effective_request_body,
             pre_actions=["inject_context:modify"],
             degraded=[],
             findings=[],
             blocked=False,
             block_message=None,
         )
+        upstream_response = {"output_text": "ok"}
         service.mark_upstream_start(request_id="req-1")
         service.record_upstream_result(
-            request_id="req-1", response_body={"output_text": "ok"}
+            request_id="req-1",
+            response_payload=normalize_response_payload(
+                endpoint_kind="responses",
+                source="openai_gateway",
+                response_body=upstream_response,
+                connector_context={},
+            ).to_public_dict(),
+            native_response_body=upstream_response,
         )
+        effective_response_body = {"output_text": "patched"}
         service.record_post_result(
             request_id="req-1",
-            effective_response_body={"output_text": "patched"},
+            effective_response_payload=normalize_response_payload(
+                endpoint_kind="responses",
+                source="openai_gateway",
+                response_body=effective_response_body,
+                connector_context={},
+            ).to_public_dict(),
+            effective_native_response_body=effective_response_body,
             post_actions=["decorate:modify"],
             degraded=[],
             findings=[{"reason": "patched"}],
@@ -83,12 +117,13 @@ class TestRequestJournalService(unittest.TestCase):
         self.assertEqual(service.stats_snapshot()["byLifecycle"]["pre_and_post"], 1)
         self.assertTrue(record.request_change.changed)
         self.assertTrue(record.response_change.changed)
-        self.assertEqual(record.original_request_body["api_key"], "***")
+        self.assertEqual(record.native_request_body["api_key"], "***")
         self.assertEqual(record.hook_executions[0].plugin_name, "inject_context")
         self.assertEqual(service.stats_snapshot()["byAction"]["modify"], 1)
 
     def test_records_blocked_error_as_blocked_status(self):
         service = self._service()
+        request_body = {"messages": [{"role": "user", "content": "hello"}]}
         service.start_request(
             request_id="req-2",
             source="openai_gateway",
@@ -98,11 +133,23 @@ class TestRequestJournalService(unittest.TestCase):
             phase="request",
             profile="dev",
             stream=False,
-            request_body={"messages": [{"content": "hello"}]},
+            request_payload=normalize_request_payload(
+                endpoint_kind="chat_completions",
+                source="openai_gateway",
+                request_body=request_body,
+                connector_context={},
+            ).to_public_dict(),
+            native_request_body=request_body,
         )
         service.record_pre_result(
             request_id="req-2",
-            effective_request_body={"messages": [{"content": "hello"}]},
+            effective_request_payload=normalize_request_payload(
+                endpoint_kind="chat_completions",
+                source="openai_gateway",
+                request_body=request_body,
+                connector_context={},
+            ).to_public_dict(),
+            effective_native_request_body=request_body,
             pre_actions=["blocker:block"],
             degraded=[],
             findings=[],
@@ -136,6 +183,7 @@ class TestRequestJournalService(unittest.TestCase):
 
     def test_marks_stream_completion(self):
         service = self._service()
+        request_body = {"messages": [{"role": "user", "content": "stream me"}]}
         service.start_request(
             request_id="req-3",
             source="openai_gateway",
@@ -145,11 +193,23 @@ class TestRequestJournalService(unittest.TestCase):
             phase="request",
             profile="dev",
             stream=True,
-            request_body={"messages": [{"content": "stream me"}]},
+            request_payload=normalize_request_payload(
+                endpoint_kind="chat_completions",
+                source="openai_gateway",
+                request_body=request_body,
+                connector_context={},
+            ).to_public_dict(),
+            native_request_body=request_body,
         )
         service.record_pre_result(
             request_id="req-3",
-            effective_request_body={"messages": [{"content": "stream me"}]},
+            effective_request_payload=normalize_request_payload(
+                endpoint_kind="chat_completions",
+                source="openai_gateway",
+                request_body=request_body,
+                connector_context={},
+            ).to_public_dict(),
+            effective_native_request_body=request_body,
             pre_actions=[],
             degraded=[],
             findings=[],
@@ -157,10 +217,15 @@ class TestRequestJournalService(unittest.TestCase):
             block_message=None,
         )
         service.mark_upstream_start(request_id="req-3")
-        service.record_upstream_result(request_id="req-3", response_body=None)
+        service.record_upstream_result(
+            request_id="req-3",
+            response_payload=None,
+            native_response_body=None,
+        )
         service.record_post_result(
             request_id="req-3",
-            effective_response_body=None,
+            effective_response_payload=None,
+            effective_native_response_body=None,
             post_actions=["stream"],
             degraded=[],
             findings=[],

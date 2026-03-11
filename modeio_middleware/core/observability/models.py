@@ -90,6 +90,10 @@ class RequestTraceRecord:
     effective_response_body: dict[str, Any] | None
     request_change: ChangeSummary
     response_change: ChangeSummary
+    native_request_body: dict[str, Any] | None = None
+    effective_native_request_body: dict[str, Any] | None = None
+    native_response_body: dict[str, Any] | None = None
+    effective_native_response_body: dict[str, Any] | None = None
     pre_actions: tuple[str, ...] = ()
     post_actions: tuple[str, ...] = ()
     degraded: tuple[str, ...] = ()
@@ -115,6 +119,10 @@ class InFlightTrace:
     effective_request_body: dict[str, Any] | None = None
     original_response_body: dict[str, Any] | None = None
     effective_response_body: dict[str, Any] | None = None
+    native_request_body: dict[str, Any] | None = None
+    effective_native_request_body: dict[str, Any] | None = None
+    native_response_body: dict[str, Any] | None = None
+    effective_native_response_body: dict[str, Any] | None = None
     upstream_called: bool = False
     upstream_started_perf: float | None = None
     upstream_duration_ms: float | None = None

@@ -128,12 +128,16 @@ class RequestJournalService:
         phase: str,
         profile: str,
         stream: bool,
-        request_body: dict[str, Any] | None,
-        response_body: dict[str, Any] | None = None,
+        request_payload: dict[str, Any] | None,
+        response_payload: dict[str, Any] | None = None,
+        native_request_body: dict[str, Any] | None = None,
+        native_response_body: dict[str, Any] | None = None,
     ) -> None:
         try:
-            sanitized_request = self._sanitize_body(request_body)
-            sanitized_response = self._sanitize_body(response_body)
+            sanitized_request = self._sanitize_body(request_payload)
+            sanitized_response = self._sanitize_body(response_payload)
+            sanitized_native_request = self._sanitize_body(native_request_body)
+            sanitized_native_response = self._sanitize_body(native_response_body)
             trace = InFlightTrace(
                 request_id=request_id,
                 started_at=_utc_now(),
@@ -149,6 +153,10 @@ class RequestJournalService:
                 effective_request_body=sanitized_request,
                 original_response_body=sanitized_response,
                 effective_response_body=sanitized_response,
+                native_request_body=sanitized_native_request,
+                effective_native_request_body=sanitized_native_request,
+                native_response_body=sanitized_native_response,
+                effective_native_response_body=sanitized_native_response,
             )
             self.store.create_in_flight(trace)
         except Exception:
@@ -158,7 +166,8 @@ class RequestJournalService:
         self,
         *,
         request_id: str,
-        effective_request_body: dict[str, Any] | None,
+        effective_request_payload: dict[str, Any] | None,
+        effective_native_request_body: dict[str, Any] | None,
         pre_actions: list[str],
         degraded: list[str],
         findings: list[dict[str, Any]],
@@ -166,11 +175,13 @@ class RequestJournalService:
         block_message: str | None,
     ) -> None:
         try:
-            sanitized_body = self._sanitize_body(effective_request_body)
+            sanitized_body = self._sanitize_body(effective_request_payload)
+            sanitized_native = self._sanitize_body(effective_native_request_body)
             sanitized_findings = self._sanitize_findings(findings)
 
             def updater(trace: InFlightTrace) -> None:
                 trace.effective_request_body = sanitized_body
+                trace.effective_native_request_body = sanitized_native
                 trace.pre_actions = list(pre_actions)
                 trace.degraded.extend(str(item) for item in degraded)
                 trace.findings.extend(sanitized_findings)
@@ -194,10 +205,15 @@ class RequestJournalService:
             return
 
     def record_upstream_result(
-        self, *, request_id: str, response_body: dict[str, Any] | None
+        self,
+        *,
+        request_id: str,
+        response_payload: dict[str, Any] | None,
+        native_response_body: dict[str, Any] | None,
     ) -> None:
         try:
-            sanitized_response = self._sanitize_body(response_body)
+            sanitized_response = self._sanitize_body(response_payload)
+            sanitized_native_response = self._sanitize_body(native_response_body)
 
             def updater(trace: InFlightTrace) -> None:
                 if trace.upstream_started_perf is not None:
@@ -207,6 +223,9 @@ class RequestJournalService:
                 if sanitized_response is not None:
                     trace.original_response_body = sanitized_response
                     trace.effective_response_body = sanitized_response
+                if sanitized_native_response is not None:
+                    trace.native_response_body = sanitized_native_response
+                    trace.effective_native_response_body = sanitized_native_response
 
             self.store.update_in_flight(request_id, updater)
         except Exception:
@@ -216,7 +235,8 @@ class RequestJournalService:
         self,
         *,
         request_id: str,
-        effective_response_body: dict[str, Any] | None,
+        effective_response_payload: dict[str, Any] | None,
+        effective_native_response_body: dict[str, Any] | None,
         post_actions: list[str],
         degraded: list[str],
         findings: list[dict[str, Any]],
@@ -224,12 +244,15 @@ class RequestJournalService:
         block_message: str | None,
     ) -> None:
         try:
-            sanitized_body = self._sanitize_body(effective_response_body)
+            sanitized_body = self._sanitize_body(effective_response_payload)
+            sanitized_native = self._sanitize_body(effective_native_response_body)
             sanitized_findings = self._sanitize_findings(findings)
 
             def updater(trace: InFlightTrace) -> None:
                 if sanitized_body is not None:
                     trace.effective_response_body = sanitized_body
+                if sanitized_native is not None:
+                    trace.effective_native_response_body = sanitized_native
                 trace.post_actions = list(post_actions)
                 trace.degraded.extend(str(item) for item in degraded)
                 trace.findings.extend(sanitized_findings)
@@ -348,6 +371,10 @@ class RequestJournalService:
             effective_request_body=trace.effective_request_body,
             original_response_body=trace.original_response_body,
             effective_response_body=trace.effective_response_body,
+            native_request_body=trace.native_request_body,
+            effective_native_request_body=trace.effective_native_request_body,
+            native_response_body=trace.native_response_body,
+            effective_native_response_body=trace.effective_native_response_body,
             request_change=request_change,
             response_change=response_change,
             pre_actions=tuple(trace.pre_actions),

@@ -61,12 +61,11 @@ def _decision_for_invoke(params):
     return {
         "decision": {
             "action": "patch",
-            "patch_target": "request_body",
-            "patches": [
+            "operations": [
                 {
-                    "op": "replace",
-                    "path": "/messages/0/content",
-                    "value": replacement,
+                    "op": "replace_text",
+                    "target": "prompt",
+                    "text": replacement,
                 }
             ],
             "message": "stdio fixture requested patch",

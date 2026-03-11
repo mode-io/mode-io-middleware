@@ -17,6 +17,17 @@ from modeio_middleware.core.contracts import (
 from modeio_middleware.core.decision import normalize_decision_payload
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.hook_envelope import HookEnvelope
+from modeio_middleware.core.payload_codec import (
+    PayloadDenormalizationError,
+    denormalize_request_payload,
+    denormalize_response_payload,
+    denormalize_stream_event_payload,
+)
+from modeio_middleware.core.payload_mutations import (
+    SemanticMutationError,
+    apply_semantic_operations,
+)
+from modeio_middleware.core.payload_types import NormalizedPayload
 from modeio_middleware.registry.resolver import (
     MODE_ASSIST,
     MODE_OBSERVE,
@@ -41,6 +52,7 @@ class ActivePlugin:
 class HookPipelineResult:
     body: Dict[str, Any]
     headers: Dict[str, str]
+    normalized_payload: Dict[str, Any] = field(default_factory=dict)
     actions: List[str] = field(default_factory=list)
     findings: List[Dict[str, Any]] = field(default_factory=list)
     degraded: List[str] = field(default_factory=list)
@@ -51,6 +63,7 @@ class HookPipelineResult:
 @dataclass
 class StreamEventPipelineResult:
     event: Dict[str, Any]
+    normalized_payload: Dict[str, Any] = field(default_factory=dict)
     actions: List[str] = field(default_factory=list)
     findings: List[Dict[str, Any]] = field(default_factory=list)
     degraded: List[str] = field(default_factory=list)
@@ -242,6 +255,8 @@ class PluginManager:
         context: Optional[Dict[str, Any]] = None,
         request_context: Optional[Dict[str, Any]] = None,
         response_context: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        native: Optional[Dict[str, Any]] = None,
         request_body: Optional[Dict[str, Any]] = None,
         request_headers: Optional[Dict[str, str]] = None,
         response_body: Optional[Dict[str, Any]] = None,
@@ -264,6 +279,8 @@ class PluginManager:
             context=context,
             request_context=request_context,
             response_context=response_context,
+            payload=payload,
+            native=native,
             request_body=request_body,
             request_headers=request_headers,
             response_body=response_body,
@@ -475,22 +492,47 @@ class PluginManager:
 
         return result
 
-    def _require_result_mapping(
+    def _mutate_payload(
         self,
         *,
         plugin_name: str,
+        result: HookPipelineResult | StreamEventPipelineResult,
         normalized: Dict[str, Any],
-        field_name: str,
-        error_label: str,
-    ) -> Dict[str, Any]:
-        value = normalized.get(field_name)
-        if not isinstance(value, dict):
-            raise MiddlewareError(
-                500,
-                "MODEIO_PLUGIN_ERROR",
-                f"plugin '{plugin_name}' returned invalid {error_label}",
+        phase: str,
+    ) -> None:
+        operations = normalized.get("operations") or []
+        if not operations:
+            return
+
+        try:
+            current_payload = NormalizedPayload.from_public_dict(
+                result.normalized_payload
             )
-        return value
+            updated_payload = apply_semantic_operations(current_payload, operations)
+            if phase == "request":
+                result.body = denormalize_request_payload(updated_payload)
+            elif phase == "response":
+                result.body = denormalize_response_payload(updated_payload)
+            elif phase == "stream_event":
+                result.event = denormalize_stream_event_payload(updated_payload)
+            else:
+                raise SemanticMutationError(
+                    f"unsupported payload mutation phase '{phase}'"
+                )
+            result.normalized_payload = updated_payload.to_public_dict()
+        except (SemanticMutationError, PayloadDenormalizationError) as error:
+            result.degraded.append(
+                f"semantic_mutation_failed:{plugin_name}:{type(error).__name__}"
+            )
+            result.findings.append(
+                {
+                    "class": "semantic_mutation_failed",
+                    "severity": "medium",
+                    "confidence": 1.0,
+                    "reason": f"plugin '{plugin_name}' returned an unsupported semantic rewrite",
+                    "evidence": [str(error)],
+                }
+            )
 
     def _apply_request_modifications(
         self,
@@ -498,22 +540,12 @@ class PluginManager:
         result: HookPipelineResult,
         normalized: Dict[str, Any],
     ) -> None:
-        if "request_body" in normalized:
-            result.body = self._require_result_mapping(
-                plugin_name=plugin_name,
-                normalized=normalized,
-                field_name="request_body",
-                error_label="request_body",
-            )
-
-        if "request_headers" in normalized:
-            request_headers = self._require_result_mapping(
-                plugin_name=plugin_name,
-                normalized=normalized,
-                field_name="request_headers",
-                error_label="request_headers",
-            )
-            result.headers.update(_normalize_header_map(request_headers))
+        self._mutate_payload(
+            plugin_name=plugin_name,
+            result=result,
+            normalized=normalized,
+            phase="request",
+        )
 
     def _apply_response_modifications(
         self,
@@ -521,22 +553,12 @@ class PluginManager:
         result: HookPipelineResult,
         normalized: Dict[str, Any],
     ) -> None:
-        if "response_body" in normalized:
-            result.body = self._require_result_mapping(
-                plugin_name=plugin_name,
-                normalized=normalized,
-                field_name="response_body",
-                error_label="response_body",
-            )
-
-        if "response_headers" in normalized:
-            response_headers = self._require_result_mapping(
-                plugin_name=plugin_name,
-                normalized=normalized,
-                field_name="response_headers",
-                error_label="response_headers",
-            )
-            result.headers.update(_normalize_header_map(response_headers))
+        self._mutate_payload(
+            plugin_name=plugin_name,
+            result=result,
+            normalized=normalized,
+            phase="response",
+        )
 
     def _apply_stream_event_modifications(
         self,
@@ -544,13 +566,11 @@ class PluginManager:
         result: StreamEventPipelineResult,
         normalized: Dict[str, Any],
     ) -> None:
-        if "event" not in normalized:
-            return
-        result.event = self._require_result_mapping(
+        self._mutate_payload(
             plugin_name=plugin_name,
+            result=result,
             normalized=normalized,
-            field_name="event",
-            error_label="stream event",
+            phase="stream_event",
         )
 
     def _apply_stream_lifecycle_hook(
@@ -605,6 +625,8 @@ class PluginManager:
         endpoint_kind: str,
         profile: str,
         request_body: Dict[str, Any],
+        normalized_payload: Dict[str, Any],
+        native_payload: Dict[str, Any],
         request_headers: Dict[str, str],
         context: Dict[str, Any],
         shared_state: Dict[str, Any],
@@ -613,7 +635,9 @@ class PluginManager:
         connector_capabilities: Optional[Dict[str, bool]] = None,
     ) -> HookPipelineResult:
         result = HookPipelineResult(
-            body=copy.deepcopy(request_body), headers=dict(request_headers)
+            body=copy.deepcopy(request_body),
+            headers=dict(request_headers),
+            normalized_payload=copy.deepcopy(normalized_payload),
         )
 
         def build_hook_input(active: ActivePlugin) -> HookEnvelope:
@@ -625,6 +649,8 @@ class PluginManager:
                 shared_state=shared_state,
                 services=services,
                 context=context,
+                payload=result.normalized_payload,
+                native=native_payload,
                 request_body=result.body,
                 request_headers=result.headers,
             )
@@ -653,6 +679,8 @@ class PluginManager:
         profile: str,
         request_context: Dict[str, Any],
         response_body: Dict[str, Any],
+        normalized_payload: Dict[str, Any],
+        native_payload: Dict[str, Any],
         response_headers: Dict[str, str],
         shared_state: Dict[str, Any],
         on_plugin_error: str,
@@ -660,7 +688,9 @@ class PluginManager:
         connector_capabilities: Optional[Dict[str, bool]] = None,
     ) -> HookPipelineResult:
         result = HookPipelineResult(
-            body=copy.deepcopy(response_body), headers=dict(response_headers)
+            body=copy.deepcopy(response_body),
+            headers=dict(response_headers),
+            normalized_payload=copy.deepcopy(normalized_payload),
         )
 
         def build_hook_input(active: ActivePlugin) -> HookEnvelope:
@@ -672,6 +702,8 @@ class PluginManager:
                 shared_state=shared_state,
                 services=services,
                 request_context=request_context,
+                payload=result.normalized_payload,
+                native=native_payload,
                 response_body=result.body,
                 response_headers=result.headers,
             )
@@ -729,12 +761,17 @@ class PluginManager:
         profile: str,
         request_context: Dict[str, Any],
         event: Dict[str, Any],
+        normalized_payload: Dict[str, Any],
+        native_payload: Dict[str, Any],
         shared_state: Dict[str, Any],
         on_plugin_error: str,
         services: Optional[Dict[str, Any]] = None,
         connector_capabilities: Optional[Dict[str, bool]] = None,
     ) -> StreamEventPipelineResult:
-        result = StreamEventPipelineResult(event=copy.deepcopy(event))
+        result = StreamEventPipelineResult(
+            event=copy.deepcopy(event),
+            normalized_payload=copy.deepcopy(normalized_payload),
+        )
 
         def build_hook_input(active: ActivePlugin) -> HookEnvelope:
             return self._build_hook_input(
@@ -745,6 +782,8 @@ class PluginManager:
                 shared_state=shared_state,
                 services=services,
                 request_context=request_context,
+                payload=result.normalized_payload,
+                native=native_payload,
                 event=result.event,
             )
 

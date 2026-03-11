@@ -13,6 +13,10 @@ from modeio_middleware.connectors.base import (
 from modeio_middleware.connectors.client_identity import CLIENT_CLAUDE_CODE
 from modeio_middleware.core.contracts import ModeioOptions, normalize_modeio_options
 from modeio_middleware.core.errors import MiddlewareError
+from modeio_middleware.core.payload_codec import (
+    normalize_request_payload,
+    normalize_response_payload,
+)
 
 CLAUDE_HOOK_CONNECTOR_PATH = "/connectors/claude/hooks"
 
@@ -113,6 +117,12 @@ def parse_claude_hook_invocation(
             "event": event_payload,
             "prompt": event_payload.get("prompt", ""),
         }
+        normalized_payload = normalize_request_payload(
+            endpoint_kind=ENDPOINT_CLAUDE_USER_PROMPT,
+            source="claude_hooks",
+            request_body=request_body,
+            connector_context=connector_context,
+        )
         return CanonicalInvocation(
             source="claude_hooks",
             client_name=CLIENT_CLAUDE_CODE,
@@ -124,6 +134,8 @@ def parse_claude_hook_invocation(
             on_plugin_error=modeio_options.on_plugin_error,
             plugin_overrides=modeio_options.plugin_overrides,
             incoming_headers=dict(incoming_headers),
+            normalized_payload=normalized_payload.to_public_dict(),
+            native_payload=normalized_payload.native,
             request_body=request_body,
             response_body={},
             connector_context=connector_context,
@@ -139,6 +151,13 @@ def parse_claude_hook_invocation(
     if isinstance(event_payload.get("status"), str):
         response_body["status"] = event_payload["status"]
 
+    normalized_payload = normalize_response_payload(
+        endpoint_kind=ENDPOINT_CLAUDE_STOP,
+        source="claude_hooks",
+        response_body=response_body,
+        connector_context=connector_context,
+    )
+
     return CanonicalInvocation(
         source="claude_hooks",
         client_name=CLIENT_CLAUDE_CODE,
@@ -150,6 +169,8 @@ def parse_claude_hook_invocation(
         on_plugin_error=modeio_options.on_plugin_error,
         plugin_overrides=modeio_options.plugin_overrides,
         incoming_headers=dict(incoming_headers),
+        normalized_payload=normalized_payload.to_public_dict(),
+        native_payload=normalized_payload.native,
         request_body={},
         response_body=response_body,
         connector_context=connector_context,

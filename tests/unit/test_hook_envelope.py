@@ -25,7 +25,8 @@ class TestHookEnvelope(unittest.TestCase):
             plugin_state=plugin_state,
             services={"telemetry": object()},
             context={"source": "http"},
-            request_body={"model": "gpt-test"},
+            payload={"phase": "request", "timeline": []},
+            native={"request_body": {"model": "gpt-test"}},
         )
 
         payload = envelope.to_inprocess_input()
@@ -35,6 +36,7 @@ class TestHookEnvelope(unittest.TestCase):
         self.assertIn("services", payload)
         self.assertEqual(payload["context"]["source"], "http")
         self.assertEqual(payload["request_context"]["source"], "http")
+        self.assertEqual(payload["native"]["request_body"]["model"], "gpt-test")
 
     def test_protocol_payload_strips_internal_only_fields(self):
         envelope = HookEnvelope(
@@ -46,6 +48,8 @@ class TestHookEnvelope(unittest.TestCase):
             plugin_state={"count": 2},
             services={"telemetry": object()},
             request_context={"source": "claude_hooks", "source_event": "Stop"},
+            payload={"phase": "response", "timeline": []},
+            native={"response_body": {"assistant_response": "ok"}},
             response_headers={"x-request-id": "abc"},
             source="claude_hooks",
             source_event="Stop",
@@ -58,6 +62,8 @@ class TestHookEnvelope(unittest.TestCase):
         self.assertEqual(payload["plugin_state"]["count"], 2)
         self.assertEqual(payload["request_context"]["source"], "claude_hooks")
         self.assertEqual(payload["source_event"], "Stop")
+        self.assertIn("payload", payload)
+        self.assertIn("native", payload)
 
 
 if __name__ == "__main__":
