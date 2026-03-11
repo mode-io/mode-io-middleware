@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from modeio_middleware.core.engine import GatewayRuntimeConfig, MiddlewareEngine
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.plugin_overrides import validate_plugin_overrides
+from modeio_middleware.plugin_catalog_discovery import build_plugin_catalog
 from modeio_middleware.plugin_inventory import build_plugin_inventory_response
 from modeio_middleware.runtime_config_store import (
     build_gateway_runtime_config_from_payload,
@@ -118,7 +119,30 @@ class GatewayController:
         finally:
             lease.release()
 
+    def process_models_request(self, **kwargs):
+        lease = self.borrow_engine()
+        try:
+            return lease.engine.process_models_request(**kwargs)
+        finally:
+            lease.release()
+
     def monitoring_inventory(self) -> Dict[str, Any]:
+        config_path = self._require_config_path()
+        payload = read_runtime_config_payload(config_path)
+        current_engine = self.current_engine()
+        journal = self.request_journal()
+        stats_snapshot = journal.stats_snapshot() if journal is not None else None
+        return build_plugin_inventory_response(
+            payload,
+            config_file_path=config_path,
+            preset_registry=current_engine.config.preset_registry or {},
+            generation=self.current_generation(),
+            default_profile=current_engine.config.default_profile,
+            config_writable=self.config_writable(),
+            stats_snapshot=stats_snapshot,
+        )
+
+    def _require_config_path(self) -> Path:
         if self._config_path is None:
             raise MiddlewareError(
                 404,
@@ -126,20 +150,112 @@ class GatewayController:
                 "plugin management is unavailable for in-memory config",
                 retryable=False,
             )
+        return self._config_path
 
-        payload = read_runtime_config_payload(self._config_path)
-        current_engine = self.current_engine()
-        journal = self.request_journal()
-        stats_snapshot = journal.stats_snapshot() if journal is not None else None
-        return build_plugin_inventory_response(
-            payload,
-            config_file_path=self._config_path,
-            preset_registry=current_engine.config.preset_registry or {},
-            generation=self.current_generation(),
-            default_profile=current_engine.config.default_profile,
-            config_writable=self.config_writable(),
-            stats_snapshot=stats_snapshot,
-        )
+    def _validate_expected_generation(
+        self, expected_generation: Optional[int]
+    ) -> None:
+        if expected_generation is None:
+            return
+        if expected_generation != self._generation:
+            raise MiddlewareError(
+                409,
+                "MODEIO_GENERATION_CONFLICT",
+                "plugin configuration is stale; refresh and try again",
+                retryable=False,
+                details={
+                    "expectedGeneration": expected_generation,
+                    "currentGeneration": self._generation,
+                },
+            )
+
+    def _load_profile_update_payload(
+        self,
+        *,
+        config_path: Path,
+        profile_name: str,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        payload = read_runtime_config_payload(config_path)
+        profiles = payload.get("profiles", {})
+        if not isinstance(profiles, dict):
+            raise MiddlewareError(
+                500,
+                "MODEIO_CONFIG_ERROR",
+                "config.profiles must be an object",
+                retryable=False,
+            )
+        if profile_name not in profiles or not isinstance(profiles[profile_name], dict):
+            raise MiddlewareError(
+                404,
+                "MODEIO_PROFILE_NOT_FOUND",
+                f"profile '{profile_name}' was not found",
+                retryable=False,
+            )
+        return payload, profiles
+
+    def _normalize_plugin_order(self, plugin_order: Any) -> list[str]:
+        if not isinstance(plugin_order, list):
+            raise MiddlewareError(
+                400,
+                "MODEIO_VALIDATION_ERROR",
+                "field 'pluginOrder' must be an array",
+                retryable=False,
+            )
+
+        normalized_order = []
+        seen = set()
+        for index, item in enumerate(plugin_order):
+            if not isinstance(item, str) or not item.strip():
+                raise MiddlewareError(
+                    400,
+                    "MODEIO_VALIDATION_ERROR",
+                    f"pluginOrder[{index}] must be a non-empty string",
+                    retryable=False,
+                )
+            name = item.strip()
+            if name in seen:
+                raise MiddlewareError(
+                    400,
+                    "MODEIO_VALIDATION_ERROR",
+                    f"pluginOrder contains duplicate plugin '{name}'",
+                    retryable=False,
+                )
+            seen.add(name)
+            normalized_order.append(name)
+        return normalized_order
+
+    def _known_plugin_names(
+        self, payload: Dict[str, Any], *, config_path: Path
+    ) -> set[str]:
+        catalog = build_plugin_catalog(payload, config_file_path=config_path)
+        return set(catalog.entries.keys())
+
+    def _validate_known_plugins(
+        self,
+        *,
+        known_plugins: set[str],
+        plugin_names: Any,
+    ) -> None:
+        for plugin_name in plugin_names:
+            if plugin_name not in known_plugins:
+                raise MiddlewareError(
+                    400,
+                    "MODEIO_VALIDATION_ERROR",
+                    f"unknown plugin '{plugin_name}'",
+                    retryable=False,
+                )
+
+    def _updated_profile_payload(
+        self,
+        profile_payload: Dict[str, Any],
+        *,
+        plugin_order: list[str],
+        plugin_overrides: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        updated = dict(profile_payload)
+        updated["plugins"] = list(plugin_order)
+        updated["plugin_overrides"] = dict(plugin_overrides)
+        return updated
 
     def _build_runtime_config_from_payload(self, payload: Dict[str, Any]):
         assert self._config_path is not None
@@ -186,13 +302,7 @@ class GatewayController:
         plugin_overrides: Any,
         expected_generation: Optional[int],
     ) -> Dict[str, Any]:
-        if self._config_path is None:
-            raise MiddlewareError(
-                404,
-                "MODEIO_PLUGIN_MANAGEMENT_UNAVAILABLE",
-                "plugin management is unavailable for in-memory config",
-                retryable=False,
-            )
+        config_path = self._require_config_path()
         if not self.config_writable():
             raise MiddlewareError(
                 403,
@@ -204,67 +314,12 @@ class GatewayController:
         retired_engine = None
         backup_path = ""
         with self._lock:
-            if (
-                expected_generation is not None
-                and expected_generation != self._generation
-            ):
-                raise MiddlewareError(
-                    409,
-                    "MODEIO_GENERATION_CONFLICT",
-                    "plugin configuration is stale; refresh and try again",
-                    retryable=False,
-                    details={
-                        "expectedGeneration": expected_generation,
-                        "currentGeneration": self._generation,
-                    },
-                )
-
-            payload = read_runtime_config_payload(self._config_path)
-            profiles = payload.get("profiles", {})
-            if not isinstance(profiles, dict):
-                raise MiddlewareError(
-                    500,
-                    "MODEIO_CONFIG_ERROR",
-                    "config.profiles must be an object",
-                    retryable=False,
-                )
-            if profile_name not in profiles or not isinstance(
-                profiles[profile_name], dict
-            ):
-                raise MiddlewareError(
-                    404,
-                    "MODEIO_PROFILE_NOT_FOUND",
-                    f"profile '{profile_name}' was not found",
-                    retryable=False,
-                )
-
-            if not isinstance(plugin_order, list):
-                raise MiddlewareError(
-                    400,
-                    "MODEIO_VALIDATION_ERROR",
-                    "field 'pluginOrder' must be an array",
-                    retryable=False,
-                )
-            normalized_order = []
-            seen = set()
-            for index, item in enumerate(plugin_order):
-                if not isinstance(item, str) or not item.strip():
-                    raise MiddlewareError(
-                        400,
-                        "MODEIO_VALIDATION_ERROR",
-                        f"pluginOrder[{index}] must be a non-empty string",
-                        retryable=False,
-                    )
-                name = item.strip()
-                if name in seen:
-                    raise MiddlewareError(
-                        400,
-                        "MODEIO_VALIDATION_ERROR",
-                        f"pluginOrder contains duplicate plugin '{name}'",
-                        retryable=False,
-                    )
-                seen.add(name)
-                normalized_order.append(name)
+            self._validate_expected_generation(expected_generation)
+            payload, profiles = self._load_profile_update_payload(
+                config_path=config_path,
+                profile_name=profile_name,
+            )
+            normalized_order = self._normalize_plugin_order(plugin_order)
 
             validated_overrides = validate_plugin_overrides(
                 plugin_overrides,
@@ -275,44 +330,29 @@ class GatewayController:
                 allow_none=True,
             )
 
-            inventory = build_plugin_inventory_response(
+            known_plugins = self._known_plugin_names(
                 payload,
-                config_file_path=self._config_path,
-                preset_registry=self._engine.config.preset_registry or {},
-                generation=self._generation,
-                default_profile=self._engine.config.default_profile,
-                config_writable=True,
-                stats_snapshot=None,
+                config_path=config_path,
             )
-            known_plugins = {item["name"] for item in inventory["plugins"]}
-            for plugin_name in normalized_order:
-                if plugin_name not in known_plugins:
-                    raise MiddlewareError(
-                        400,
-                        "MODEIO_VALIDATION_ERROR",
-                        f"unknown plugin '{plugin_name}'",
-                        retryable=False,
-                    )
-            for plugin_name in validated_overrides:
-                if plugin_name not in known_plugins:
-                    raise MiddlewareError(
-                        400,
-                        "MODEIO_VALIDATION_ERROR",
-                        f"unknown plugin '{plugin_name}'",
-                        retryable=False,
-                    )
+            self._validate_known_plugins(
+                known_plugins=known_plugins,
+                plugin_names=normalized_order,
+            )
+            self._validate_known_plugins(
+                known_plugins=known_plugins,
+                plugin_names=validated_overrides,
+            )
 
-            profile_payload = dict(profiles[profile_name])
-            profile_payload["plugins"] = normalized_order
-            profile_payload["plugin_overrides"] = dict(validated_overrides)
-            profiles[profile_name] = profile_payload
+            profiles[profile_name] = self._updated_profile_payload(
+                profiles[profile_name],
+                plugin_order=normalized_order,
+                plugin_overrides=validated_overrides,
+            )
             payload["profiles"] = profiles
 
             prepared = self._prepare_engine_swap(payload)
             try:
-                prepared.backup_path = write_runtime_config_payload(
-                    self._config_path, payload
-                )
+                prepared.backup_path = write_runtime_config_payload(config_path, payload)
             except Exception:
                 prepared.next_engine.shutdown()
                 raise
@@ -326,7 +366,7 @@ class GatewayController:
         return {
             "ok": True,
             "generation": self.current_generation(),
-            "configPath": str(self._config_path),
+            "configPath": str(config_path),
             "backupPath": backup_path,
             "reloaded": True,
         }

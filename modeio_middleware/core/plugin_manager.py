@@ -6,7 +6,7 @@ import copy
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 
 from modeio_middleware.core.config_resolver import resolve_plugin_runtime_config
 from modeio_middleware.core.contracts import (
@@ -352,6 +352,207 @@ class PluginManager:
             }
         )
 
+    def _iter_supported_plugins(
+        self,
+        active_plugins: Iterable[ActivePlugin],
+        *,
+        hook_name: str,
+        reverse: bool = False,
+    ) -> Iterator[ActivePlugin]:
+        plugins = list(active_plugins)
+        if reverse:
+            plugins.reverse()
+        for active in plugins:
+            if hook_name in active.supported_hooks:
+                yield active
+
+    def _invoke_hook(
+        self,
+        *,
+        active: ActivePlugin,
+        hook_name: str,
+        hook_input: HookEnvelope,
+        normalize_hook_result: Callable[[Any], Dict[str, Any]],
+        result: Any,
+        request_id: str,
+        on_plugin_error: str,
+        services: Optional[Dict[str, Any]],
+        connector_capabilities: Optional[Dict[str, bool]],
+    ) -> tuple[str, Dict[str, Any]] | None:
+        start = time.perf_counter()
+        try:
+            payload = active.runtime.invoke(hook_name, hook_input)
+            normalized = normalize_hook_result(payload)
+        except Exception as error:
+            duration_ms = (time.perf_counter() - start) * 1000
+            self._record_telemetry(
+                services,
+                request_id=request_id,
+                plugin_name=active.name,
+                hook_name=hook_name,
+                action="error",
+                duration_ms=duration_ms,
+                errored=True,
+                error_type=type(error).__name__,
+            )
+            self._handle_plugin_error(
+                plugin_name=active.name,
+                error=error,
+                on_plugin_error=on_plugin_error,
+                result=result,
+            )
+            return None
+
+        action = self._apply_action_controls(
+            active=active,
+            action=normalized["action"],
+            result=result,
+            connector_capabilities=connector_capabilities,
+        )
+        duration_ms = (time.perf_counter() - start) * 1000
+        self._record_telemetry(
+            services,
+            request_id=request_id,
+            plugin_name=active.name,
+            hook_name=hook_name,
+            action=action,
+            duration_ms=duration_ms,
+            errored=False,
+            reported_action=normalized["action"],
+        )
+        result.actions.append(f"{active.name}:{action}")
+        result.findings.extend(normalized["findings"])
+        return action, normalized
+
+    def _run_hook_pipeline(
+        self,
+        active_plugins: Iterable[ActivePlugin],
+        *,
+        hook_name: str,
+        reverse: bool,
+        request_id: str,
+        on_plugin_error: str,
+        services: Optional[Dict[str, Any]],
+        connector_capabilities: Optional[Dict[str, bool]],
+        result: Any,
+        build_hook_input: Callable[[ActivePlugin], HookEnvelope],
+        normalize_hook_result: Callable[[Any], Dict[str, Any]],
+        blocked_message_suffix: str,
+        apply_modifications: Optional[
+            Callable[[str, Any, Dict[str, Any]], None]
+        ] = None,
+    ) -> Any:
+        for active in self._iter_supported_plugins(
+            active_plugins, hook_name=hook_name, reverse=reverse
+        ):
+            hook_input = build_hook_input(active)
+            invocation = self._invoke_hook(
+                active=active,
+                hook_name=hook_name,
+                hook_input=hook_input,
+                normalize_hook_result=normalize_hook_result,
+                result=result,
+                request_id=request_id,
+                on_plugin_error=on_plugin_error,
+                services=services,
+                connector_capabilities=connector_capabilities,
+            )
+            if invocation is None:
+                if result.blocked:
+                    return result
+                continue
+
+            action, normalized = invocation
+            if action == HOOK_ACTION_MODIFY and apply_modifications is not None:
+                apply_modifications(active.name, result, normalized)
+            if action == HOOK_ACTION_BLOCK:
+                result.blocked = True
+                result.block_message = (
+                    normalized.get("message")
+                    or f"plugin '{active.name}' blocked {blocked_message_suffix}"
+                )
+                return result
+
+        return result
+
+    def _require_result_mapping(
+        self,
+        *,
+        plugin_name: str,
+        normalized: Dict[str, Any],
+        field_name: str,
+        error_label: str,
+    ) -> Dict[str, Any]:
+        value = normalized.get(field_name)
+        if not isinstance(value, dict):
+            raise MiddlewareError(
+                500,
+                "MODEIO_PLUGIN_ERROR",
+                f"plugin '{plugin_name}' returned invalid {error_label}",
+            )
+        return value
+
+    def _apply_request_modifications(
+        self,
+        plugin_name: str,
+        result: HookPipelineResult,
+        normalized: Dict[str, Any],
+    ) -> None:
+        if "request_body" in normalized:
+            result.body = self._require_result_mapping(
+                plugin_name=plugin_name,
+                normalized=normalized,
+                field_name="request_body",
+                error_label="request_body",
+            )
+
+        if "request_headers" in normalized:
+            request_headers = self._require_result_mapping(
+                plugin_name=plugin_name,
+                normalized=normalized,
+                field_name="request_headers",
+                error_label="request_headers",
+            )
+            result.headers.update(_normalize_header_map(request_headers))
+
+    def _apply_response_modifications(
+        self,
+        plugin_name: str,
+        result: HookPipelineResult,
+        normalized: Dict[str, Any],
+    ) -> None:
+        if "response_body" in normalized:
+            result.body = self._require_result_mapping(
+                plugin_name=plugin_name,
+                normalized=normalized,
+                field_name="response_body",
+                error_label="response_body",
+            )
+
+        if "response_headers" in normalized:
+            response_headers = self._require_result_mapping(
+                plugin_name=plugin_name,
+                normalized=normalized,
+                field_name="response_headers",
+                error_label="response_headers",
+            )
+            result.headers.update(_normalize_header_map(response_headers))
+
+    def _apply_stream_event_modifications(
+        self,
+        plugin_name: str,
+        result: StreamEventPipelineResult,
+        normalized: Dict[str, Any],
+    ) -> None:
+        if "event" not in normalized:
+            return
+        result.event = self._require_result_mapping(
+            plugin_name=plugin_name,
+            normalized=normalized,
+            field_name="event",
+            error_label="stream event",
+        )
+
     def _apply_stream_lifecycle_hook(
         self,
         active_plugins: Iterable[ActivePlugin],
@@ -370,10 +571,8 @@ class PluginManager:
     ) -> HookPipelineResult:
         result = HookPipelineResult(body={}, headers={})
 
-        for active in reversed(list(active_plugins)):
-            if hook_name not in active.supported_hooks:
-                continue
-            hook_input = self._build_hook_input(
+        def build_hook_input(active: ActivePlugin) -> HookEnvelope:
+            return self._build_hook_input(
                 active=active,
                 request_id=request_id,
                 endpoint_kind=endpoint_kind,
@@ -384,61 +583,19 @@ class PluginManager:
                 response_context=response_context,
             )
 
-            start = time.perf_counter()
-            try:
-                payload = active.runtime.invoke(hook_name, hook_input)
-                normalized = self._normalize_stream_hook_result(payload)
-            except Exception as error:
-                duration_ms = (time.perf_counter() - start) * 1000
-                self._record_telemetry(
-                    services,
-                    request_id=request_id,
-                    plugin_name=active.name,
-                    hook_name=hook_name,
-                    action="error",
-                    duration_ms=duration_ms,
-                    errored=True,
-                    error_type=type(error).__name__,
-                )
-                self._handle_plugin_error(
-                    plugin_name=active.name,
-                    error=error,
-                    on_plugin_error=on_plugin_error,
-                    result=result,
-                )
-                if result.blocked:
-                    return result
-                continue
-
-            action = self._apply_action_controls(
-                active=active,
-                action=normalized["action"],
-                result=result,
-                connector_capabilities=connector_capabilities,
-            )
-            duration_ms = (time.perf_counter() - start) * 1000
-            self._record_telemetry(
-                services,
-                request_id=request_id,
-                plugin_name=active.name,
-                hook_name=hook_name,
-                action=action,
-                duration_ms=duration_ms,
-                errored=False,
-                reported_action=normalized["action"],
-            )
-            result.actions.append(f"{active.name}:{action}")
-            result.findings.extend(normalized["findings"])
-
-            if action == HOOK_ACTION_BLOCK:
-                result.blocked = True
-                result.block_message = (
-                    normalized.get("message")
-                    or f"plugin '{active.name}' blocked {blocked_message_suffix}"
-                )
-                return result
-
-        return result
+        return self._run_hook_pipeline(
+            active_plugins,
+            hook_name=hook_name,
+            reverse=True,
+            request_id=request_id,
+            on_plugin_error=on_plugin_error,
+            services=services,
+            connector_capabilities=connector_capabilities,
+            result=result,
+            build_hook_input=build_hook_input,
+            normalize_hook_result=self._normalize_stream_hook_result,
+            blocked_message_suffix=blocked_message_suffix,
+        )
 
     def apply_pre_request(
         self,
@@ -459,10 +616,8 @@ class PluginManager:
             body=copy.deepcopy(request_body), headers=dict(request_headers)
         )
 
-        for active in active_plugins:
-            if "pre_request" not in active.supported_hooks:
-                continue
-            hook_input = self._build_hook_input(
+        def build_hook_input(active: ActivePlugin) -> HookEnvelope:
+            return self._build_hook_input(
                 active=active,
                 request_id=request_id,
                 endpoint_kind=endpoint_kind,
@@ -474,82 +629,20 @@ class PluginManager:
                 request_headers=result.headers,
             )
 
-            start = time.perf_counter()
-            try:
-                payload = active.runtime.invoke("pre_request", hook_input)
-                normalized = self._normalize_hook_result(payload)
-            except Exception as error:
-                duration_ms = (time.perf_counter() - start) * 1000
-                self._record_telemetry(
-                    services,
-                    request_id=request_id,
-                    plugin_name=active.name,
-                    hook_name="pre_request",
-                    action="error",
-                    duration_ms=duration_ms,
-                    errored=True,
-                    error_type=type(error).__name__,
-                )
-                self._handle_plugin_error(
-                    plugin_name=active.name,
-                    error=error,
-                    on_plugin_error=on_plugin_error,
-                    result=result,
-                )
-                if result.blocked:
-                    return result
-                continue
-
-            action = self._apply_action_controls(
-                active=active,
-                action=normalized["action"],
-                result=result,
-                connector_capabilities=connector_capabilities,
-            )
-            duration_ms = (time.perf_counter() - start) * 1000
-            self._record_telemetry(
-                services,
-                request_id=request_id,
-                plugin_name=active.name,
-                hook_name="pre_request",
-                action=action,
-                duration_ms=duration_ms,
-                errored=False,
-                reported_action=normalized["action"],
-            )
-            result.actions.append(f"{active.name}:{action}")
-            result.findings.extend(normalized["findings"])
-
-            if action == HOOK_ACTION_MODIFY:
-                if "request_body" in normalized:
-                    if not isinstance(normalized["request_body"], dict):
-                        raise MiddlewareError(
-                            500,
-                            "MODEIO_PLUGIN_ERROR",
-                            f"plugin '{active.name}' returned invalid request_body",
-                        )
-                    result.body = normalized["request_body"]
-
-                if "request_headers" in normalized:
-                    if not isinstance(normalized["request_headers"], dict):
-                        raise MiddlewareError(
-                            500,
-                            "MODEIO_PLUGIN_ERROR",
-                            f"plugin '{active.name}' returned invalid request_headers",
-                        )
-                    result.headers.update(
-                        _normalize_header_map(normalized["request_headers"])
-                    )
-
-            if action == HOOK_ACTION_BLOCK:
-                result.blocked = True
-                result.block_message = (
-                    normalized.get("message")
-                    or f"plugin '{active.name}' blocked request"
-                )
-                return result
-
-        return result
+        return self._run_hook_pipeline(
+            active_plugins,
+            hook_name="pre_request",
+            reverse=False,
+            request_id=request_id,
+            on_plugin_error=on_plugin_error,
+            services=services,
+            connector_capabilities=connector_capabilities,
+            result=result,
+            build_hook_input=build_hook_input,
+            normalize_hook_result=self._normalize_hook_result,
+            blocked_message_suffix="request",
+            apply_modifications=self._apply_request_modifications,
+        )
 
     def apply_post_response(
         self,
@@ -570,10 +663,8 @@ class PluginManager:
             body=copy.deepcopy(response_body), headers=dict(response_headers)
         )
 
-        for active in reversed(list(active_plugins)):
-            if "post_response" not in active.supported_hooks:
-                continue
-            hook_input = self._build_hook_input(
+        def build_hook_input(active: ActivePlugin) -> HookEnvelope:
+            return self._build_hook_input(
                 active=active,
                 request_id=request_id,
                 endpoint_kind=endpoint_kind,
@@ -585,82 +676,20 @@ class PluginManager:
                 response_headers=result.headers,
             )
 
-            start = time.perf_counter()
-            try:
-                payload = active.runtime.invoke("post_response", hook_input)
-                normalized = self._normalize_hook_result(payload)
-            except Exception as error:
-                duration_ms = (time.perf_counter() - start) * 1000
-                self._record_telemetry(
-                    services,
-                    request_id=request_id,
-                    plugin_name=active.name,
-                    hook_name="post_response",
-                    action="error",
-                    duration_ms=duration_ms,
-                    errored=True,
-                    error_type=type(error).__name__,
-                )
-                self._handle_plugin_error(
-                    plugin_name=active.name,
-                    error=error,
-                    on_plugin_error=on_plugin_error,
-                    result=result,
-                )
-                if result.blocked:
-                    return result
-                continue
-
-            action = self._apply_action_controls(
-                active=active,
-                action=normalized["action"],
-                result=result,
-                connector_capabilities=connector_capabilities,
-            )
-            duration_ms = (time.perf_counter() - start) * 1000
-            self._record_telemetry(
-                services,
-                request_id=request_id,
-                plugin_name=active.name,
-                hook_name="post_response",
-                action=action,
-                duration_ms=duration_ms,
-                errored=False,
-                reported_action=normalized["action"],
-            )
-            result.actions.append(f"{active.name}:{action}")
-            result.findings.extend(normalized["findings"])
-
-            if action == HOOK_ACTION_MODIFY:
-                if "response_body" in normalized:
-                    if not isinstance(normalized["response_body"], dict):
-                        raise MiddlewareError(
-                            500,
-                            "MODEIO_PLUGIN_ERROR",
-                            f"plugin '{active.name}' returned invalid response_body",
-                        )
-                    result.body = normalized["response_body"]
-
-                if "response_headers" in normalized:
-                    if not isinstance(normalized["response_headers"], dict):
-                        raise MiddlewareError(
-                            500,
-                            "MODEIO_PLUGIN_ERROR",
-                            f"plugin '{active.name}' returned invalid response_headers",
-                        )
-                    result.headers.update(
-                        _normalize_header_map(normalized["response_headers"])
-                    )
-
-            if action == HOOK_ACTION_BLOCK:
-                result.blocked = True
-                result.block_message = (
-                    normalized.get("message")
-                    or f"plugin '{active.name}' blocked response"
-                )
-                return result
-
-        return result
+        return self._run_hook_pipeline(
+            active_plugins,
+            hook_name="post_response",
+            reverse=True,
+            request_id=request_id,
+            on_plugin_error=on_plugin_error,
+            services=services,
+            connector_capabilities=connector_capabilities,
+            result=result,
+            build_hook_input=build_hook_input,
+            normalize_hook_result=self._normalize_hook_result,
+            blocked_message_suffix="response",
+            apply_modifications=self._apply_response_modifications,
+        )
 
     def apply_post_stream_start(
         self,
@@ -707,10 +736,8 @@ class PluginManager:
     ) -> StreamEventPipelineResult:
         result = StreamEventPipelineResult(event=copy.deepcopy(event))
 
-        for active in reversed(list(active_plugins)):
-            if "post_stream_event" not in active.supported_hooks:
-                continue
-            hook_input = self._build_hook_input(
+        def build_hook_input(active: ActivePlugin) -> HookEnvelope:
+            return self._build_hook_input(
                 active=active,
                 request_id=request_id,
                 endpoint_kind=endpoint_kind,
@@ -721,70 +748,20 @@ class PluginManager:
                 event=result.event,
             )
 
-            start = time.perf_counter()
-            try:
-                payload = active.runtime.invoke("post_stream_event", hook_input)
-                normalized = self._normalize_stream_hook_result(payload)
-            except Exception as error:
-                duration_ms = (time.perf_counter() - start) * 1000
-                self._record_telemetry(
-                    services,
-                    request_id=request_id,
-                    plugin_name=active.name,
-                    hook_name="post_stream_event",
-                    action="error",
-                    duration_ms=duration_ms,
-                    errored=True,
-                    error_type=type(error).__name__,
-                )
-                self._handle_plugin_error(
-                    plugin_name=active.name,
-                    error=error,
-                    on_plugin_error=on_plugin_error,
-                    result=result,
-                )
-                if result.blocked:
-                    return result
-                continue
-
-            action = self._apply_action_controls(
-                active=active,
-                action=normalized["action"],
-                result=result,
-                connector_capabilities=connector_capabilities,
-            )
-            duration_ms = (time.perf_counter() - start) * 1000
-            self._record_telemetry(
-                services,
-                request_id=request_id,
-                plugin_name=active.name,
-                hook_name="post_stream_event",
-                action=action,
-                duration_ms=duration_ms,
-                errored=False,
-                reported_action=normalized["action"],
-            )
-            result.actions.append(f"{active.name}:{action}")
-            result.findings.extend(normalized["findings"])
-
-            if action == HOOK_ACTION_MODIFY and "event" in normalized:
-                if not isinstance(normalized["event"], dict):
-                    raise MiddlewareError(
-                        500,
-                        "MODEIO_PLUGIN_ERROR",
-                        f"plugin '{active.name}' returned invalid stream event",
-                    )
-                result.event = normalized["event"]
-
-            if action == HOOK_ACTION_BLOCK:
-                result.blocked = True
-                result.block_message = (
-                    normalized.get("message")
-                    or f"plugin '{active.name}' blocked stream event"
-                )
-                return result
-
-        return result
+        return self._run_hook_pipeline(
+            active_plugins,
+            hook_name="post_stream_event",
+            reverse=True,
+            request_id=request_id,
+            on_plugin_error=on_plugin_error,
+            services=services,
+            connector_capabilities=connector_capabilities,
+            result=result,
+            build_hook_input=build_hook_input,
+            normalize_hook_result=self._normalize_stream_hook_result,
+            blocked_message_suffix="stream event",
+            apply_modifications=self._apply_stream_event_modifications,
+        )
 
     def apply_post_stream_end(
         self,

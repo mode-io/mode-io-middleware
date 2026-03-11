@@ -30,8 +30,6 @@ python -m pip install -e . build
 The bundled default config starts with no active plugins enabled.
 
 ```bash
-export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
-
 modeio-middleware-gateway \
   --host 127.0.0.1 \
   --port 8787 \
@@ -75,16 +73,16 @@ export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
 
 ```bash
 modeio-middleware-setup \
-  --apply-opencode \
-  --create-opencode-config
+  --apply-opencode
 ```
+
+This works for redirectable OpenCode providers. If the active provider is built-in `openai` authenticated through ChatGPT OAuth, setup will report that the provider stays outside middleware preserve-provider mode.
 
 ### OpenClaw
 
 ```bash
 modeio-middleware-setup \
-  --apply-openclaw \
-  --create-openclaw-config
+  --apply-openclaw
 ```
 
 ### Claude Code
@@ -191,8 +189,7 @@ modeio-middleware-setup \
 ```bash
 # Optional readiness check before live smoke
 modeio-middleware-setup --doctor --json \
-  --require-commands codex,opencode,openclaw,claude \
-  --require-upstream-api-key
+  --require-commands codex,opencode,openclaw,claude
 
 # Full Python test suite
 python -m unittest discover tests -p 'test_*.py'
@@ -206,6 +203,12 @@ python -m unittest discover tests -p 'test_*.py'
 # Live upstream traversal check
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 
+# OpenAI-compatible client matrix using harness-owned auth only
+./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
+
+# Claude-only hook matrix (no separate OpenAI-compatible upstream required)
+./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
+
 # Full Codex/OpenCode/OpenClaw/Claude matrix (local or self-hosted only)
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 
@@ -215,6 +218,8 @@ python -m unittest discover tests -p 'test_*.py'
 # Build artifact validation
 ./scripts/release_check.sh
 ```
+
+OpenClaw setup preserves the active supported provider in place. Unsupported provider families fail clearly instead of switching to middleware-owned auth.
 
 If you are working from a source checkout and want the repo-local helper equivalents, use:
 

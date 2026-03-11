@@ -9,7 +9,7 @@ This suite is physically split by confidence layer:
 Additional validation layers live outside `unittest discover` entrypoints:
 
 - `./scripts/release_check.sh` for built-artifact and packaged-resource validation
-- `./scripts/smoke_e2e.sh --live` / `--live-agents` for manual or nightly live-routing validation
+- `./scripts/smoke_e2e.sh --live`, `--live-openai-agents`, `--live-claude`, or `--live-agents` for manual or nightly live-routing validation (with native client auth preferred over middleware-owned upstream keys)
 - `modeio-middleware-setup --doctor --json ...` for machine-readable local readiness checks before live acceptance
 
 ## Support Layer
@@ -73,6 +73,8 @@ These checks validate the built wheel/sdist instead of only the repo checkout:
 These checks are not required on every PR because they depend on external CLIs, local auth state, and a real upstream:
 
 - `./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke`
+- `./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke`
+- `./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke`
 - `./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke`
 - `./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance`
 

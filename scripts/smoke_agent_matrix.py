@@ -2,24 +2,24 @@
 from __future__ import annotations
 
 import argparse
-import gzip
-import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 try:  # Python 3.14+
     from compression import zstd as _zstd_codec
 except Exception:  # pragma: no cover
     _zstd_codec = None
 
-from smoke_matrix.agents import build_agent_command as _build_agent_command
+from modeio_middleware.cli.setup_lib.upstream import OPENAI_UPSTREAM_BASE_URL
 from smoke_matrix.common import (
     check_required_commands as _check_required_commands,
     default_upstream_base_url,
@@ -29,7 +29,6 @@ from smoke_matrix.common import (
     free_port as _free_port,
     load_tap_events as _load_tap_events,
     parse_agents as _parse_agents,
-    resolve_upstream_api_key as _resolve_upstream_api_key,
     run_command_capture as _run_command_capture,
     tap_token_metrics as _tap_token_metrics,
     tap_window_metrics as _tap_window_metrics,
@@ -38,26 +37,38 @@ from smoke_matrix.common import (
     write_json as _write_json,
     write_text as _write_text,
 )
+from smoke_matrix.openclaw_family import (
+    SUPPORTED_OPENCLAW_FAMILIES,
+    parse_openclaw_families as _parse_openclaw_families,
+    resolve_openclaw_family_scenarios as _resolve_openclaw_family_scenarios,
+)
+from smoke_matrix.runner import (
+    request_with_bytes as _request_with_bytes,
+    run_agent_check as _run_agent_check,
+    run_doctor as _run_doctor,
+    run_gateway_smoke_checks as _run_gateway_smoke_checks,
+    run_json_cli_command as _run_json_cli_command,
+    run_openclaw_family_checks as _run_openclaw_family_checks,
+    run_setup as _run_setup,
+    skipped_agent_report as _skipped_agent_report,
+    start_logged_process as _start_logged_process,
+    stop_process as _stop_process,
+    close_handle as _close_handle,
+)
 from smoke_matrix.sandbox import (
-    apply_openclaw_live_model_to_cache as _apply_openclaw_live_model_to_cache,
-    apply_openclaw_live_model_to_config as _apply_openclaw_live_model_to_config,
     build_sandbox_env as _build_sandbox_env,
     build_sandbox_paths as _build_sandbox_paths,
-    rewrite_openclaw_model_for_live as _rewrite_openclaw_model_for_live,
+    configure_opencode_supported_provider as _configure_opencode_supported_provider,
+    resolve_codex_smoke_model as _resolve_codex_config_model,
+    resolve_opencode_smoke_model as _resolve_opencode_smoke_model,
     seed_codex_credentials as _seed_codex_credentials,
-    upsert_openclaw_provider_model as _upsert_openclaw_provider_model,
+    seed_opencode_state as _seed_opencode_state,
+    seed_openclaw_state as _seed_openclaw_state,
 )
 from smoke_matrix.runtime import prepare_runtime as _prepare_runtime
 
-
-DEFAULT_UPSTREAM_BASE_URL = os.environ.get(
-    "MODEIO_GATEWAY_UPSTREAM_BASE_URL",
-    default_upstream_base_url(dict(os.environ)),
-)
-DEFAULT_UPSTREAM_MODEL = os.environ.get(
-    "MODEIO_GATEWAY_UPSTREAM_MODEL",
-    default_upstream_model(dict(os.environ)),
-)
+DEFAULT_UPSTREAM_BASE_URL = default_upstream_base_url(dict(os.environ))
+DEFAULT_UPSTREAM_MODEL = default_upstream_model(dict(os.environ))
 
 
 def _default_repo_root() -> Path:
@@ -68,498 +79,18 @@ def _default_artifacts_root() -> Path:
     return default_artifacts_root(Path(__file__))
 
 
-def _run_json_cli_command(
-    *,
-    command: Sequence[str],
-    cwd: Path,
-    env: Dict[str, str],
-    timeout_seconds: int,
-) -> Tuple[Dict[str, object], Dict[str, object]]:
-    result = _run_command_capture(
-        command=command,
-        cwd=cwd,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    stdout = str(result["stdout"])
-    try:
-        payload = json.loads(stdout)
-    except ValueError as error:
-        raise RuntimeError(
-            f"command returned non-JSON output: {stdout[:400]}"
-        ) from error
-    if not isinstance(payload, dict):
-        raise RuntimeError("JSON command did not return an object payload")
-    return payload, result
+def _normalize_codex_model(model: str) -> str:
+    normalized = model.strip()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized
 
 
-def _run_doctor(
-    *,
-    setup_command: Sequence[str],
-    repo_root: Path,
-    env: Dict[str, str],
-    agents: Sequence[str],
-    gateway_base_url: str,
-    opencode_config_path: Path,
-    openclaw_config_path: Path,
-    openclaw_models_cache_path: Path,
-    claude_settings_path: Path,
-    timeout_seconds: int,
-) -> Dict[str, object]:
-    command = [
-        *setup_command,
-        "--json",
-        "--doctor",
-        "--gateway-base-url",
-        gateway_base_url,
-        "--opencode-config-path",
-        str(opencode_config_path),
-        "--openclaw-config-path",
-        str(openclaw_config_path),
-        "--openclaw-models-cache-path",
-        str(openclaw_models_cache_path),
-        "--claude-settings-path",
-        str(claude_settings_path),
-        "--require-commands",
-        ",".join(agents),
-        "--require-upstream-api-key",
-    ]
-    if "codex" in agents:
-        command.append("--require-codex-auth")
-
-    payload, result = _run_json_cli_command(
-        command=command,
-        cwd=repo_root,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    if int(result["exitCode"]) != 0 or not payload.get("success"):
-        raise RuntimeError(
-            f"doctor failed: exit={result['exitCode']} payload={payload}"
-        )
-    return payload
-
-
-def _run_setup(
-    *,
-    setup_command: Sequence[str],
-    repo_root: Path,
-    env: Dict[str, str],
-    gateway_base_url: str,
-    claude_gateway_base_url: str,
-    opencode_config_path: Path,
-    openclaw_config_path: Path,
-    openclaw_models_cache_path: Path,
-    claude_settings_path: Path,
-    timeout_seconds: int,
-) -> Dict[str, object]:
-
-    routing_command = [
-        *setup_command,
-        "--json",
-        "--apply-opencode",
-        "--create-opencode-config",
-        "--opencode-config-path",
-        str(opencode_config_path),
-        "--apply-openclaw",
-        "--create-openclaw-config",
-        "--openclaw-config-path",
-        str(openclaw_config_path),
-        "--openclaw-models-cache-path",
-        str(openclaw_models_cache_path),
-        "--gateway-base-url",
-        gateway_base_url,
-    ]
-    routing_payload, routing_result = _run_json_cli_command(
-        command=routing_command,
-        cwd=repo_root,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    if int(routing_result["exitCode"]) != 0 or not routing_payload.get("success"):
-        raise RuntimeError(
-            f"setup command failed: exit={routing_result['exitCode']} payload={routing_payload}"
-        )
-
-    claude_command = [
-        *setup_command,
-        "--json",
-        "--apply-claude",
-        "--create-claude-settings",
-        "--claude-settings-path",
-        str(claude_settings_path),
-        "--gateway-base-url",
-        claude_gateway_base_url,
-    ]
-    claude_payload, claude_result = _run_json_cli_command(
-        command=claude_command,
-        cwd=repo_root,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    if int(claude_result["exitCode"]) != 0 or not claude_payload.get("success"):
-        raise RuntimeError(
-            f"setup command failed: exit={claude_result['exitCode']} payload={claude_payload}"
-        )
-
-    routing_payload["claude"] = claude_payload.get("claude")
-    commands = routing_payload.get("commands")
-    if isinstance(commands, dict):
-        commands["claudeHookUrl"] = (
-            claude_payload.get("commands", {}).get("claudeHookUrl")
-            if isinstance(claude_payload.get("commands"), dict)
-            else None
-        )
-    return routing_payload
-
-
-def _start_logged_process(
-    *,
-    command: Sequence[str],
-    cwd: Path,
-    env: Dict[str, str],
-    log_path: Path,
-) -> Tuple[subprocess.Popen, object]:
-    handle = log_path.open("w", encoding="utf-8")
-    process = subprocess.Popen(
-        list(command),
-        cwd=str(cwd),
-        env=env,
-        stdout=handle,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return process, handle
-
-
-def _stop_process(process: Optional[subprocess.Popen]) -> None:
-    if process is None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-
-
-def _close_handle(handle: Optional[object]) -> None:
-    if handle is not None:
-        handle.close()
-
-
-def _run_agent_check(
-    *,
-    agent: str,
-    index: int,
-    run_id: str,
-    model: str,
-    claude_model: str,
-    repo_root: Path,
-    run_dir: Path,
-    env: Dict[str, str],
-    timeout_seconds: int,
-    claude_settings_path: Optional[Path],
-    tap_jsonl_path: Path,
-) -> Dict[str, object]:
-    token = f"SMOKE_{agent.upper()}_{index}_{run_id.upper()}"
-    codex_message_path = run_dir / f"{agent}-last-message.txt"
-    command = _build_agent_command(
-        agent=agent,
-        token=token,
-        model=model,
-        claude_model=claude_model,
-        repo_root=repo_root,
-        codex_output_path=codex_message_path,
-        claude_settings_path=claude_settings_path,
-        timeout_seconds=timeout_seconds,
-    )
-
-    before_count = len(_load_tap_events(tap_jsonl_path))
-    agent_env = dict(os.environ) if agent == "claude" else env
-    result = _run_command_capture(
-        command=command,
-        cwd=repo_root,
-        env=agent_env,
-        timeout_seconds=timeout_seconds,
-    )
-
-    stdout_path = run_dir / f"{agent}.stdout.log"
-    stderr_path = run_dir / f"{agent}.stderr.log"
-    _write_text(stdout_path, str(result["stdout"]))
-    _write_text(stderr_path, str(result["stderr"]))
-
-    output_text = str(result["stdout"])
-    if agent == "codex" and codex_message_path.exists():
-        output_text = codex_message_path.read_text(encoding="utf-8")
-
-    after_events = _load_tap_events(tap_jsonl_path)
-    new_events = after_events[before_count:]
-    tap_window = _tap_window_metrics(new_events)
-    tap_token = _tap_token_metrics(new_events, token)
-    tap_kind = "claude_hook_tap" if agent == "claude" else "upstream_tap"
-    ok = (
-        int(result["exitCode"]) == 0
-        and int(tap_window["eventCount"]) >= 1
-        and int(tap_window["successCount"]) >= 1
-    )
-
-    return {
-        "name": agent,
-        "token": token,
-        "command": command,
-        "exitCode": result["exitCode"],
-        "timedOut": result["timedOut"],
-        "durationMs": result["durationMs"],
-        "stdoutPath": str(stdout_path),
-        "stderrPath": str(stderr_path),
-        "tokenInOutput": token in output_text,
-        "tapKind": tap_kind,
-        "tap": {
-            "window": tap_window,
-            "token": tap_token,
-        },
-        "ok": ok,
-    }
-
-
-def _request_with_bytes(
-    *,
-    method: str,
-    url: str,
-    body: Optional[bytes],
-    headers: Dict[str, str],
-    timeout_seconds: int,
-) -> Dict[str, object]:
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method=method,
-        headers=headers,
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read()
-            status = int(response.status)
-            response_headers = dict(response.headers.items())
-    except urllib.error.HTTPError as error:
-        raw = error.read()
-        status = int(error.code)
-        response_headers = dict(error.headers.items()) if error.headers else {}
-
-    body_text = raw.decode("utf-8", errors="replace")
-    payload = None
-    try:
-        parsed = json.loads(body_text)
-        if isinstance(parsed, dict):
-            payload = parsed
-    except ValueError:
-        payload = None
-
-    return {
-        "status": status,
-        "headers": response_headers,
-        "bodyText": body_text,
-        "payload": payload,
-    }
-
-
-def _run_gateway_smoke_checks(
-    *,
-    gateway_base_url: str,
-    model: str,
-    run_id: str,
-    timeout_seconds: int,
-    tap_jsonl_path: Path,
-) -> Sequence[Dict[str, object]]:
-    checks = []
-
-    def _append(name: str, ok: bool, details: Dict[str, object]) -> None:
-        checks.append({"name": name, "ok": ok, **details})
-
-    gateway_root = gateway_base_url.rsplit("/v1", 1)[0]
-
-    health_result = _request_with_bytes(
-        method="GET",
-        url=f"{gateway_root}/healthz",
-        body=None,
-        headers={},
-        timeout_seconds=timeout_seconds,
-    )
-    health_payload = health_result.get("payload")
-    health_ok = bool(
-        health_result.get("status") == 200
-        and isinstance(health_payload, dict)
-        and health_payload.get("ok") is True
-    )
-    _append(
-        "gateway-healthz",
-        health_ok,
-        {
-            "status": health_result.get("status"),
-        },
-    )
-
-    before_count = len(_load_tap_events(tap_jsonl_path))
-    route_result = _request_with_bytes(
-        method="POST",
-        url=f"{gateway_base_url}/not-a-real-route",
-        body=json.dumps({"probe": run_id}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        timeout_seconds=timeout_seconds,
-    )
-    after_count = len(_load_tap_events(tap_jsonl_path))
-    route_payload = route_result.get("payload")
-    route_ok = bool(
-        route_result.get("status") == 404
-        and isinstance(route_payload, dict)
-        and isinstance(route_payload.get("error"), dict)
-        and route_payload["error"].get("code") == "MODEIO_ROUTE_NOT_FOUND"
-        and after_count == before_count
-    )
-    _append(
-        "route-not-found-no-upstream",
-        route_ok,
-        {
-            "status": route_result.get("status"),
-            "tapEventDelta": after_count - before_count,
-        },
-    )
-
-    unsupported_raw = json.dumps(
-        {
-            "model": model,
-            "input": f"SMOKE_UNSUPPORTED_ENCODING_{run_id}",
-            "modeio": {"profile": "dev"},
-        }
-    ).encode("utf-8")
-    before_count = len(_load_tap_events(tap_jsonl_path))
-    unsupported_result = _request_with_bytes(
-        method="POST",
-        url=f"{gateway_base_url}/responses",
-        body=unsupported_raw,
-        headers={
-            "Content-Type": "application/json",
-            "Content-Encoding": "snappy",
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    after_count = len(_load_tap_events(tap_jsonl_path))
-    unsupported_payload = unsupported_result.get("payload")
-    unsupported_ok = bool(
-        unsupported_result.get("status") == 400
-        and isinstance(unsupported_payload, dict)
-        and isinstance(unsupported_payload.get("error"), dict)
-        and unsupported_payload["error"].get("code") == "MODEIO_VALIDATION_ERROR"
-        and after_count == before_count
-    )
-    _append(
-        "unsupported-encoding-no-upstream",
-        unsupported_ok,
-        {
-            "status": unsupported_result.get("status"),
-            "tapEventDelta": after_count - before_count,
-        },
-    )
-
-    gzip_raw = json.dumps(
-        {
-            "model": model,
-            "input": f"SMOKE_GZIP_{run_id}",
-            "modeio": {"profile": "dev"},
-        }
-    ).encode("utf-8")
-    before_count = len(_load_tap_events(tap_jsonl_path))
-    gzip_result = _request_with_bytes(
-        method="POST",
-        url=f"{gateway_base_url}/responses",
-        body=gzip.compress(gzip_raw),
-        headers={
-            "Content-Type": "application/json",
-            "Content-Encoding": "gzip",
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    new_events = _load_tap_events(tap_jsonl_path)[before_count:]
-    gzip_window = _tap_window_metrics(new_events)
-    gzip_headers = {
-        str(key).lower(): str(value)
-        for key, value in dict(gzip_result.get("headers") or {}).items()
-    }
-    gzip_ok = bool(
-        gzip_result.get("status") == 200
-        and gzip_headers.get("x-modeio-contract-version")
-        and gzip_headers.get("x-modeio-request-id")
-        and gzip_headers.get("x-modeio-upstream-called") == "true"
-        and int(gzip_window.get("eventCount", 0)) >= 1
-        and int(gzip_window.get("successCount", 0)) >= 1
-    )
-    _append(
-        "gzip-encoded-responses-request",
-        gzip_ok,
-        {
-            "status": gzip_result.get("status"),
-            "tapEvents": gzip_window.get("eventCount"),
-            "tap2xx": gzip_window.get("successCount"),
-            "paths": gzip_window.get("paths"),
-        },
-    )
-
-    if _zstd_codec is None:
-        _append(
-            "zstd-encoded-responses-request",
-            True,
-            {
-                "skipped": True,
-                "reason": "compression.zstd unavailable",
-            },
-        )
-        return checks
-
-    zstd_raw = json.dumps(
-        {
-            "model": model,
-            "input": f"SMOKE_ZSTD_{run_id}",
-            "modeio": {"profile": "dev"},
-        }
-    ).encode("utf-8")
-    before_count = len(_load_tap_events(tap_jsonl_path))
-    zstd_result = _request_with_bytes(
-        method="POST",
-        url=f"{gateway_base_url}/responses",
-        body=_zstd_codec.compress(zstd_raw),
-        headers={
-            "Content-Type": "application/json",
-            "Content-Encoding": "zstd",
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    zstd_events = _load_tap_events(tap_jsonl_path)[before_count:]
-    zstd_window = _tap_window_metrics(zstd_events)
-    zstd_headers = {
-        str(key).lower(): str(value)
-        for key, value in dict(zstd_result.get("headers") or {}).items()
-    }
-    zstd_ok = bool(
-        zstd_result.get("status") == 200
-        and zstd_headers.get("x-modeio-contract-version")
-        and zstd_headers.get("x-modeio-request-id")
-        and zstd_headers.get("x-modeio-upstream-called") == "true"
-        and int(zstd_window.get("eventCount", 0)) >= 1
-        and int(zstd_window.get("successCount", 0)) >= 1
-    )
-    _append(
-        "zstd-encoded-responses-request",
-        zstd_ok,
-        {
-            "status": zstd_result.get("status"),
-            "tapEvents": zstd_window.get("eventCount"),
-            "tap2xx": zstd_window.get("successCount"),
-            "paths": zstd_window.get("paths"),
-        },
-    )
-    return checks
-
+def _resolve_codex_smoke_model(requested_model: str) -> str | None:
+    normalized = _normalize_codex_model(requested_model)
+    if not normalized or normalized == DEFAULT_UPSTREAM_MODEL:
+        return None
+    return normalized
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -573,7 +104,59 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=DEFAULT_UPSTREAM_MODEL,
-        help="OpenAI-compatible model name used for codex/opencode/openclaw smoke prompts",
+        help=(
+            "OpenAI-compatible model name used as the generic fallback; "
+            "Codex smoke uses a Codex-native default when this stays at the generic default"
+        ),
+    )
+    parser.add_argument(
+        "--opencode-model",
+        default="",
+        help="Optional OpenCode model override in provider/model form; defaults to the seeded harness-selected model",
+    )
+    parser.add_argument(
+        "--opencode-provider",
+        default="",
+        help="Optional exact OpenCode provider id to force in the sandbox for supported-provider smoke",
+    )
+    parser.add_argument(
+        "--opencode-base-url",
+        default="",
+        help="Optional exact upstream base URL for --opencode-provider; required when forcing an OpenCode provider",
+    )
+    parser.add_argument(
+        "--openclaw-families",
+        default="current",
+        help=(
+            "OpenClaw families to exercise when openclaw is requested. Use 'current' "
+            "to follow the harness-selected provider/model, or pass an explicit "
+            f"comma-separated list ({', '.join(SUPPORTED_OPENCLAW_FAMILIES)})."
+        ),
+    )
+    parser.add_argument(
+        "--openclaw-openai-provider",
+        default="",
+        help="Optional OpenClaw provider id to force for the openai-completions family",
+    )
+    parser.add_argument(
+        "--openclaw-openai-model",
+        default="",
+        help="Optional OpenClaw model id/ref to force for the openai-completions family",
+    )
+    parser.add_argument(
+        "--openclaw-anthropic-provider",
+        default="",
+        help="Optional exact OpenClaw provider id to force for the anthropic-messages family",
+    )
+    parser.add_argument(
+        "--openclaw-anthropic-model",
+        default="",
+        help="Optional exact OpenClaw model id/ref to force for the anthropic-messages family",
+    )
+    parser.add_argument(
+        "--openclaw-anthropic-base-url",
+        default="",
+        help="Optional upstream base URL override used with an explicit anthropic provider selection",
     )
     parser.add_argument(
         "--claude-model",
@@ -584,11 +167,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--upstream-base-url",
         default=DEFAULT_UPSTREAM_BASE_URL,
         help="Real upstream OpenAI-compatible base URL",
-    )
-    parser.add_argument(
-        "--upstream-api-key-env",
-        default="MODEIO_GATEWAY_UPSTREAM_API_KEY",
-        help="Primary env var to read upstream API key from",
     )
     parser.add_argument(
         "--artifacts-dir",
@@ -663,6 +241,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = run_dir / "summary.json"
     tap_jsonl_path = run_dir / "tap-exchanges.jsonl"
     tap_stdout_path = run_dir / "tap-proxy.log"
+    codex_tap_jsonl_path = run_dir / "codex-tap-exchanges.jsonl"
+    codex_tap_stdout_path = run_dir / "codex-tap.log"
     claude_tap_jsonl_path = run_dir / "claude-hook-exchanges.jsonl"
     claude_tap_stdout_path = run_dir / "claude-hook-tap.log"
     gateway_log_path = run_dir / "gateway.log"
@@ -676,11 +256,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "finishedAt": None,
         "upstream": {
             "baseUrl": args.upstream_base_url,
-            "apiKeyEnv": None,
             "model": args.model,
+            "source": "cli_or_default",
         },
         "agentModels": {
             "openaiCompatible": args.model,
+            "codex": None,
+            "opencode": args.opencode_model or None,
             "claude": args.claude_model,
         },
         "runtime": {
@@ -693,9 +275,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "logPath": str(tap_jsonl_path),
             "stdoutPath": str(tap_stdout_path),
         },
+        "codexNativeTap": None,
+        "opencodeTap": None,
         "claudeHookTap": None,
         "doctor": None,
         "setup": None,
+        "openclawFamilyScenarios": [],
         "gatewayChecks": [],
         "agents": [],
         "error": None,
@@ -715,6 +300,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     tap_process: Optional[subprocess.Popen] = None
     tap_log_handle = None
+    codex_tap_process: Optional[subprocess.Popen] = None
+    codex_tap_log_handle = None
+    opencode_tap_process: Optional[subprocess.Popen] = None
+    opencode_tap_log_handle = None
     claude_tap_process: Optional[subprocess.Popen] = None
     claude_tap_log_handle = None
     gateway_process: Optional[subprocess.Popen] = None
@@ -723,17 +312,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         agents = _parse_agents(args.agents)
         needs_claude = "claude" in agents
+        needs_openai_agents = any(agent != "claude" for agent in agents)
+        report["mode"] = (
+            "live-agents"
+            if needs_claude and needs_openai_agents
+            else "live-claude"
+            if needs_claude
+            else "live-openai-agents"
+        )
         missing_commands = _check_required_commands(agents)
         if missing_commands:
             raise RuntimeError(
                 "missing required commands: " + ", ".join(missing_commands)
             )
 
-        upstream_api_key, upstream_api_key_env = _resolve_upstream_api_key(
-            dict(os.environ),
-            args.upstream_api_key_env,
-        )
-        report["upstream"]["apiKeyEnv"] = upstream_api_key_env
+        report["upstream"] = {
+            **report["upstream"],
+            "requestedBaseUrl": args.upstream_base_url,
+            "requestedModel": args.model,
+        }
 
         runtime = _prepare_runtime(
             repo_root=repo_root,
@@ -751,8 +348,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths["openclaw_models_cache"].parent.mkdir(parents=True, exist_ok=True)
 
         seeded_codex = _seed_codex_credentials(Path.home(), paths["home"])
+        seeded_opencode = _seed_opencode_state(Path.home(), paths)
+        seeded_openclaw = _seed_openclaw_state(Path.home(), paths)
         report["sandbox"]["seededCodexFiles"] = seeded_codex
+        report["sandbox"]["seededOpenCode"] = seeded_opencode
+        report["sandbox"]["seededOpenClaw"] = seeded_openclaw
         report["sandbox"]["claudeUsesHostAuthContext"] = needs_claude
+        if args.opencode_provider.strip():
+            forced_provider = args.opencode_provider.strip()
+            forced_model = args.opencode_model.strip()
+            forced_base_url = args.opencode_base_url.strip()
+            if not forced_model:
+                raise RuntimeError(
+                    "--opencode-model is required when --opencode-provider is set"
+                )
+            if not forced_base_url:
+                raise RuntimeError(
+                    "--opencode-base-url is required when --opencode-provider is set"
+                )
+            report["sandbox"]["forcedOpenCodeProvider"] = (
+                _configure_opencode_supported_provider(
+                    config_path=paths["opencode_config"],
+                    provider_id=forced_provider,
+                    model_ref=forced_model,
+                    base_url=forced_base_url,
+                )
+            )
+        explicit_codex_model = _resolve_codex_smoke_model(args.model)
+        resolved_codex_model = explicit_codex_model or _resolve_codex_config_model(
+            config_path=paths["codex_config"],
+        )
+        report["agentModels"]["codex"] = resolved_codex_model
+        resolved_opencode_model = (
+            args.opencode_model.strip()
+            or _resolve_opencode_smoke_model(
+                config_path=paths["opencode_config"],
+                state_path=paths["xdg_state"] / "opencode" / "model.json",
+            )
+        )
+        report["agentModels"]["opencode"] = resolved_opencode_model
+
+        openclaw_family_scenarios = []
+        if "openclaw" in agents:
+            openclaw_family_scenarios = _resolve_openclaw_family_scenarios(
+                paths=paths,
+                args=args,
+            )
+            report["openclawFamilyScenarios"] = [
+                scenario.to_dict() for scenario in openclaw_family_scenarios
+            ]
 
         gateway_port = args.gateway_port if args.gateway_port > 0 else _free_port()
         tap_port = args.tap_port if args.tap_port > 0 else _free_port()
@@ -765,7 +409,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime.env,
             paths,
             gateway_base_url=gateway_base_url,
-            upstream_api_key=upstream_api_key,
         )
 
         report["doctor"] = _run_doctor(
@@ -780,31 +423,144 @@ def main(argv: Sequence[str] | None = None) -> int:
             claude_settings_path=paths["claude_settings"],
             timeout_seconds=args.command_timeout_seconds,
         )
-
-        tap_command = [
-            sys.executable,
-            str(repo_root / "scripts" / "upstream_tap_proxy.py"),
-            "--host",
-            args.gateway_host,
-            "--port",
-            str(tap_port),
-            "--target-base-url",
-            args.upstream_base_url,
-            "--log-jsonl",
-            str(tap_jsonl_path),
-            "--api-key-env",
-            "MODEIO_TAP_UPSTREAM_API_KEY",
-        ]
-        tap_process, tap_log_handle = _start_logged_process(
-            command=tap_command,
-            cwd=repo_root,
-            env=env,
-            log_path=tap_stdout_path,
+        native_clients_report = report.get("doctor", {}).get("nativeClients", {})
+        opencode_native_report = (
+            native_clients_report.get("opencode", {})
+            if isinstance(native_clients_report, dict)
+            else {}
         )
-        if not _wait_for_url(
-            f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
-        ):
-            raise RuntimeError("tap proxy failed to become healthy")
+        opencode_transport = (
+            opencode_native_report.get("transport")
+            if isinstance(opencode_native_report, dict)
+            else None
+        )
+        opencode_provider_id = (
+            str(opencode_native_report.get("providerId") or "").strip()
+            if isinstance(opencode_native_report, dict)
+            else ""
+        )
+        opencode_upstream_base_url = (
+            str(opencode_native_report.get("upstreamBaseUrl") or "").strip()
+            if isinstance(opencode_native_report, dict)
+            else ""
+        )
+
+        gateway_upstream_chat_url = f"{OPENAI_UPSTREAM_BASE_URL}/chat/completions"
+        gateway_upstream_responses_url = f"{OPENAI_UPSTREAM_BASE_URL}/responses"
+        if needs_openai_agents:
+            tap_command = [
+                sys.executable,
+                str(repo_root / "scripts" / "upstream_tap_proxy.py"),
+                "--host",
+                args.gateway_host,
+                "--port",
+                str(tap_port),
+                "--target-base-url",
+                args.upstream_base_url,
+                "--log-jsonl",
+                str(tap_jsonl_path),
+            ]
+            tap_process, tap_log_handle = _start_logged_process(
+                command=tap_command,
+                cwd=repo_root,
+                env=env,
+                log_path=tap_stdout_path,
+            )
+            if not _wait_for_url(
+                f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
+            ):
+                raise RuntimeError("tap proxy failed to become healthy")
+            gateway_upstream_chat_url = f"{tap_base_url}/v1/chat/completions"
+            gateway_upstream_responses_url = f"{tap_base_url}/v1/responses"
+            report["tap"]["baseUrl"] = tap_base_url
+            report["tap"]["port"] = tap_port
+            if "codex" in agents:
+                codex_tap_port = _free_port()
+                codex_tap_base_url = f"http://{args.gateway_host}:{codex_tap_port}"
+                codex_tap_command = [
+                    sys.executable,
+                    str(repo_root / "scripts" / "upstream_tap_proxy.py"),
+                    "--host",
+                    args.gateway_host,
+                    "--port",
+                    str(codex_tap_port),
+                    "--target-base-url",
+                    "https://chatgpt.com/backend-api/codex",
+                    "--log-jsonl",
+                    str(codex_tap_jsonl_path),
+                ]
+                codex_tap_process, codex_tap_log_handle = _start_logged_process(
+                    command=codex_tap_command,
+                    cwd=repo_root,
+                    env=env,
+                    log_path=codex_tap_stdout_path,
+                )
+                if not _wait_for_url(
+                    f"{codex_tap_base_url}/healthz",
+                    timeout_seconds=args.startup_timeout_seconds,
+                ):
+                    raise RuntimeError("codex native tap proxy failed to become healthy")
+                env["MODEIO_CODEX_NATIVE_BASE_URL"] = codex_tap_base_url
+                report["codexNativeTap"] = {
+                    "baseUrl": codex_tap_base_url,
+                    "port": codex_tap_port,
+                    "logPath": str(codex_tap_jsonl_path),
+                    "stdoutPath": str(codex_tap_stdout_path),
+                    "targetBaseUrl": "https://chatgpt.com/backend-api/codex",
+                }
+            if (
+                "opencode" in agents
+                and isinstance(opencode_native_report, dict)
+                and opencode_native_report.get("supported") is not False
+                and opencode_transport != "codex_native"
+                and opencode_provider_id
+                and opencode_upstream_base_url
+            ):
+                opencode_tap_jsonl_path = run_dir / "opencode-tap-exchanges.jsonl"
+                opencode_tap_stdout_path = run_dir / "opencode-tap.log"
+                opencode_tap_port = _free_port()
+                opencode_tap_base_url = f"http://{args.gateway_host}:{opencode_tap_port}"
+                opencode_tap_command = [
+                    sys.executable,
+                    str(repo_root / "scripts" / "upstream_tap_proxy.py"),
+                    "--host",
+                    args.gateway_host,
+                    "--port",
+                    str(opencode_tap_port),
+                    "--target-base-url",
+                    opencode_upstream_base_url,
+                    "--log-jsonl",
+                    str(opencode_tap_jsonl_path),
+                ]
+                opencode_tap_process, opencode_tap_log_handle = _start_logged_process(
+                    command=opencode_tap_command,
+                    cwd=repo_root,
+                    env=env,
+                    log_path=opencode_tap_stdout_path,
+                )
+                if not _wait_for_url(
+                    f"{opencode_tap_base_url}/healthz",
+                    timeout_seconds=args.startup_timeout_seconds,
+                ):
+                    raise RuntimeError("opencode preserve-provider tap proxy failed to become healthy")
+                report["opencodeTap"] = {
+                    "baseUrl": opencode_tap_base_url,
+                    "port": opencode_tap_port,
+                    "logPath": str(opencode_tap_jsonl_path),
+                    "stdoutPath": str(opencode_tap_stdout_path),
+                    "targetBaseUrl": opencode_upstream_base_url,
+                }
+                report["sandbox"]["tapInjectedOpenCodeProvider"] = (
+                    _configure_opencode_supported_provider(
+                        config_path=paths["opencode_config"],
+                        provider_id=opencode_provider_id,
+                        model_ref=resolved_opencode_model,
+                        base_url=opencode_tap_base_url,
+                    )
+                )
+        else:
+            report["tap"]["skipped"] = True
+            report["tap"]["reason"] = "openai-compatible-agents-not-requested"
 
         gateway_command = [
             *runtime.gateway_command,
@@ -813,9 +569,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--port",
             str(gateway_port),
             "--upstream-chat-url",
-            f"{tap_base_url}/v1/chat/completions",
+            gateway_upstream_chat_url,
             "--upstream-responses-url",
-            f"{tap_base_url}/v1/responses",
+            gateway_upstream_responses_url,
         ]
         gateway_process, gateway_log_handle = _start_logged_process(
             command=gateway_command,
@@ -835,8 +591,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "host": args.gateway_host,
             "port": gateway_port,
         }
-        report["tap"]["baseUrl"] = tap_base_url
-        report["tap"]["port"] = tap_port
 
         claude_gateway_base_url = gateway_base_url
         if needs_claude:
@@ -855,8 +609,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 gateway_root_url,
                 "--log-jsonl",
                 str(claude_tap_jsonl_path),
-                "--api-key-env",
-                "MODEIO_TAP_UPSTREAM_API_KEY",
             ]
             claude_tap_process, claude_tap_log_handle = _start_logged_process(
                 command=claude_tap_command,
@@ -889,33 +641,76 @@ def main(argv: Sequence[str] | None = None) -> int:
             openclaw_models_cache_path=paths["openclaw_models_cache"],
             claude_settings_path=paths["claude_settings"],
             timeout_seconds=args.command_timeout_seconds,
+            configure_opencode=(
+                "opencode" in agents
+                and not (
+                    isinstance(opencode_native_report, dict)
+                    and opencode_native_report.get("supported") is False
+                )
+            ),
+            configure_openclaw=False,
+            configure_claude=needs_claude,
         )
         report["setup"] = setup_payload
         _write_json(setup_payload_path, setup_payload)
 
-        report["openclawLiveModelPatch"] = _rewrite_openclaw_model_for_live(
-            config_path=paths["openclaw_config"],
-            models_cache_path=paths["openclaw_models_cache"],
-            model_id=args.model,
-        )
-
-        report["gatewayChecks"] = list(
-            _run_gateway_smoke_checks(
-                gateway_base_url=gateway_base_url,
-                model=args.model,
-                run_id=run_id,
-                timeout_seconds=args.command_timeout_seconds,
-                tap_jsonl_path=tap_jsonl_path,
-            )
-        )
+        report["gatewayChecks"] = [
+            {
+                "name": "generic-gateway-probes",
+                "ok": True,
+                "skipped": True,
+                "reason": "disabled: middleware now relies on harness-owned auth and does not run generic managed-upstream gateway probes",
+            }
+        ]
 
         for index, agent in enumerate(agents, start=1):
+            if agent == "openclaw":
+                report["agents"].extend(
+                    _run_openclaw_family_checks(
+                        setup_command=runtime.setup_command,
+                        repo_root=repo_root,
+                        env=env,
+                        gateway_base_url=gateway_base_url,
+                        openclaw_config_path=paths["openclaw_config"],
+                        openclaw_models_cache_path=paths["openclaw_models_cache"],
+                        run_dir=run_dir,
+                        run_id=run_id,
+                        timeout_seconds=args.command_timeout_seconds,
+                        gateway_host=args.gateway_host,
+                        scenarios=openclaw_family_scenarios,
+                    )
+                )
+                continue
+            if (
+                agent == "opencode"
+                and isinstance(opencode_native_report, dict)
+                and opencode_native_report.get("supported") is False
+            ):
+                report["agents"].append(
+                    _skipped_agent_report(
+                        agent="opencode",
+                        report_name="opencode",
+                        diagnostic=(
+                            str(opencode_native_report.get("reason") or "").strip()
+                            or "OpenCode selected provider is not redirectable through middleware."
+                        ),
+                    )
+                )
+                continue
+
             report["agents"].append(
                 _run_agent_check(
                     agent=agent,
                     index=index,
                     run_id=run_id,
-                    model=args.model,
+                    report_name=None,
+                    model=(
+                        resolved_codex_model
+                        if agent == "codex"
+                        else resolved_opencode_model
+                        if agent == "opencode"
+                        else args.model
+                    ),
                     claude_model=args.claude_model,
                     repo_root=repo_root,
                     run_dir=run_dir,
@@ -924,26 +719,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                     claude_settings_path=paths["claude_settings"]
                     if agent == "claude"
                     else None,
-                    tap_jsonl_path=claude_tap_jsonl_path
-                    if agent == "claude"
-                    else tap_jsonl_path,
+                    tap_jsonl_path=(
+                        claude_tap_jsonl_path
+                        if agent == "claude"
+                        else opencode_tap_jsonl_path
+                        if (
+                            agent == "opencode"
+                            and opencode_tap_process is not None
+                        )
+                        else codex_tap_jsonl_path
+                        if (
+                            codex_tap_process is not None
+                            and (
+                                agent == "codex"
+                                or (agent == "opencode" and opencode_transport == "codex_native")
+                            )
+                        )
+                        else tap_jsonl_path
+                    ),
                 )
             )
 
-        gateway_checks_ok = all(
-            bool(item.get("ok")) for item in report.get("gatewayChecks", [])
-        )
-        report["success"] = gateway_checks_ok and all(
-            bool(agent.get("ok")) for agent in report["agents"]
+        report["success"] = all(
+            bool(agent.get("productOk", agent.get("ok"))) for agent in report["agents"]
         )
     except Exception as error:
         report["success"] = False
         report["error"] = str(error)
     finally:
         _stop_process(claude_tap_process)
+        _stop_process(opencode_tap_process)
+        _stop_process(codex_tap_process)
         _stop_process(gateway_process)
         _stop_process(tap_process)
         _close_handle(claude_tap_log_handle)
+        _close_handle(opencode_tap_log_handle)
+        _close_handle(codex_tap_log_handle)
         _close_handle(gateway_log_handle)
         _close_handle(tap_log_handle)
 
@@ -963,7 +774,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         success_count = window.get("successCount") if isinstance(window, dict) else None
         print(
             "[smoke-agent-matrix] "
-            f"{agent_report.get('name')}: ok={agent_report.get('ok')} "
+            f"{agent_report.get('reportName') or agent_report.get('name')}: "
+            f"ok={agent_report.get('ok')} outcome={agent_report.get('outcome')} "
             f"exit={agent_report.get('exitCode')} tapEvents={event_count} tap2xx={success_count}"
         )
 
@@ -972,7 +784,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         print(
             "[smoke-agent-matrix] "
-            f"check {check.get('name')}: ok={check.get('ok')} "
+            f"check {check.get('name')}: ok={check.get('ok')} outcome={check.get('outcome')} "
             f"status={check.get('status')}"
         )
 

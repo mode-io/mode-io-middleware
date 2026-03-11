@@ -13,11 +13,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-from modeio_middleware.cli.setup_lib.claude import (
-    apply_claude_settings_file,
-    default_claude_settings_path,
-    derive_claude_hook_url,
-    uninstall_claude_settings_file,
+from modeio_middleware.cli.harness_adapters import (
+    HarnessAdapterRegistry,
+    HarnessAttachRequest,
+    HarnessDetachRequest,
+    codex_set_env_command,
+    codex_unset_env_command,
+    default_codex_config_path,
 )
 from modeio_middleware.cli.setup_lib.common import (
     HealthCheckResult,
@@ -26,23 +28,17 @@ from modeio_middleware.cli.setup_lib.common import (
     derive_health_url,
     normalize_gateway_base_url,
 )
-from modeio_middleware.cli.setup_lib.opencode import (
-    apply_opencode_config_file,
-    default_opencode_config_path,
-    uninstall_opencode_config_file,
-)
+from modeio_middleware.cli.setup_lib.claude import default_claude_settings_path, derive_claude_hook_url
+from modeio_middleware.cli.setup_lib.opencode import default_opencode_config_path
 from modeio_middleware.cli.setup_lib.openclaw import (
-    apply_openclaw_config_file,
-    apply_openclaw_models_cache_file,
     default_openclaw_config_path,
     default_openclaw_models_cache_path,
-    uninstall_openclaw_config_file,
-    uninstall_openclaw_models_cache_file,
 )
 
 DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:8787/v1"
 DEFAULT_UPSTREAM_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_UPSTREAM_RESPONSES_URL = "https://api.openai.com/v1/responses"
+_HARNESS_ADAPTERS = HarnessAdapterRegistry()
 
 
 def _detect_shell(os_name: str, env: Optional[Dict[str, str]] = None) -> str:
@@ -59,24 +55,11 @@ def _detect_shell(os_name: str, env: Optional[Dict[str, str]] = None) -> str:
 
 
 def _codex_env_command(shell: str, gateway_base_url: str) -> str:
-    normalized = normalize_gateway_base_url(gateway_base_url)
-    if shell == "powershell":
-        return f'$env:OPENAI_BASE_URL = "{normalized}"'
-    if shell == "cmd":
-        return f"set OPENAI_BASE_URL={normalized}"
-    if shell == "fish":
-        return f'set -x OPENAI_BASE_URL "{normalized}"'
-    return f'export OPENAI_BASE_URL="{normalized}"'
+    return codex_set_env_command(shell, gateway_base_url)
 
 
 def _codex_unset_env_command(shell: str) -> str:
-    if shell == "powershell":
-        return "Remove-Item Env:OPENAI_BASE_URL"
-    if shell == "cmd":
-        return "set OPENAI_BASE_URL="
-    if shell == "fish":
-        return "set -e OPENAI_BASE_URL"
-    return "unset OPENAI_BASE_URL"
+    return codex_unset_env_command(shell)
 
 
 def _check_gateway_health(health_url: str, timeout_seconds: int) -> HealthCheckResult:
@@ -180,26 +163,45 @@ def _path_parent_writable(path: Path) -> bool:
     return os.access(candidate, os.W_OK)
 
 
-def _resolve_upstream_api_key_presence(
-    preferred_env: str, env: Optional[Dict[str, str]] = None
-) -> Dict[str, Any]:
-    resolved_env = env or os.environ
-    candidates = []
-    for value in (preferred_env.strip(), "ZENMUX_API_KEY", "OPENAI_API_KEY"):
-        if value and value not in candidates:
-            candidates.append(value)
-
-    found_env = None
-    for candidate in candidates:
-        if resolved_env.get(candidate, "").strip():
-            found_env = candidate
-            break
-
+def _resolved_harness_paths(
+    args: argparse.Namespace,
+    *,
+    os_name: str,
+    env: Dict[str, str],
+) -> dict[str, Path]:
+    opencode_path = (
+        Path(args.opencode_config_path).expanduser()
+        if args.opencode_config_path
+        else default_opencode_config_path(os_name=os_name, env=env)
+    )
+    openclaw_path = (
+        Path(args.openclaw_config_path).expanduser()
+        if args.openclaw_config_path
+        else default_openclaw_config_path(os_name=os_name, env=env)
+    )
+    openclaw_models_cache_path = (
+        Path(args.openclaw_models_cache_path).expanduser()
+        if args.openclaw_models_cache_path
+        else default_openclaw_models_cache_path(config_path=openclaw_path, env=env)
+    )
+    claude_path = (
+        Path(args.claude_settings_path).expanduser()
+        if args.claude_settings_path
+        else default_claude_settings_path()
+    )
+    codex_config_path = default_codex_config_path(env=env)
     return {
-        "searched": candidates,
-        "present": found_env is not None,
-        "env": found_env,
+        "codex": codex_config_path,
+        "opencode": opencode_path,
+        "openclaw": openclaw_path,
+        "openclaw_models_cache": openclaw_models_cache_path,
+        "claude": claude_path,
     }
+
+
+def _sanitized_native_client_payload(client_name: str, env: Dict[str, str]) -> Dict[str, Any]:
+    adapter = _HARNESS_ADAPTERS.adapter_for(client_name)
+    return adapter.inspect_current_state(env=env).to_public_payload()
 
 
 def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
@@ -207,31 +209,57 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
     os_name = detect_os_name(args.os_name)
     shell = args.shell if args.shell != "auto" else _detect_shell(os_name)
     health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
-    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    env = dict(os.environ)
     required_commands = list(_split_csv_values(args.require_commands))
-    upstream_api_key = _resolve_upstream_api_key_presence(args.upstream_api_key_env)
+    paths = _resolved_harness_paths(args, os_name=os_name, env=env)
 
-    opencode_path = (
-        Path(args.opencode_config_path).expanduser()
-        if args.opencode_config_path
-        else default_opencode_config_path(os_name=os_name)
+    native_clients = {
+        "codex": _sanitized_native_client_payload("codex", env),
+        "opencode": _sanitized_native_client_payload("opencode", env),
+        "openclaw": _sanitized_native_client_payload("openclaw", env),
+        "claude": _HARNESS_ADAPTERS.adapter_for("claude")
+        .inspect_current_state(env=env)
+        .to_public_payload(),
+    }
+
+    codex_attachment = _HARNESS_ADAPTERS.adapter_for("codex").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        shell=shell,
+        config_path=paths["codex"],
     )
-    openclaw_path = (
-        Path(args.openclaw_config_path).expanduser()
-        if args.openclaw_config_path
-        else default_openclaw_config_path(os_name=os_name)
+    opencode_attachment = _HARNESS_ADAPTERS.adapter_for("opencode").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        os_name=os_name,
+        config_path=paths["opencode"],
     )
-    openclaw_models_cache_path = (
-        Path(args.openclaw_models_cache_path).expanduser()
-        if args.openclaw_models_cache_path
-        else default_openclaw_models_cache_path(config_path=openclaw_path)
+    openclaw_attachment = _HARNESS_ADAPTERS.adapter_for("openclaw").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        os_name=os_name,
+        config_path=paths["openclaw"],
+        models_cache_path=paths["openclaw_models_cache"],
     )
-    claude_path = (
-        Path(args.claude_settings_path).expanduser()
-        if args.claude_settings_path
-        else default_claude_settings_path()
+    claude_attachment = _HARNESS_ADAPTERS.adapter_for("claude").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        config_path=paths["claude"],
     )
-    codex_auth_path = home / ".codex" / "auth.json"
+
+    codex_auth_path = native_clients["codex"].get("path")
+    opencode_route_support: Dict[str, Any] = dict(
+        (opencode_attachment.details or {}).get(
+            "routeSupport",
+            {"supported": False, "reason": "config_not_found", "providerId": None},
+        )
+    )
+    openclaw_route_support: Dict[str, Any] = dict(
+        (openclaw_attachment.details or {}).get(
+            "routeSupport",
+            {"supported": False, "reason": "config_not_found"},
+        )
+    )
 
     binaries = {
         name: shutil.which(name) for name in ("codex", "opencode", "openclaw", "claude")
@@ -253,41 +281,41 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
                 "message": "skipped",
             },
         },
-        "upstreamApiKey": upstream_api_key,
+        "nativeClients": native_clients,
         "codex": {
             "shell": shell,
-            "setCommand": _codex_env_command(shell, gateway_base_url),
-            "unsetCommand": _codex_unset_env_command(shell),
+            "setCommand": codex_attachment.details.get("setCommand"),
+            "unsetCommand": codex_attachment.details.get("unsetCommand"),
             "binaryFound": binaries["codex"] is not None,
             "binaryPath": binaries["codex"],
-            "authPath": str(codex_auth_path),
-            "authPresent": codex_auth_path.exists(),
+            "configPath": str(paths["codex"]),
+            "authPath": codex_auth_path,
+            "authPresent": bool(codex_auth_path and Path(codex_auth_path).exists()),
         },
         "opencode": {
             "binaryFound": binaries["opencode"] is not None,
             "binaryPath": binaries["opencode"],
-            "path": str(opencode_path),
-            "configParentWritable": _path_parent_writable(opencode_path),
+            "path": str(paths["opencode"]),
+            "configParentWritable": _path_parent_writable(paths["opencode"]),
+            "routeSupport": opencode_route_support,
         },
         "openclaw": {
             "binaryFound": binaries["openclaw"] is not None,
             "binaryPath": binaries["openclaw"],
-            "path": str(openclaw_path),
-            "configParentWritable": _path_parent_writable(openclaw_path),
-            "modelsCachePath": str(openclaw_models_cache_path),
+            "path": str(paths["openclaw"]),
+            "configParentWritable": _path_parent_writable(paths["openclaw"]),
+            "modelsCachePath": str(paths["openclaw_models_cache"]),
             "modelsCacheParentWritable": _path_parent_writable(
-                openclaw_models_cache_path
+                paths["openclaw_models_cache"]
             ),
+            "routeSupport": openclaw_route_support,
         },
         "claude": {
             "binaryFound": binaries["claude"] is not None,
             "binaryPath": binaries["claude"],
-            "path": str(claude_path),
-            "configParentWritable": _path_parent_writable(claude_path),
-            "authCheck": {
-                "supported": False,
-                "message": "Claude auth is verified by the live smoke command itself; the doctor only checks binary/config readiness.",
-            },
+            "path": str(paths["claude"]),
+            "configParentWritable": _path_parent_writable(paths["claude"]),
+            "authCheck": claude_attachment.details.get("authCheck"),
         },
         "requiredCommands": required_commands,
         "checks": [],
@@ -319,16 +347,6 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
             }
         )
 
-    if args.require_upstream_api_key:
-        report["checks"].append(
-            {
-                "name": "upstream-api-key",
-                "ok": bool(upstream_api_key["present"]),
-                "env": upstream_api_key["env"],
-                "searched": upstream_api_key["searched"],
-            }
-        )
-
     if args.require_codex_auth:
         report["checks"].append(
             {
@@ -350,6 +368,8 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
     os_name = detect_os_name(args.os_name)
     shell = args.shell if args.shell != "auto" else _detect_shell(os_name)
     health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
+    env = dict(os.environ)
+    paths = _resolved_harness_paths(args, os_name=os_name, env=env)
 
     report: Dict[str, Any] = {
         "success": True,
@@ -366,8 +386,9 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
         },
         "codex": {
             "shell": shell,
-            "setCommand": _codex_env_command(shell, gateway_base_url),
-            "unsetCommand": _codex_unset_env_command(shell),
+            "setCommand": codex_set_env_command(shell, gateway_base_url),
+            "unsetCommand": codex_unset_env_command(shell),
+            "configPath": str(paths["codex"]),
         },
         "opencode": None,
         "openclaw": None,
@@ -388,77 +409,80 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
         }
 
     if args.apply_opencode:
-        config_path = (
-            Path(args.opencode_config_path).expanduser()
-            if args.opencode_config_path
-            else default_opencode_config_path(os_name=os_name)
-        )
         if args.uninstall:
-            report["opencode"] = uninstall_opencode_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_opencode_base_url,
+            result = _HARNESS_ADAPTERS.adapter_for("opencode").detach(
+                HarnessDetachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["opencode"],
+                    force_remove=args.force_remove_opencode_base_url,
+                )
             )
+            report["opencode"] = result.details
         else:
-            report["opencode"] = apply_opencode_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                create_if_missing=args.create_opencode_config,
+            result = _HARNESS_ADAPTERS.adapter_for("opencode").attach(
+                HarnessAttachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["opencode"],
+                    create_if_missing=args.create_opencode_config,
+                )
             )
+            report["opencode"] = result.details
+        if isinstance(report["opencode"], dict) and report["opencode"].get("supported") is False:
+            report["success"] = False
 
     if args.apply_openclaw:
-        config_path = (
-            Path(args.openclaw_config_path).expanduser()
-            if args.openclaw_config_path
-            else default_openclaw_config_path(os_name=os_name)
-        )
-        models_cache_path = (
-            Path(args.openclaw_models_cache_path).expanduser()
-            if args.openclaw_models_cache_path
-            else default_openclaw_models_cache_path(config_path=config_path)
-        )
         if args.uninstall:
-            openclaw_report = uninstall_openclaw_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_openclaw_provider,
+            result = _HARNESS_ADAPTERS.adapter_for("openclaw").detach(
+                HarnessDetachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["openclaw"],
+                    models_cache_path=paths["openclaw_models_cache"],
+                    force_remove=args.force_remove_openclaw_provider,
+                )
             )
-            openclaw_report["modelsCache"] = uninstall_openclaw_models_cache_file(
-                models_cache_path=models_cache_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_openclaw_provider,
-            )
-            report["openclaw"] = openclaw_report
+            report["openclaw"] = result.details
         else:
-            openclaw_report = apply_openclaw_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                create_if_missing=args.create_openclaw_config,
+            result = _HARNESS_ADAPTERS.adapter_for("openclaw").attach(
+                HarnessAttachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["openclaw"],
+                    models_cache_path=paths["openclaw_models_cache"],
+                    create_if_missing=args.create_openclaw_config,
+                )
             )
-            openclaw_report["modelsCache"] = apply_openclaw_models_cache_file(
-                models_cache_path=models_cache_path,
-                gateway_base_url=gateway_base_url,
-            )
-            report["openclaw"] = openclaw_report
+            report["openclaw"] = result.details
+        if isinstance(report["openclaw"], dict) and report["openclaw"].get("supported") is False:
+            report["success"] = False
 
     if args.apply_claude:
-        claude_path = (
-            Path(args.claude_settings_path).expanduser()
-            if args.claude_settings_path
-            else default_claude_settings_path()
-        )
         if args.uninstall:
-            report["claude"] = uninstall_claude_settings_file(
-                config_path=claude_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_claude_hook_url,
+            result = _HARNESS_ADAPTERS.adapter_for("claude").detach(
+                HarnessDetachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    config_path=paths["claude"],
+                    force_remove=args.force_remove_claude_hook_url,
+                )
             )
+            report["claude"] = result.details
         else:
-            report["claude"] = apply_claude_settings_file(
-                config_path=claude_path,
-                gateway_base_url=gateway_base_url,
-                create_if_missing=args.create_claude_settings,
+            result = _HARNESS_ADAPTERS.adapter_for("claude").attach(
+                HarnessAttachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    config_path=paths["claude"],
+                    create_if_missing=args.create_claude_settings,
+                )
             )
+            report["claude"] = result.details
 
     return report
 
@@ -479,20 +503,25 @@ def _print_human_report(report: Dict[str, Any]) -> None:
         else:
             print("- Health check: skipped")
 
-        upstream = report.get("upstreamApiKey") or {}
-        print(
-            "- Upstream API key: "
-            f"present={upstream.get('present')} env={upstream.get('env')}"
-        )
+        print("- Native client readiness:")
+        native_clients = report.get("nativeClients") or {}
+        for client_name in ("codex", "opencode", "openclaw", "claude"):
+            entry = native_clients.get(client_name) or {}
+            print(
+                f"  - {client_name}: ready={entry.get('ready')} guaranteed={entry.get('guaranteed')} "
+                f"strategy={entry.get('strategy')}"
+            )
         print("- Client readiness:")
         print(
             f"  codex: binary={report['codex'].get('binaryFound')} auth={report['codex'].get('authPresent')}"
         )
         print(
-            f"  opencode: binary={report['opencode'].get('binaryFound')} writable={report['opencode'].get('configParentWritable')}"
+            f"  opencode: binary={report['opencode'].get('binaryFound')} writable={report['opencode'].get('configParentWritable')} "
+            f"routeSupported={((report['opencode'].get('routeSupport') or {}).get('supported'))}"
         )
         print(
-            f"  openclaw: binary={report['openclaw'].get('binaryFound')} writable={report['openclaw'].get('configParentWritable')}"
+            f"  openclaw: binary={report['openclaw'].get('binaryFound')} writable={report['openclaw'].get('configParentWritable')} "
+            f"routeSupported={((report['openclaw'].get('routeSupport') or {}).get('supported'))}"
         )
         print(
             f"  claude: binary={report['claude'].get('binaryFound')} writable={report['claude'].get('configParentWritable')}"
@@ -611,7 +640,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--apply-openclaw",
         action="store_true",
-        help="Apply OpenClaw config update (models.providers + default model routing)",
+        help="Apply OpenClaw config update for the active provider/model route",
     )
     parser.add_argument(
         "--uninstall",
@@ -621,7 +650,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--create-opencode-config",
         action="store_true",
-        help="Create OpenCode config if missing (requires --apply-opencode)",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--create-claude-settings",
@@ -631,7 +660,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--create-openclaw-config",
         action="store_true",
-        help="Create OpenClaw config if missing (requires --apply-openclaw)",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--force-remove-opencode-base-url",
@@ -650,7 +679,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--force-remove-openclaw-provider",
         action="store_true",
         help=(
-            "In uninstall mode, remove OpenClaw modeio-middleware provider even when baseUrl "
+            "In uninstall mode, restore OpenClaw provider routes even when current baseUrl "
             "differs from --gateway-base-url"
         ),
     )
@@ -680,16 +709,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Comma-separated commands that must exist for a successful doctor run",
     )
     parser.add_argument(
-        "--upstream-api-key-env",
-        default="MODEIO_GATEWAY_UPSTREAM_API_KEY",
-        help="Preferred env var checked by doctor for upstream key readiness",
-    )
-    parser.add_argument(
-        "--require-upstream-api-key",
-        action="store_true",
-        help="Fail doctor when no upstream API key is present in the preferred env or OPENAI_API_KEY",
-    )
-    parser.add_argument(
         "--require-codex-auth",
         action="store_true",
         help="Fail doctor when ~/.codex/auth.json is missing for the current HOME",
@@ -707,18 +726,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
 
     validation_message = ""
-    if args.create_opencode_config and not args.apply_opencode:
-        validation_message = "--create-opencode-config requires --apply-opencode"
-    elif args.create_opencode_config and args.uninstall:
-        validation_message = "--create-opencode-config cannot be used with --uninstall"
+    if args.create_opencode_config:
+        validation_message = (
+            "--create-opencode-config is no longer supported; middleware expects an existing, working OpenCode config"
+        )
     elif args.create_claude_settings and not args.apply_claude:
         validation_message = "--create-claude-settings requires --apply-claude"
     elif args.create_claude_settings and args.uninstall:
         validation_message = "--create-claude-settings cannot be used with --uninstall"
-    elif args.create_openclaw_config and not args.apply_openclaw:
-        validation_message = "--create-openclaw-config requires --apply-openclaw"
-    elif args.create_openclaw_config and args.uninstall:
-        validation_message = "--create-openclaw-config cannot be used with --uninstall"
+    elif args.create_openclaw_config:
+        validation_message = (
+            "--create-openclaw-config is no longer supported; middleware expects an existing, working OpenClaw config"
+        )
     elif args.force_remove_opencode_base_url and not args.uninstall:
         validation_message = "--force-remove-opencode-base-url requires --uninstall"
     elif args.force_remove_claude_hook_url and not args.uninstall:

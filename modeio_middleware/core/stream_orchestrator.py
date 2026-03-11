@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict
 from modeio_middleware.core.errors import MiddlewareError
 from modeio_middleware.core.pipeline_session import PipelineSession
 from modeio_middleware.core.plugin_manager import PluginManager
+from modeio_middleware.core.request_context import client_route_context_from_mapping
 from modeio_middleware.core.response_assembler import ResponseAssembler
 from modeio_middleware.core.response_models import ProcessResult, StreamProcessResult
 from modeio_middleware.core.stream_relay import iter_transformed_sse_stream
@@ -45,10 +46,18 @@ class StreamOrchestrator:
         journal = self._request_journal
         if journal is not None:
             journal.mark_upstream_start(request_id=session.request_id)
+        route_context = client_route_context_from_mapping(
+            request_context.get("client_route_context")
+            if isinstance(request_context, dict)
+            else None
+        )
         upstream_response = self._upstream_transport.forward_stream(
             endpoint_kind=endpoint_kind,
             payload=upstream_payload,
             incoming_headers=upstream_headers,
+            route_context=route_context,
+            client_name=request_context.get("client_name", "unknown"),
+            client_provider_name=request_context.get("client_provider_name"),
         )
         if journal is not None:
             journal.record_upstream_result(

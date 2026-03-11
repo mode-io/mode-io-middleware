@@ -53,7 +53,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run local modeio-middleware gateway for Codex/OpenCode provider routing. "
-            "Contract: POST /v1/chat/completions, /v1/responses, /connectors/claude/hooks, GET /healthz"
+            "Contract: POST /v1/chat/completions, /v1/responses, /v1/messages, /connectors/claude/hooks, GET /healthz"
         )
     )
     parser.add_argument(

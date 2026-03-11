@@ -34,7 +34,6 @@ Run packaged-artifact validation:
 Run a live gateway check against a real upstream:
 
 ```bash
-export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 ```
 
@@ -42,9 +41,25 @@ Check whether the current machine is ready for live acceptance smoke:
 
 ```bash
 modeio-middleware-setup --doctor --json \
-  --require-commands codex,opencode,openclaw,claude \
-  --require-upstream-api-key
+  --require-commands codex,opencode,openclaw,claude
 ```
+
+Live agent smoke assumes Codex/OpenCode/OpenClaw/Claude are already installed and authenticated on the host. Middleware reuses harness-owned auth only and does not provide a managed upstream fallback.
+For OpenCode, live smoke covers only redirectable selected providers. Built-in `openai` with ChatGPT OAuth remains outside middleware preserve-provider routing and should show up as unsupported rather than silently passing.
+
+Run the OpenAI-compatible client matrix only in environments where Codex/OpenCode/OpenClaw are installed and authenticated:
+
+```bash
+./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
+```
+
+Run the Claude hook matrix when only Claude integration needs live validation:
+
+```bash
+./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
+```
+
+OpenClaw setup preserves the active supported provider in place. Unsupported provider families fail clearly instead of switching to middleware-owned auth.
 
 Run the full agent matrix only in environments where all client CLIs are installed and authenticated:
 

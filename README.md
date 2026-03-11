@@ -26,10 +26,30 @@ Built-in monitor with live traces, filters, before/after payload inspection, hoo
 
 ## Supported clients
 
-- Codex CLI
-- Claude Code
-- OpenCode
-- OpenClaw
+Middleware expects an already-working harness and reuses that harness's own auth. It does not log you in, choose a different provider for you, or fall back to a different auth path if your current client setup is unsupported.
+
+| Client | Status |
+| --- | --- |
+| `Codex CLI` | ✅ Supported |
+| `Claude Code` | ✅ Supported |
+| `OpenCode` | ⚠️ Partially supported |
+| `OpenClaw` | ⚠️ Partially supported |
+
+More detail:
+
+- `Codex CLI`: works with Codex's normal native auth.
+- `Claude Code`: works with Claude's normal native auth.
+- `OpenCode`: works today for normal API-key or proxy-style providers that use a standard provider API endpoint.
+- `OpenCode`: does not work yet for built-in `openai` with ChatGPT OAuth.
+- `OpenCode`: does not work yet for built-in `anthropic` with subscription OAuth.
+- `OpenClaw`: works today for normal OpenAI-compatible and Anthropic-compatible providers.
+- `OpenClaw`: does not work yet for OpenClaw's built-in Codex or ChatGPT-style provider path.
+
+Deferred compatibility:
+
+- Compatibility work is intentionally paused at the matrix above for now.
+- The next planned OpenCode items are built-in `openai` with ChatGPT OAuth, built-in `anthropic` with subscription OAuth, and Anthropic-compatible provider paths such as `zenmux`.
+- The next planned OpenClaw item is the built-in Codex or ChatGPT-style provider path.
 
 ## Public surface
 
@@ -72,8 +92,6 @@ python -m pip install .
 1. Start the gateway:
 
 ```bash
-export MODEIO_GATEWAY_UPSTREAM_API_KEY="<your-upstream-key>"
-
 modeio-middleware-gateway \
   --host 127.0.0.1 \
   --port 8787 \
@@ -93,8 +111,8 @@ That flow keeps dev config and discovered plugins under `./.modeio-dev/` instead
 
 ```bash
 export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
-modeio-middleware-setup --apply-opencode --create-opencode-config
-modeio-middleware-setup --apply-openclaw --create-openclaw-config
+modeio-middleware-setup --apply-opencode
+modeio-middleware-setup --apply-openclaw
 modeio-middleware-setup --apply-claude --create-claude-settings
 ```
 
@@ -178,9 +196,13 @@ Live routing check against a real upstream:
 ./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
 ```
 
+Live OpenAI-compatible agent smoke now defaults to harness-native auth only: Codex uses the client-scoped gateway route, redirectable OpenCode providers preserve their own provider config, and OpenClaw bridges its current auth/profile through a client-scoped middleware route. Middleware does not provide a managed upstream fallback.
+
 Full agent-matrix smoke is available for local or self-hosted environments where Codex, Claude, OpenCode, and OpenClaw CLIs are installed:
 
 ```bash
+./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
+./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
 ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
 ```
 

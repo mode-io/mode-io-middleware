@@ -44,6 +44,13 @@ class TestHttpTransport(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "MODEIO_VALIDATION_ERROR")
         self._assert_contract_headers(response)
 
+    def test_anthropic_messages_route_returns_contract_validation_error_for_empty_body(self):
+        response = self.client.post("/v1/messages", content=b"")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "MODEIO_VALIDATION_ERROR")
+        self._assert_contract_headers(response)
+
     def test_malformed_json_returns_contract_validation_error(self):
         response = self.client.post(
             "/v1/chat/completions",

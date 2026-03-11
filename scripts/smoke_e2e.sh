@@ -31,10 +31,20 @@ if [[ -d "${REPO_ROOT}/.venv/bin" ]]; then
 fi
 
 run_live=0
-run_live_agents=0
+run_live_openai_agents=0
+run_live_claude=0
 live_agents_install_mode="repo"
 live_agents_install_target=""
 live_agents_keep_sandbox=0
+live_agents_opencode_provider=""
+live_agents_opencode_model=""
+live_agents_opencode_base_url=""
+live_agents_openclaw_families=""
+live_agents_openclaw_openai_provider=""
+live_agents_openclaw_openai_model=""
+live_agents_openclaw_anthropic_provider=""
+live_agents_openclaw_anthropic_model=""
+live_agents_openclaw_anthropic_base_url=""
 artifacts_root="${MODEIO_SMOKE_ARTIFACTS_DIR:-}"
 ARTIFACTS_DIR=""
 KEEP_ARTIFACTS=0
@@ -44,18 +54,31 @@ setup_smoke_status="not_run"
 openclaw_cli_status="not_run"
 offline_gateway_status="not_run"
 live_gateway_status="not_run"
+live_openai_agent_matrix_status="not_run"
+live_claude_agent_matrix_status="not_run"
 live_agent_matrix_status="not_run"
 
 usage() {
   cat <<'EOF' >&2
-Usage: smoke_e2e.sh [--live] [--live-agents] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH]
+Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH] [--opencode-provider ID --opencode-model MODEL --opencode-base-url URL] [--openclaw-families LIST] [--openclaw-openai-provider ID --openclaw-openai-model MODEL] [--openclaw-anthropic-provider ID --openclaw-anthropic-model MODEL --openclaw-anthropic-base-url URL]
 
-  --live                Run a generic live gateway smoke against a real upstream
-  --live-agents         Run the full live agent matrix (local/self-hosted only)
+  --live                Deprecated generic gateway smoke; currently reported as skipped
+  --live-agents         Run both live agent paths: OpenAI-compatible clients and Claude hooks
+  --live-openai-agents  Run only Codex/OpenCode/OpenClaw live smoke through OpenAI-compatible middleware routes
+  --live-claude         Run only Claude hook live smoke (no upstream model provider required)
   --install-mode MODE   Runtime install mode for the middleware under test: repo|wheel|path|git
   --install-target VAL  Optional wheel/path/git target used with --install-mode
   --keep-sandbox        Keep the live-agent temp HOME/XDG sandbox for debugging
   --artifacts-dir PATH  Persist logs and JSON outputs under PATH/<timestamp-pid>/
+  --opencode-provider   Force a supported OpenCode provider in the sandbox for live smoke
+  --opencode-model      Exact provider/model used with --opencode-provider
+  --opencode-base-url   Exact upstream base URL used with --opencode-provider
+  --openclaw-families   OpenClaw family selection: current or explicit supported families
+  --openclaw-openai-provider   Exact OpenClaw provider id used for openai-completions live smoke
+  --openclaw-openai-model      Exact OpenClaw provider/model ref used for openai-completions
+  --openclaw-anthropic-provider   Exact OpenClaw provider id used for anthropic-messages live smoke
+  --openclaw-anthropic-model      Exact OpenClaw provider/model ref used for anthropic-messages
+  --openclaw-anthropic-base-url   Exact upstream base URL used with --openclaw-anthropic-provider
 EOF
 }
 
@@ -65,7 +88,14 @@ while [[ $# -gt 0 ]]; do
       run_live=1
       ;;
     --live-agents)
-      run_live_agents=1
+      run_live_openai_agents=1
+      run_live_claude=1
+      ;;
+    --live-openai-agents)
+      run_live_openai_agents=1
+      ;;
+    --live-claude)
+      run_live_claude=1
       ;;
     --install-mode)
       if [[ $# -lt 2 ]]; then
@@ -85,6 +115,78 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep-sandbox)
       live_agents_keep_sandbox=1
+      ;;
+    --opencode-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_opencode_provider="$2"
+      shift
+      ;;
+    --opencode-model)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_opencode_model="$2"
+      shift
+      ;;
+    --opencode-base-url)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_opencode_base_url="$2"
+      shift
+      ;;
+    --openclaw-families)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_families="$2"
+      shift
+      ;;
+    --openclaw-openai-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_openai_provider="$2"
+      shift
+      ;;
+    --openclaw-openai-model)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_openai_model="$2"
+      shift
+      ;;
+    --openclaw-anthropic-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_anthropic_provider="$2"
+      shift
+      ;;
+    --openclaw-anthropic-model)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_anthropic_model="$2"
+      shift
+      ;;
+    --openclaw-anthropic-base-url)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_anthropic_base_url="$2"
+      shift
       ;;
     --artifacts-dir)
       if [[ $# -lt 2 ]]; then
@@ -117,30 +219,6 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
-resolve_upstream_base_url() {
-  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-}" ]]; then
-    printf '%s\n' "${MODEIO_GATEWAY_UPSTREAM_BASE_URL}"
-    return
-  fi
-  if [[ -n "${ZENMUX_API_KEY:-}" ]]; then
-    printf '%s\n' "https://zenmux.ai/api/v1"
-    return
-  fi
-  printf '%s\n' "https://api.openai.com/v1"
-}
-
-resolve_upstream_model() {
-  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_MODEL:-}" ]]; then
-    printf '%s\n' "${MODEIO_GATEWAY_UPSTREAM_MODEL}"
-    return
-  fi
-  if [[ "$(resolve_upstream_base_url)" == "https://zenmux.ai/api/v1" ]]; then
-    printf '%s\n' "openai/gpt-5.3-codex"
-    return
-  fi
-  printf '%s\n' "gpt-4o-mini"
-}
-
 check_json_field() {
   local file="$1"
   local code="$2"
@@ -156,6 +234,98 @@ if not eval(expr, {"payload": payload}):
 PY
 }
 
+seed_openclaw_family_state() {
+  local config_path="$1"
+  local models_cache_path="$2"
+  local family="$3"
+
+  local provider=""
+  local model=""
+  local api=""
+  local base_url=""
+
+  case "$family" in
+    openai-completions)
+      provider="openai"
+      model="gpt-4.1"
+      api="openai-completions"
+      base_url="https://api.openai.com/v1"
+      ;;
+    anthropic-messages)
+      provider="anthropic"
+      model="claude-sonnet-4-6"
+      api="anthropic-messages"
+      base_url="https://api.anthropic.com"
+      ;;
+    *)
+      echo "[smoke] unsupported OpenClaw family seed: $family" >&2
+      exit 1
+      ;;
+  esac
+
+  "$PYTHON_BIN" - "$config_path" "$models_cache_path" "$provider" "$model" "$api" "$base_url" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+models_cache_path = Path(sys.argv[2])
+provider = sys.argv[3]
+model = sys.argv[4]
+api = sys.argv[5]
+base_url = sys.argv[6]
+
+provider_payload = {
+    "api": api,
+    "baseUrl": base_url,
+    "models": [{"id": model, "name": f"Smoke {model}"}],
+}
+config_payload = {
+    "agents": {"defaults": {"model": {"primary": f"{provider}/{model}"}}},
+    "models": {"providers": {provider: provider_payload}},
+}
+cache_payload = {
+    "models": {"providers": {provider: provider_payload}},
+}
+
+config_path.parent.mkdir(parents=True, exist_ok=True)
+models_cache_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(json.dumps(config_payload, indent=2) + "\n", encoding="utf-8")
+models_cache_path.write_text(json.dumps(cache_payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+seed_opencode_state() {
+  local config_path="$1"
+
+  "$PYTHON_BIN" - "$config_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(
+    json.dumps(
+        {
+            "model": "openai/gpt-4.1",
+            "provider": {
+                "openai": {
+                    "options": {
+                        "apiKey": "sk-opencode-test",
+                        "baseURL": "https://api.openai.com/v1",
+                    }
+                }
+            },
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 write_summary() {
   local exit_code="$1"
   local summary_path="${ARTIFACTS_DIR}/summary.json"
@@ -166,6 +336,8 @@ write_summary() {
   OPENCLAW_CLI_STATUS="$openclaw_cli_status" \
   OFFLINE_GATEWAY_STATUS="$offline_gateway_status" \
   LIVE_GATEWAY_STATUS="$live_gateway_status" \
+  LIVE_OPENAI_AGENT_MATRIX_STATUS="$live_openai_agent_matrix_status" \
+  LIVE_CLAUDE_AGENT_MATRIX_STATUS="$live_claude_agent_matrix_status" \
   LIVE_AGENT_MATRIX_STATUS="$live_agent_matrix_status" \
   LIVE_AGENT_MATRIX_MODE="$live_agents_install_mode" \
   "$PYTHON_BIN" - "$summary_path" <<'PY'
@@ -183,6 +355,8 @@ payload = {
         "openclawCliSmoke": os.environ["OPENCLAW_CLI_STATUS"],
         "offlineGatewaySmoke": os.environ["OFFLINE_GATEWAY_STATUS"],
         "liveGatewaySmoke": os.environ["LIVE_GATEWAY_STATUS"],
+        "liveOpenAIAgentSmoke": os.environ["LIVE_OPENAI_AGENT_MATRIX_STATUS"],
+        "liveClaudeSmoke": os.environ["LIVE_CLAUDE_AGENT_MATRIX_STATUS"],
         "liveAgentMatrixSmoke": os.environ["LIVE_AGENT_MATRIX_STATUS"],
     },
     "liveAgentMatrixMode": os.environ["LIVE_AGENT_MATRIX_MODE"],
@@ -228,53 +402,107 @@ run_python_smoke_suite() {
 }
 
 run_setup_smoke() {
-  local setup_json="$ARTIFACTS_DIR/setup-all.json"
-  local uninstall_json="$ARTIFACTS_DIR/uninstall-all.json"
+  local openai_dir="$ARTIFACTS_DIR/openclaw-openai"
+  local anthropic_dir="$ARTIFACTS_DIR/openclaw-anthropic"
+  local openai_cfg="$openai_dir/openclaw.json"
+  local openai_models="$openai_dir/agents/main/agent/models.json"
+  local anthropic_cfg="$anthropic_dir/openclaw.json"
+  local anthropic_models="$anthropic_dir/agents/main/agent/models.json"
+  local openai_setup_json="$ARTIFACTS_DIR/setup-openclaw-openai.json"
+  local openai_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-openai.json"
+  local anthropic_setup_json="$ARTIFACTS_DIR/setup-openclaw-anthropic.json"
+  local anthropic_uninstall_json="$ARTIFACTS_DIR/uninstall-openclaw-anthropic.json"
+  local opencode_json="$ARTIFACTS_DIR/opencode.json"
+  local claude_settings_json="$ARTIFACTS_DIR/claude-settings.json"
+  local temp_home="$ARTIFACTS_DIR/setup-home"
+  local temp_xdg="$ARTIFACTS_DIR/setup-xdg"
+
+  seed_openclaw_family_state "$openai_cfg" "$openai_models" "openai-completions"
+  seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models" "anthropic-messages"
+  seed_opencode_state "$opencode_json"
 
   log "running setup/uninstall smoke (temp config paths)"
   (
     cd "$REPO_ROOT"
+    export HOME="$temp_home"
+    export XDG_CONFIG_HOME="$temp_xdg/config"
+    export XDG_STATE_HOME="$temp_xdg/state"
+    export XDG_CACHE_HOME="$temp_xdg/cache"
+    export XDG_DATA_HOME="$temp_xdg/data"
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --apply-opencode \
-      --create-opencode-config \
-      --opencode-config-path "$ARTIFACTS_DIR/opencode.json" \
+      --opencode-config-path "$opencode_json" \
       --apply-openclaw \
-      --create-openclaw-config \
-      --openclaw-config-path "$ARTIFACTS_DIR/openclaw.json" \
+      --openclaw-config-path "$openai_cfg" \
+      --openclaw-models-cache-path "$openai_models" \
       --apply-claude \
       --create-claude-settings \
-      --claude-settings-path "$ARTIFACTS_DIR/claude-settings.json" \
-      >"$setup_json"
+      --claude-settings-path "$claude_settings_json" \
+      >"$openai_setup_json"
 
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --uninstall \
       --apply-opencode \
-      --opencode-config-path "$ARTIFACTS_DIR/opencode.json" \
+      --opencode-config-path "$opencode_json" \
       --apply-openclaw \
-      --openclaw-config-path "$ARTIFACTS_DIR/openclaw.json" \
+      --openclaw-config-path "$openai_cfg" \
+      --openclaw-models-cache-path "$openai_models" \
       --apply-claude \
-      --claude-settings-path "$ARTIFACTS_DIR/claude-settings.json" \
-      >"$uninstall_json"
+      --claude-settings-path "$claude_settings_json" \
+      >"$openai_uninstall_json"
+
+    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+      --json \
+      --apply-openclaw \
+      --openclaw-config-path "$anthropic_cfg" \
+      --openclaw-models-cache-path "$anthropic_models" \
+      >"$anthropic_setup_json"
+
+    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+      --json \
+      --uninstall \
+      --apply-openclaw \
+      --openclaw-config-path "$anthropic_cfg" \
+      --openclaw-models-cache-path "$anthropic_models" \
+      >"$anthropic_uninstall_json"
   )
 
-  check_json_field "$setup_json" "payload['success'] is True"
-  check_json_field "$setup_json" "payload['opencode']['changed'] is True"
-  check_json_field "$setup_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$setup_json" "payload['claude']['changed'] is True"
+  check_json_field "$openai_setup_json" "payload['success'] is True"
+  check_json_field "$openai_setup_json" "payload['opencode']['changed'] is True"
+  check_json_field "$openai_setup_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$openai_setup_json" "payload['openclaw']['apiFamily'] == 'openai-completions'"
+  check_json_field "$openai_setup_json" "payload['claude']['changed'] is True"
 
-  check_json_field "$uninstall_json" "payload['success'] is True"
-  check_json_field "$uninstall_json" "payload['opencode']['changed'] is True"
-  check_json_field "$uninstall_json" "payload['openclaw']['changed'] is True"
-  check_json_field "$uninstall_json" "payload['claude']['changed'] is True"
+  check_json_field "$openai_uninstall_json" "payload['success'] is True"
+  check_json_field "$openai_uninstall_json" "payload['opencode']['changed'] is True"
+  check_json_field "$openai_uninstall_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$openai_uninstall_json" "payload['claude']['changed'] is True"
+
+  check_json_field "$anthropic_setup_json" "payload['success'] is True"
+  check_json_field "$anthropic_setup_json" "payload['openclaw']['changed'] is True"
+  check_json_field "$anthropic_setup_json" "payload['openclaw']['apiFamily'] == 'anthropic-messages'"
+
+  check_json_field "$anthropic_uninstall_json" "payload['success'] is True"
+  check_json_field "$anthropic_uninstall_json" "payload['openclaw']['changed'] is True"
   setup_smoke_status="passed"
 }
 
 run_openclaw_cli_smoke() {
-  local cfg="$ARTIFACTS_DIR/openclaw-cli.json"
-  local models_json="$ARTIFACTS_DIR/openclaw-models.json"
-  local validate_log="$ARTIFACTS_DIR/openclaw-validate.log"
+  local openai_dir="$ARTIFACTS_DIR/openclaw-cli-openai"
+  local anthropic_dir="$ARTIFACTS_DIR/openclaw-cli-anthropic"
+  local openai_cfg="$openai_dir/openclaw.json"
+  local openai_models_cache="$openai_dir/agents/main/agent/models.json"
+  local anthropic_cfg="$anthropic_dir/openclaw.json"
+  local anthropic_models_cache="$anthropic_dir/agents/main/agent/models.json"
+  local openai_models_json="$ARTIFACTS_DIR/openclaw-openai-models.json"
+  local anthropic_models_json="$ARTIFACTS_DIR/openclaw-anthropic-models.json"
+  local openai_validate_log="$ARTIFACTS_DIR/openclaw-openai-validate.log"
+  local anthropic_validate_log="$ARTIFACTS_DIR/openclaw-anthropic-validate.log"
+
+  seed_openclaw_family_state "$openai_cfg" "$openai_models_cache" "openai-completions"
+  seed_openclaw_family_state "$anthropic_cfg" "$anthropic_models_cache" "anthropic-messages"
 
   log "running OpenClaw config/list smoke using OPENCLAW_CONFIG_PATH=temp"
 
@@ -283,16 +511,42 @@ run_openclaw_cli_smoke() {
     "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
       --json \
       --apply-openclaw \
-      --create-openclaw-config \
-      --openclaw-config-path "$cfg" \
+      --openclaw-config-path "$openai_cfg" \
+      --openclaw-models-cache-path "$openai_models_cache" \
       >/dev/null
 
-    OPENCLAW_CONFIG_PATH="$cfg" openclaw config validate >"$validate_log"
-    OPENCLAW_CONFIG_PATH="$cfg" openclaw models list --json >"$models_json"
+    OPENCLAW_CONFIG_PATH="$openai_cfg" \
+    OPENCLAW_STATE_DIR="$openai_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$openai_models_cache")" \
+    openclaw config validate >"$openai_validate_log"
+
+    OPENCLAW_CONFIG_PATH="$openai_cfg" \
+    OPENCLAW_STATE_DIR="$openai_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$openai_models_cache")" \
+    openclaw models list --json >"$openai_models_json"
+
+    "$PYTHON_BIN" scripts/setup_middleware_gateway.py \
+      --json \
+      --apply-openclaw \
+      --openclaw-config-path "$anthropic_cfg" \
+      --openclaw-models-cache-path "$anthropic_models_cache" \
+      >/dev/null
+
+    OPENCLAW_CONFIG_PATH="$anthropic_cfg" \
+    OPENCLAW_STATE_DIR="$anthropic_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$anthropic_models_cache")" \
+    openclaw config validate >"$anthropic_validate_log"
+
+    OPENCLAW_CONFIG_PATH="$anthropic_cfg" \
+    OPENCLAW_STATE_DIR="$anthropic_dir" \
+    OPENCLAW_AGENT_DIR="$(dirname "$anthropic_models_cache")" \
+    openclaw models list --json >"$anthropic_models_json"
   )
 
-  check_json_field "$models_json" "payload['count'] >= 1"
-  check_json_field "$models_json" "any(m.get('key') == 'modeio-middleware/middleware-default' for m in payload['models'])"
+  check_json_field "$openai_models_json" "payload['count'] >= 1"
+  check_json_field "$openai_models_json" "any(m.get('key') == 'openai/gpt-4.1' for m in payload['models'])"
+  check_json_field "$anthropic_models_json" "payload['count'] >= 1"
+  check_json_field "$anthropic_models_json" "any(m.get('key') == 'anthropic/claude-sonnet-4-6' for m in payload['models'])"
   openclaw_cli_status="passed"
 }
 
@@ -541,88 +795,111 @@ PY
 }
 
 run_live_gateway_smoke() {
-  local gateway_port=18787
-  local upstream_base_url="$(resolve_upstream_base_url)"
-  local upstream_model="$(resolve_upstream_model)"
-  local stdout_log="$ARTIFACTS_DIR/live-gateway.stdout.log"
-  local stderr_log="$ARTIFACTS_DIR/live-gateway.stderr.log"
-
-  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${ZENMUX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "[smoke] --live requires MODEIO_GATEWAY_UPSTREAM_API_KEY, ZENMUX_API_KEY, or OPENAI_API_KEY" >&2
-    exit 1
-  fi
-
-  log "running live gateway smoke against real upstream"
-
-  (
-    cd "$REPO_ROOT"
-
-    "$PYTHON_BIN" scripts/middleware_gateway.py \
-      --host 127.0.0.1 \
-      --port "$gateway_port" \
-      --upstream-chat-url "${upstream_base_url%/}/chat/completions" \
-      --upstream-responses-url "${upstream_base_url%/}/responses" \
-      >"$stdout_log" \
-      2>"$stderr_log" &
-    local gateway_pid=$!
-
-    cleanup_live() {
-      kill "$gateway_pid" >/dev/null 2>&1 || true
-      wait "$gateway_pid" >/dev/null 2>&1 || true
-    }
-    trap cleanup_live EXIT
-
-    for _ in {1..30}; do
-      if curl -s "http://127.0.0.1:${gateway_port}/healthz" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 0.3
-    done
-
-    curl -sSf "http://127.0.0.1:${gateway_port}/healthz" >/dev/null
-
-    curl -sSf "http://127.0.0.1:${gateway_port}/v1/chat/completions" \
-      -H "Content-Type: application/json" \
-      -d "{\"model\":\"${upstream_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with LIVE_CHAT_SMOKE_OK only\"}]}" \
-      >"$ARTIFACTS_DIR/live-gateway-response.json"
-
-    cleanup_live
-    trap - EXIT
-  )
-
-  live_gateway_status="passed"
+  log "skipping deprecated generic live gateway smoke; use --live-openai-agents, --live-claude, or --live-agents for harness-owned auth validation"
+  live_gateway_status="skipped"
+  return 0
 }
 
 run_live_agent_matrix_smoke() {
+  local agent_subset="$1"
+  local artifact_leaf="$2"
+  local label="$3"
+  local status_var="$4"
   local smoke_args=(
     scripts/smoke_agent_matrix.py
-    --artifacts-dir "$ARTIFACTS_DIR/live-agent-matrix"
+    --agents "$agent_subset"
+    --artifacts-dir "$ARTIFACTS_DIR/$artifact_leaf"
     --repo-root "$REPO_ROOT"
     --install-mode "$live_agents_install_mode"
   )
 
-  if [[ -z "${MODEIO_GATEWAY_UPSTREAM_API_KEY:-}" && -z "${ZENMUX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "[smoke] --live-agents requires MODEIO_GATEWAY_UPSTREAM_API_KEY, ZENMUX_API_KEY, or OPENAI_API_KEY" >&2
-    exit 1
+  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_BASE_URL:-}" ]]; then
+    smoke_args+=(--upstream-base-url "$MODEIO_GATEWAY_UPSTREAM_BASE_URL")
+  fi
+
+  if [[ -n "${MODEIO_GATEWAY_UPSTREAM_MODEL:-}" ]]; then
+    smoke_args+=(--model "$MODEIO_GATEWAY_UPSTREAM_MODEL")
   fi
 
   if [[ -n "$live_agents_install_target" ]]; then
     smoke_args+=(--install-target "$live_agents_install_target")
   fi
 
+  if [[ -n "$live_agents_opencode_provider" ]]; then
+    smoke_args+=(--opencode-provider "$live_agents_opencode_provider")
+  fi
+  if [[ -n "$live_agents_opencode_model" ]]; then
+    smoke_args+=(--opencode-model "$live_agents_opencode_model")
+  fi
+  if [[ -n "$live_agents_opencode_base_url" ]]; then
+    smoke_args+=(--opencode-base-url "$live_agents_opencode_base_url")
+  fi
+  if [[ -n "$live_agents_openclaw_families" ]]; then
+    smoke_args+=(--openclaw-families "$live_agents_openclaw_families")
+  fi
+  if [[ -n "$live_agents_openclaw_openai_provider" ]]; then
+    smoke_args+=(--openclaw-openai-provider "$live_agents_openclaw_openai_provider")
+  fi
+  if [[ -n "$live_agents_openclaw_openai_model" ]]; then
+    smoke_args+=(--openclaw-openai-model "$live_agents_openclaw_openai_model")
+  fi
+  if [[ -n "$live_agents_openclaw_anthropic_provider" ]]; then
+    smoke_args+=(--openclaw-anthropic-provider "$live_agents_openclaw_anthropic_provider")
+  fi
+  if [[ -n "$live_agents_openclaw_anthropic_model" ]]; then
+    smoke_args+=(--openclaw-anthropic-model "$live_agents_openclaw_anthropic_model")
+  fi
+  if [[ -n "$live_agents_openclaw_anthropic_base_url" ]]; then
+    smoke_args+=(--openclaw-anthropic-base-url "$live_agents_openclaw_anthropic_base_url")
+  fi
+
   if [[ "$live_agents_keep_sandbox" -eq 1 ]]; then
     smoke_args+=(--keep-sandbox)
   fi
 
-  log "running live agent matrix smoke (codex/opencode/openclaw/claude via middleware; install-mode=${live_agents_install_mode})"
+  log "running ${label} (install-mode=${live_agents_install_mode})"
+  printf -v "$status_var" '%s' "failed"
+  local rc=0
   (
     cd "$REPO_ROOT"
     "$PYTHON_BIN" "${smoke_args[@]}"
-  )
-  live_agent_matrix_status="passed"
+  ) || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    return "$rc"
+  fi
+  printf -v "$status_var" '%s' "passed"
+}
+
+finalize_live_agent_matrix_status() {
+  local requested=0
+  local all_passed=1
+
+  if [[ "$run_live_openai_agents" -eq 1 ]]; then
+    requested=1
+    [[ "$live_openai_agent_matrix_status" == "passed" ]] || all_passed=0
+  else
+    live_openai_agent_matrix_status="skipped"
+  fi
+
+  if [[ "$run_live_claude" -eq 1 ]]; then
+    requested=1
+    [[ "$live_claude_agent_matrix_status" == "passed" ]] || all_passed=0
+  else
+    live_claude_agent_matrix_status="skipped"
+  fi
+
+  if [[ "$requested" -eq 0 ]]; then
+    live_agent_matrix_status="skipped"
+  elif [[ "$all_passed" -eq 1 ]]; then
+    live_agent_matrix_status="passed"
+  else
+    live_agent_matrix_status="failed"
+  fi
 }
 
 main() {
+  local smoke_failures=0
+
   require_cmd mktemp
   require_cmd curl
   require_cmd tee
@@ -640,15 +917,42 @@ main() {
   run_offline_gateway_smoke
 
   if [[ "$run_live" -eq 1 ]]; then
-    run_live_gateway_smoke
+    if ! run_live_gateway_smoke; then
+      smoke_failures=1
+    fi
   else
     live_gateway_status="skipped"
   fi
 
-  if [[ "$run_live_agents" -eq 1 ]]; then
-    run_live_agent_matrix_smoke
-  else
-    live_agent_matrix_status="skipped"
+  if [[ "$run_live_openai_agents" -eq 1 || "$run_live_claude" -eq 1 ]]; then
+    live_agent_matrix_status="failed"
+  fi
+
+  if [[ "$run_live_openai_agents" -eq 1 ]]; then
+    if ! run_live_agent_matrix_smoke \
+      "codex,opencode,openclaw" \
+      "live-openai-agent-matrix" \
+      "live OpenAI-compatible agent smoke (codex/opencode/openclaw via middleware)" \
+      "live_openai_agent_matrix_status"; then
+      smoke_failures=1
+    fi
+  fi
+
+  if [[ "$run_live_claude" -eq 1 ]]; then
+    if ! run_live_agent_matrix_smoke \
+      "claude" \
+      "live-claude-matrix" \
+      "live Claude hook smoke" \
+      "live_claude_agent_matrix_status"; then
+      smoke_failures=1
+    fi
+  fi
+
+  finalize_live_agent_matrix_status
+
+  if [[ "$smoke_failures" -ne 0 ]]; then
+    log "one or more smoke checks failed"
+    return 1
   fi
 
   log "all smoke checks passed"

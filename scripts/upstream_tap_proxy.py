@@ -83,14 +83,26 @@ class JsonlLogger:
 
 def _sanitize_headers_for_log(headers: Dict[str, str]) -> Dict[str, object]:
     auth_header = headers.get("authorization")
+    x_api_key = headers.get("x-api-key")
+    api_key = headers.get("api-key")
     return {
         "authorizationPresent": isinstance(auth_header, str)
         and bool(auth_header.strip()),
         "authorizationPrefix": auth_header.split(" ", 1)[0] if auth_header else None,
+        "xApiKeyPresent": isinstance(x_api_key, str) and bool(x_api_key.strip()),
+        "apiKeyPresent": isinstance(api_key, str) and bool(api_key.strip()),
         "contentType": headers.get("content-type"),
         "accept": headers.get("accept"),
         "userAgent": headers.get("user-agent"),
     }
+
+
+def _has_explicit_auth_headers(headers: Dict[str, str]) -> bool:
+    for header_name in ("authorization", "x-api-key", "api-key"):
+        value = headers.get(header_name)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
 
 
 def _filtered_response_headers(
@@ -144,7 +156,7 @@ def _build_handler(
                 upstream_headers[key] = value
 
             upstream_api_key = os.environ.get(api_key_env, "").strip()
-            if upstream_api_key:
+            if upstream_api_key and not _has_explicit_auth_headers(request_headers):
                 upstream_headers["Authorization"] = f"Bearer {upstream_api_key}"
 
             upstream_url = _default_forward_url(target_base_url, self.path)

@@ -33,6 +33,10 @@ def build_agent_command(
         ]
 
     if agent == "opencode":
+        if "/" not in model:
+            raise ValueError(
+                "OpenCode smoke requires an exact provider/model selection"
+            )
         return [
             "opencode",
             "run",

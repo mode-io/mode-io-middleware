@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
 
 try:
     from compression import zstd as zstd_codec
@@ -19,15 +22,43 @@ sys.path.insert(0, str(TESTS_DIR))
 
 from helpers.gateway_harness import (  # noqa: E402
     completion_payload,
-    http_get_json,
-    post_json,
-    post_raw,
-    post_stream,
+    http_get_json as _base_http_get_json,
+    models_payload,
+    post_json as _base_post_json,
+    post_raw as _base_post_raw,
+    post_stream as _base_post_stream,
     responses_payload,
     start_gateway_pair,
 )
+from helpers.inspection_builder import build_inspection  # noqa: E402
 from helpers.plugin_modules import register_plugin_module  # noqa: E402
 from modeio_middleware.plugins.base import MiddlewarePlugin  # noqa: E402
+
+DEFAULT_TEST_AUTH = {"Authorization": "Bearer test-upstream-auth"}
+
+
+def _merge_auth_headers(headers=None):
+    merged = dict(DEFAULT_TEST_AUTH)
+    if headers:
+        merged.update(headers)
+    return merged
+
+
+def http_get_json(base_url: str, path: str, *, headers=None):
+    request_headers = None if path == "/healthz" else _merge_auth_headers(headers)
+    return _base_http_get_json(base_url, path, headers=request_headers)
+
+
+def post_json(base_url: str, path: str, payload, *, headers=None):
+    return _base_post_json(base_url, path, payload, headers=_merge_auth_headers(headers))
+
+
+def post_raw(base_url: str, path: str, body: bytes, *, headers=None):
+    return _base_post_raw(base_url, path, body, headers=_merge_auth_headers(headers))
+
+
+def post_stream(base_url: str, path: str, payload, *, headers=None):
+    return _base_post_stream(base_url, path, payload, headers=_merge_auth_headers(headers))
 
 
 class _BlockerPlugin(MiddlewarePlugin):
@@ -111,13 +142,13 @@ class TestGatewayContract(unittest.TestCase):
                 payload["choices"][0]["message"]["content"],
                 "hello passthrough",
             )
-            self.assertEqual(
-                upstream.requests[-1]["headers"]["Authorization"],
-                "Bearer incoming-secret",
-            )
             upstream_request_headers = {
                 key.lower(): value for key, value in upstream.requests[-1]["headers"].items()
             }
+            self.assertEqual(
+                upstream_request_headers["authorization"],
+                "Bearer incoming-secret",
+            )
             self.assertEqual(
                 upstream_request_headers["openai-organization"],
                 "org_test",
@@ -126,6 +157,206 @@ class TestGatewayContract(unittest.TestCase):
             self.assertEqual(headers["openai-request-id"], "req_upstream_123")
             self.assertEqual(headers["x-ratelimit-limit-requests"], "1000")
             self.assertNotIn("x-modeio-upstream", headers)
+        finally:
+            gateway_stub.stop()
+            upstream.stop()
+
+    def test_models_route_proxies_upstream_models_payload(self):
+        upstream, gateway_stub = self._start_pair(
+            lambda path, _payload: models_payload("openai/gpt-5.3-codex")
+            if path.startswith("/v1/models")
+            else completion_payload("ok")
+        )
+        try:
+            status, headers, payload = http_get_json(gateway_stub.base_url, "/v1/models")
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["models"][0]["id"], "openai/gpt-5.3-codex")
+            self.assertEqual(upstream.requests[-1]["path"], "/v1/models")
+            self.assertIn("x-modeio-request-id", {k.lower(): v for k, v in headers.items()})
+        finally:
+            gateway_stub.stop()
+            upstream.stop()
+
+    def test_codex_native_transport_uses_backend_api_paths(self):
+        def response_factory(path, payload):
+            if path.startswith("/codex/models"):
+                return models_payload("gpt-5.4")
+            input_items = payload.get("input") or []
+            text = "ok"
+            if isinstance(input_items, list) and input_items:
+                first = input_items[0]
+                if isinstance(first, dict):
+                    content = first.get("content")
+                    if isinstance(content, list) and content:
+                        entry = content[0]
+                        if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                            text = entry["text"]
+            return responses_payload(text)
+
+        upstream, gateway_stub = self._start_pair(
+            response_factory
+        )
+        inspection = build_inspection(
+            guaranteed=False,
+            authorization="Bearer codex-token",
+            transport="codex_native",
+            metadata={"nativeBaseUrl": f"{upstream.base_url}/codex", "accountId": "acct-1"},
+        )
+
+        try:
+            with mock.patch(
+                "modeio_middleware.core.upstream_client.inspect_client_native_auth",
+                return_value=inspection,
+            ):
+                status, _headers, models = http_get_json(
+                    gateway_stub.base_url,
+                    "/clients/codex/v1/models?client_version=0.112.0",
+                    headers={"Authorization": "Bearer modeio-middleware"},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(models["models"][0]["id"], "gpt-5.4")
+                self.assertFalse(models["models"][0].get("supports_websockets", True))
+                self.assertFalse(models["models"][0].get("prefer_websockets", True))
+
+                status, _headers, payload = post_json(
+                    gateway_stub.base_url,
+                    "/clients/codex/v1/responses",
+                    {
+                        "model": "openai/gpt-5.4",
+                        "instructions": "You are Codex",
+                        "input": "hello codex transport",
+                    },
+                    headers={"Authorization": "Bearer modeio-middleware"},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["output_text"], "hello codex transport")
+
+            self.assertEqual(upstream.requests[0]["path"], "/codex/models?client_version=0.112.0")
+            self.assertEqual(upstream.requests[1]["path"], "/codex/responses")
+            self.assertEqual(upstream.requests[1]["headers"]["ChatGPT-Account-Id"], "acct-1")
+            self.assertFalse(upstream.requests[1]["body"]["store"])
+            self.assertTrue(upstream.requests[1]["body"]["stream"])
+        finally:
+            gateway_stub.stop()
+            upstream.stop()
+
+    def test_client_scoped_codex_route_bridges_auth_from_codex_store(self):
+        with TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / ".codex" / "auth.json"
+            auth_path.parent.mkdir(parents=True)
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "tokens": {"access_token": "eyJhbGciOi-test-codex"},
+                        "OPENAI_API_KEY": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def response_factory(_path, payload):
+                input_items = payload.get("input") or []
+                text = "ok"
+                if isinstance(input_items, list) and input_items:
+                    first = input_items[0]
+                    if isinstance(first, dict):
+                        content = first.get("content")
+                        if isinstance(content, list) and content:
+                            entry = content[0]
+                            if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                                text = entry["text"]
+                return responses_payload(text)
+
+            upstream, gateway_stub = self._start_pair(response_factory)
+            try:
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "HOME": temp_dir,
+                        "MODEIO_CODEX_NATIVE_BASE_URL": f"{upstream.base_url}/codex",
+                    },
+                    clear=False,
+                ):
+                    status, _headers, payload = post_json(
+                        gateway_stub.base_url,
+                        "/clients/codex/v1/chat/completions",
+                        {
+                            "model": "gpt-test",
+                            "messages": [{"role": "user", "content": "hello codex"}],
+                        },
+                        headers={"Authorization": "Bearer modeio-middleware"},
+                    )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["output_text"], "hello codex")
+                self.assertEqual(
+                    upstream.requests[-1]["headers"]["Authorization"],
+                    "Bearer eyJhbGciOi-test-codex",
+                )
+                self.assertEqual(
+                    upstream.requests[-1]["path"],
+                    "/codex/chat/completions",
+                )
+            finally:
+                gateway_stub.stop()
+                upstream.stop()
+
+    def test_client_scoped_openclaw_route_rejects_deferred_openai_codex_family(self):
+        upstream, gateway_stub = self._start_pair(
+            lambda _path, payload: completion_payload(payload["messages"][0]["content"])
+        )
+        try:
+            status, _headers, payload = post_json(
+                gateway_stub.base_url,
+                "/clients/openclaw/openai-codex/v1/chat/completions",
+                {
+                    "model": "gpt-test",
+                    "messages": [{"role": "user", "content": "hello openclaw"}],
+                },
+                headers={"Authorization": "Bearer modeio-middleware"},
+            )
+            self.assertEqual(status, 400)
+            self.assertEqual(payload["error"]["code"], "MODEIO_VALIDATION_ERROR")
+            self.assertIn("unsupported API family", payload["error"]["message"])
+            self.assertEqual(
+                payload["error"]["details"]["apiFamily"],
+                "openai-codex-responses",
+            )
+            self.assertEqual(
+                payload["error"]["details"]["providerId"],
+                "openai-codex",
+            )
+            self.assertEqual(upstream.requests, [])
+        finally:
+            gateway_stub.stop()
+            upstream.stop()
+
+    def test_client_scoped_route_normalizes_provider_prefixed_model(self):
+        upstream, gateway_stub = self._start_pair(
+            lambda _path, payload: completion_payload(payload["model"])
+        )
+        inspection = build_inspection(
+            provider_id="openai-codex",
+            authorization="Bearer test-token",
+            transport="codex_native",
+            metadata={"nativeBaseUrl": f"{upstream.base_url}/codex"},
+        )
+        try:
+            with mock.patch(
+                "modeio_middleware.core.upstream_client.inspect_client_native_auth",
+                return_value=inspection,
+            ):
+                status, _headers, payload = post_json(
+                    gateway_stub.base_url,
+                    "/clients/codex/v1/chat/completions",
+                    {
+                        "model": "openai/gpt-test",
+                        "messages": [{"role": "user", "content": "hello model"}],
+                    },
+                    headers={"Authorization": "Bearer modeio-middleware"},
+                )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["choices"][0]["message"]["content"], "gpt-test")
+            self.assertEqual(upstream.requests[-1]["body"]["model"], "gpt-test")
         finally:
             gateway_stub.stop()
             upstream.stop()
