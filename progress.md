@@ -426,3 +426,48 @@
       - `opencode`: `skipped` / `productOk=true` (`openai` OAuth transport unsupported for middleware routing)
       - `openclaw:openai-completions`: passed
       - `openclaw:anthropic-messages`: passed
+
+### Session: 2026-03-11 02:54 UTC provider-family registry and pause note
+- Added a future-facing provider-family registry in `modeio_middleware/core/provider_policy.py`.
+  - centralized family specs, transport-kind mapping, and per-client support flags
+  - routed existing OpenCode/OpenClaw policy resolution through that shared registry without changing the current support matrix
+- Added the explicit pause/deferred-compatibility note:
+  - user-facing note in `README.md`
+  - internal restart note in `.worktree-context.md`
+  - planning files updated so compatibility work can resume from the same seam later
+- Validation:
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest tests.unit.test_provider_policy tests.unit.test_client_auth tests.integration.test_gateway_contract`
+    - `52` tests passed
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest discover tests -p 'test_*.py'`
+    - `254` tests passed
+  - `bash ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-provider-family-registry --opencode-provider opencode --opencode-model opencode/gpt-5.4 --opencode-base-url https://opencode.ai/zen/v1 --openclaw-families openai-completions --openclaw-openai-provider zenmux --openclaw-openai-model zenmux/gpt-5.3-codex`
+    - passed
+    - artifact root: `.artifacts/live-provider-family-registry/20260311T025420Z-64341`
+    - live outcomes:
+      - `codex`: passed
+      - `opencode`: passed
+      - `openclaw:openai-completions`: passed
+      - `claude`: passed
+
+### Session: 2026-03-11 04:00 UTC harness adapter refactor
+- Implemented `modeio_middleware/cli/harness_adapters/` as the real harness-attachment boundary.
+  - added typed inspection/attach/detach models
+  - added concrete adapters for `codex`, `opencode`, `openclaw`, and `claude`
+  - codex is now represented explicitly as `env_session`
+- Refactored `modeio_middleware/cli/setup.py` to consume the adapter registry.
+  - doctor/setup JSON shape stayed stable
+  - harness-specific patch/hook/env logic is no longer embedded directly in `setup.py`
+- Added focused adapter tests in `tests/unit/test_harness_adapters.py`.
+- Validation:
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest tests.unit.test_harness_adapters tests.unit.test_setup_gateway tests.smoke.test_smoke_client_setup_flows tests.smoke.test_smoke_agent_matrix_support tests.unit.test_client_auth tests.integration.test_gateway_contract`
+    - `112` tests passed
+  - `python-test-env.sh test --repo /Users/siruizhang/Desktop/ModeIOSkill/.worktrees/middleware--new--backend-quality-pass -- python -m unittest discover tests -p 'test_*.py'`
+    - `258` tests passed
+  - `bash ./scripts/smoke_e2e.sh --live-agents --live-claude --artifacts-dir ./.artifacts/live-harness-adapter-refactor --opencode-provider opencode --opencode-model opencode/gpt-5.4 --opencode-base-url https://opencode.ai/zen/v1 --openclaw-families openai-completions --openclaw-openai-provider zenmux --openclaw-openai-model zenmux/gpt-5.3-codex`
+    - passed
+    - artifact root: `.artifacts/live-harness-adapter-refactor/20260311T041217Z-95407`
+    - live outcomes:
+      - `codex`: passed
+      - `opencode`: passed
+      - `openclaw:openai-completions`: passed
+      - `claude`: passed

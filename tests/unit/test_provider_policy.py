@@ -8,10 +8,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from modeio_middleware.core.provider_policy import (  # noqa: E402
+    default_provider_family,
     build_client_gateway_base_url,
     openclaw_provider_gateway_base_url,
+    resolve_provider_family_spec,
     resolve_openclaw_route_policy,
     resolve_opencode_route_policy,
+    supported_provider_families_for_client,
 )
 
 
@@ -36,6 +39,16 @@ class TestProviderPolicy(unittest.TestCase):
             "http://127.0.0.1:8787/clients/openclaw/anthropic",
         )
 
+    def test_provider_family_registry_exposes_client_support_matrix(self):
+        family = resolve_provider_family_spec("openai-codex-responses")
+        self.assertIsNotNone(family)
+        self.assertEqual(family.transport_kind, "codex_native")
+        self.assertFalse(family.openclaw_supported)
+        self.assertEqual(
+            supported_provider_families_for_client("openclaw"),
+            ("anthropic-messages", "openai-completions"),
+        )
+
     def test_resolve_opencode_route_policy_rejects_builtin_openai_oauth(self):
         policy = resolve_opencode_route_policy(
             config={"model": "openai/gpt-5.4", "provider": {"openai": {}}},
@@ -44,6 +57,8 @@ class TestProviderPolicy(unittest.TestCase):
         )
         self.assertFalse(policy.supported)
         self.assertEqual(policy.reason, "provider_uses_internal_oauth_transport")
+        self.assertEqual(policy.api_family, "openai-completions")
+        self.assertEqual(policy.transport_kind, "openai_compat")
         self.assertEqual(policy.upstream_base_url, "https://api.openai.com/v1")
 
     def test_resolve_opencode_route_policy_accepts_redirectable_provider(self):
@@ -63,7 +78,14 @@ class TestProviderPolicy(unittest.TestCase):
         )
         self.assertTrue(policy.supported)
         self.assertIsNone(policy.reason)
+        self.assertEqual(policy.api_family, "openai-completions")
+        self.assertEqual(policy.transport_kind, "openai_compat")
         self.assertEqual(policy.upstream_base_url, "https://api.zenmux.example/v1")
+
+    def test_default_provider_family_handles_known_native_provider_ids(self):
+        self.assertEqual(default_provider_family("anthropic"), "anthropic-messages")
+        self.assertEqual(default_provider_family("openai-codex"), "openai-codex-responses")
+        self.assertEqual(default_provider_family("zenmux"), "openai-completions")
 
     def test_resolve_openclaw_route_policy_requires_exact_api_family(self):
         policy = resolve_openclaw_route_policy(
@@ -108,6 +130,26 @@ class TestProviderPolicy(unittest.TestCase):
             "http://127.0.0.1:8787/clients/openclaw/anthropic",
         )
         self.assertEqual(policy.upstream_base_url, "https://api.anthropic.com")
+
+    def test_resolve_openclaw_route_policy_rejects_deferred_family_from_registry(self):
+        policy = resolve_openclaw_route_policy(
+            config={
+                "agents": {"defaults": {"model": {"primary": "openai-codex/gpt-5.3-codex"}}},
+                "models": {
+                    "providers": {
+                        "openai-codex": {
+                            "api": "openai-codex-responses",
+                            "baseUrl": "https://chatgpt.com/backend-api/codex",
+                        }
+                    }
+                },
+            },
+            gateway_base_url="http://127.0.0.1:8787/v1",
+            models_cache_data=None,
+            route_metadata=None,
+        )
+        self.assertFalse(policy.supported)
+        self.assertEqual(policy.reason, "unsupported_api_family:openai-codex-responses")
 
 
 if __name__ == "__main__":

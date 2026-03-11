@@ -441,3 +441,40 @@
   - OpenCode setup now returns `supported: false` with reason `provider_uses_internal_oauth_transport` for that case and leaves the config unpatched.
   - Runtime auth inspection returns `strategy=unsupported_transport` for the same case so doctor/runtime no longer claim the path is reusable.
   - Live smoke skips the unsupported OpenCode OAuth scenario and keeps the matrix green for the intended routed scenarios.
+
+## Provider-family abstraction pause point
+- `modeio_middleware/core/provider_policy.py` is now the shared provider-family registry for setup/runtime policy.
+  - It carries the family-to-transport mapping and the per-client support matrix instead of leaving those decisions scattered across client-specific conditionals.
+  - Current registry entries cover:
+    - `openai-completions`
+    - `openai-responses`
+    - `openai-codex-responses`
+    - `anthropic-messages`
+    - `google-generative-ai`
+- The current support matrix did not change.
+  - OpenCode preserve-provider routing still resolves through `openai-completions`.
+  - OpenClaw public support still resolves only through `openai-completions` and `anthropic-messages`.
+- Compatibility expansion is intentionally paused at this registry boundary.
+  - Deferred items:
+    - OpenCode built-in `openai` with ChatGPT OAuth
+    - OpenCode built-in `anthropic` with subscription OAuth
+    - OpenCode Anthropic-compatible provider paths such as `zenmux`
+    - OpenClaw built-in Codex or ChatGPT-style provider path
+
+## Harness attachment abstraction
+- The real remaining CLI/design problem was not auth inspection anymore; it was harness attachment.
+  - Runtime auth/routing was already mostly normalized through `CredentialResolver` and provider policy.
+  - Setup/orchestration still knew too much about each harness because attachment lived directly inside `setup.py`.
+- OpenCode/OpenClaw/Claude and Codex were asymmetric at the attachment layer.
+  - OpenCode/OpenClaw/Claude have persistent patch or hook attach/detach behavior.
+  - Codex still only exposes an env-based attachment path in this branch.
+- The structural fix was to add an explicit harness adapter layer under the existing setup CLI.
+  - `modeio_middleware/cli/harness_adapters/` now owns:
+    - current-state inspection
+    - attachment inspection
+    - attach
+    - detach
+  - `setup.py` now formats reports, but it no longer computes harness-specific attachment behavior itself.
+- Codex remains intentionally modeled as `env_session` in this slice.
+  - Official Codex config surface appears richer than the repo originally modeled, but a safe persistent patch story still needs its own slice because profile/config mutation semantics are not yet proven in this branch.
+  - The adapter boundary now makes that an isolated future change instead of a CLI-wide architectural leak.

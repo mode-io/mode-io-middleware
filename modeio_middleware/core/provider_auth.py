@@ -23,10 +23,13 @@ from modeio_middleware.connectors.client_identity import (
 from modeio_middleware.core.provider_policy import (
     OPENCLAW_SUPPORTED_API_FAMILIES,
     OpenCodeRoutePolicy,
+    default_provider_family,
     normalize_provider_id as _policy_normalize_provider_id,
     provider_base_url as _policy_provider_base_url,
     resolve_openclaw_api_family,
     resolve_opencode_route_policy,
+    supported_provider_families_for_client,
+    transport_kind_for_api_family,
     route_metadata_entry as _policy_route_metadata_entry,
     string_value as _policy_string_value,
 )
@@ -251,16 +254,12 @@ class CredentialInspection:
 
 
 def _default_api_family(provider_id: str) -> str:
-    normalized = normalize_provider_id(provider_id)
-    if normalized == PROVIDER_ANTHROPIC:
-        return "anthropic-messages"
-    if normalized == PROVIDER_OPENAI_CODEX:
-        return "openai-codex-responses"
-    return "openai-completions"
+    return default_provider_family(provider_id)
 
 
 def _default_transport_kind(provider_id: str) -> str:
-    if normalize_provider_id(provider_id) == PROVIDER_OPENAI_CODEX:
+    transport_kind = transport_kind_for_api_family(_default_api_family(provider_id))
+    if transport_kind == TRANSPORT_CODEX_NATIVE:
         return TRANSPORT_CODEX_NATIVE
     return TRANSPORT_OPENAI_COMPAT
 
@@ -432,13 +431,15 @@ def _context_upstream_plan(
                 api_family="openai-codex-responses",
                 upstream_base_url=upstream_base_url,
                 unsupported_family="openai-codex-responses",
-                supported_families=tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES)),
+                supported_families=supported_provider_families_for_client(CLIENT_OPENCLAW),
             )
             metadata.update(
                 {
                     "apiFamily": "openai-codex-responses",
                     "unsupportedFamily": True,
-                    "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
+                    "supportedFamilies": list(
+                        supported_provider_families_for_client(CLIENT_OPENCLAW)
+                    ),
                     **(
                         {"upstreamBaseUrl": upstream_base_url}
                         if upstream_base_url
@@ -462,7 +463,7 @@ def _context_upstream_plan(
                 else None
             ),
             supported_families=(
-                tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES))
+                supported_provider_families_for_client(CLIENT_OPENCLAW)
                 if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES
                 else ()
             ),
@@ -1672,7 +1673,9 @@ class GenericProviderAdapter:
                         "providerId": normalize_provider_id(context.provider_id),
                         "apiFamily": "openai-codex-responses",
                         "unsupportedFamily": True,
-                        "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
+                        "supportedFamilies": list(
+                            supported_provider_families_for_client(CLIENT_OPENCLAW)
+                        ),
                     },
                 )
             api_family = _openclaw_current_api_family(context.provider_id, context.env)
@@ -1681,7 +1684,9 @@ class GenericProviderAdapter:
                     "providerId": normalize_provider_id(context.provider_id),
                     "apiFamily": api_family,
                     "unsupportedFamily": True,
-                    "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
+                    "supportedFamilies": list(
+                        supported_provider_families_for_client(CLIENT_OPENCLAW)
+                    ),
                 }
                 upstream_base_url = _openclaw_preserved_upstream_base_url(
                     context.provider_id,

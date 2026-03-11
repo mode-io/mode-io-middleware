@@ -10,14 +10,71 @@ PROVIDER_OPENAI = "openai"
 PROVIDER_OPENAI_CODEX = "openai-codex"
 PROVIDER_MODEIO_MIDDLEWARE = "modeio-middleware"
 
+API_FAMILY_ANTHROPIC_MESSAGES = "anthropic-messages"
+API_FAMILY_GOOGLE_GENERATIVE_AI = "google-generative-ai"
+API_FAMILY_OPENAI_CODEX_RESPONSES = "openai-codex-responses"
+API_FAMILY_OPENAI_COMPLETIONS = "openai-completions"
+API_FAMILY_OPENAI_RESPONSES = "openai-responses"
+
+CLIENT_OPENCLAW = "openclaw"
+CLIENT_OPENCODE = "opencode"
+
 OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER = "preserve_provider"
 OPENCLAW_ROUTE_MODE_PRESERVE_PROVIDER = "preserve_provider"
 OPENCODE_UNSUPPORTED_OAUTH_PROVIDER_IDS = frozenset({"openai"})
+
+TRANSPORT_ANTHROPIC_MESSAGES = "anthropic_messages"
+TRANSPORT_CODEX_NATIVE = "codex_native"
+TRANSPORT_GOOGLE_GENERATIVE_AI = "google_generative_ai"
+TRANSPORT_OPENAI_COMPAT = "openai_compat"
+
+
+@dataclass(frozen=True)
+class ProviderFamilySpec:
+    api_family: str
+    transport_kind: str
+    openclaw_supported: bool = False
+    opencode_supported: bool = False
+    openclaw_drop_gateway_v1: bool = False
+    user_label: str | None = None
+
+
+PROVIDER_FAMILY_SPECS = {
+    API_FAMILY_OPENAI_COMPLETIONS: ProviderFamilySpec(
+        api_family=API_FAMILY_OPENAI_COMPLETIONS,
+        transport_kind=TRANSPORT_OPENAI_COMPAT,
+        openclaw_supported=True,
+        opencode_supported=True,
+        user_label="OpenAI-compatible providers",
+    ),
+    API_FAMILY_OPENAI_RESPONSES: ProviderFamilySpec(
+        api_family=API_FAMILY_OPENAI_RESPONSES,
+        transport_kind=TRANSPORT_OPENAI_COMPAT,
+        user_label="OpenAI responses providers",
+    ),
+    API_FAMILY_OPENAI_CODEX_RESPONSES: ProviderFamilySpec(
+        api_family=API_FAMILY_OPENAI_CODEX_RESPONSES,
+        transport_kind=TRANSPORT_CODEX_NATIVE,
+        user_label="Codex-native providers",
+    ),
+    API_FAMILY_ANTHROPIC_MESSAGES: ProviderFamilySpec(
+        api_family=API_FAMILY_ANTHROPIC_MESSAGES,
+        transport_kind=TRANSPORT_ANTHROPIC_MESSAGES,
+        openclaw_supported=True,
+        openclaw_drop_gateway_v1=True,
+        user_label="Anthropic-compatible providers",
+    ),
+    API_FAMILY_GOOGLE_GENERATIVE_AI: ProviderFamilySpec(
+        api_family=API_FAMILY_GOOGLE_GENERATIVE_AI,
+        transport_kind=TRANSPORT_GOOGLE_GENERATIVE_AI,
+        user_label="Google Generative AI providers",
+    ),
+}
+
 OPENCLAW_SUPPORTED_API_FAMILIES = frozenset(
-    {
-        "openai-completions",
-        "anthropic-messages",
-    }
+    api_family
+    for api_family, spec in PROVIDER_FAMILY_SPECS.items()
+    if spec.openclaw_supported
 )
 
 
@@ -30,6 +87,50 @@ def normalize_api_family(value: Any) -> str | None:
         return None
     text = value.strip().lower()
     return text or None
+
+
+def resolve_provider_family_spec(value: Any) -> ProviderFamilySpec | None:
+    api_family = normalize_api_family(value)
+    if not api_family:
+        return None
+    return PROVIDER_FAMILY_SPECS.get(api_family)
+
+
+def supported_provider_families_for_client(client_name: str | None) -> tuple[str, ...]:
+    normalized_client = str(client_name or "").strip().lower().replace("_", "-")
+    if normalized_client == CLIENT_OPENCLAW:
+        return tuple(
+            sorted(
+                api_family
+                for api_family, spec in PROVIDER_FAMILY_SPECS.items()
+                if spec.openclaw_supported
+            )
+        )
+    if normalized_client == CLIENT_OPENCODE:
+        return tuple(
+            sorted(
+                api_family
+                for api_family, spec in PROVIDER_FAMILY_SPECS.items()
+                if spec.opencode_supported
+            )
+        )
+    return ()
+
+
+def default_provider_family(provider_id: str | None) -> str:
+    normalized_provider = normalize_provider_id(provider_id)
+    if normalized_provider == PROVIDER_ANTHROPIC:
+        return API_FAMILY_ANTHROPIC_MESSAGES
+    if normalized_provider == PROVIDER_OPENAI_CODEX:
+        return API_FAMILY_OPENAI_CODEX_RESPONSES
+    return API_FAMILY_OPENAI_COMPLETIONS
+
+
+def transport_kind_for_api_family(api_family: Any) -> str:
+    spec = resolve_provider_family_spec(api_family)
+    if spec is None:
+        return TRANSPORT_OPENAI_COMPAT
+    return spec.transport_kind
 
 
 def is_loopback_base_url(value: str | None) -> bool:
@@ -64,7 +165,8 @@ def openclaw_provider_gateway_base_url(
         "openclaw",
         provider_name=provider_key,
     )
-    if api_family == "anthropic-messages" and base_url.endswith("/v1"):
+    spec = resolve_provider_family_spec(api_family)
+    if spec is not None and spec.openclaw_drop_gateway_v1 and base_url.endswith("/v1"):
         return base_url[:-3]
     return base_url
 
@@ -150,6 +252,8 @@ class OpenCodeRoutePolicy:
     upstream_base_url: str | None
     route_mode: str = OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER
     auth_type: str | None = None
+    api_family: str | None = None
+    transport_kind: str | None = None
 
 
 def resolve_opencode_route_policy(
@@ -182,6 +286,9 @@ def resolve_opencode_route_policy(
     auth_type = None
     if isinstance(auth_entry, Mapping):
         auth_type = string_value(auth_entry.get("type"))
+    api_family = API_FAMILY_OPENAI_COMPLETIONS
+    family_spec = resolve_provider_family_spec(api_family)
+    transport_kind = family_spec.transport_kind if family_spec is not None else None
 
     if (
         normalized_provider in OPENCODE_UNSUPPORTED_OAUTH_PROVIDER_IDS
@@ -193,6 +300,8 @@ def resolve_opencode_route_policy(
             reason="provider_uses_internal_oauth_transport",
             upstream_base_url=upstream_base_url,
             auth_type=auth_type,
+            api_family=api_family,
+            transport_kind=transport_kind,
         )
 
     if not upstream_base_url:
@@ -202,6 +311,8 @@ def resolve_opencode_route_policy(
             reason="missing_upstream_base_url",
             upstream_base_url=None,
             auth_type=auth_type,
+            api_family=api_family,
+            transport_kind=transport_kind,
         )
 
     return OpenCodeRoutePolicy(
@@ -210,6 +321,8 @@ def resolve_opencode_route_policy(
         reason=None,
         upstream_base_url=upstream_base_url.rstrip("/"),
         auth_type=auth_type,
+        api_family=api_family,
+        transport_kind=transport_kind,
     )
 
 
@@ -294,6 +407,7 @@ def resolve_openclaw_route_policy(
         models_cache_provider_obj,
         metadata_entry,
     )
+    family_spec = resolve_provider_family_spec(api_family)
     if not api_family:
         return OpenClawRoutePolicy(
             supported=False,
@@ -307,7 +421,7 @@ def resolve_openclaw_route_policy(
             original_base_url=None,
             original_models_cache_base_url=None,
         )
-    if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
+    if family_spec is None or not family_spec.openclaw_supported:
         return OpenClawRoutePolicy(
             supported=False,
             reason=f"unsupported_api_family:{api_family}",

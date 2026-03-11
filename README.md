@@ -45,6 +45,12 @@ More detail:
 - `OpenClaw`: works today for normal OpenAI-compatible and Anthropic-compatible providers.
 - `OpenClaw`: does not work yet for OpenClaw's built-in Codex or ChatGPT-style provider path.
 
+Deferred compatibility:
+
+- Compatibility work is intentionally paused at the matrix above for now.
+- The next planned OpenCode items are built-in `openai` with ChatGPT OAuth, built-in `anthropic` with subscription OAuth, and Anthropic-compatible provider paths such as `zenmux`.
+- The next planned OpenClaw item is the built-in Codex or ChatGPT-style provider path.
+
 ## Public surface
 
 Traffic routes:

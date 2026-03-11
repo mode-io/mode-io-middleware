@@ -13,48 +13,32 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-from modeio_middleware.cli.setup_lib.claude import (
-    apply_claude_settings_file,
-    default_claude_settings_path,
-    derive_claude_hook_url,
-    uninstall_claude_settings_file,
+from modeio_middleware.cli.harness_adapters import (
+    HarnessAdapterRegistry,
+    HarnessAttachRequest,
+    HarnessDetachRequest,
+    codex_set_env_command,
+    codex_unset_env_command,
+    default_codex_config_path,
 )
 from modeio_middleware.cli.setup_lib.common import (
-    build_client_gateway_base_url,
     HealthCheckResult,
     SetupError,
     detect_os_name,
     derive_health_url,
     normalize_gateway_base_url,
-    read_json_file,
 )
-from modeio_middleware.cli.setup_lib.opencode import (
-    _opencode_route_support,
-    _resolve_preserved_upstream_base_url,
-    apply_opencode_config_file,
-    current_opencode_provider_id,
-    default_opencode_config_path,
-    uninstall_opencode_config_file,
-)
+from modeio_middleware.cli.setup_lib.claude import default_claude_settings_path, derive_claude_hook_url
+from modeio_middleware.cli.setup_lib.opencode import default_opencode_config_path
 from modeio_middleware.cli.setup_lib.openclaw import (
-    apply_openclaw_config_file,
-    apply_openclaw_models_cache_file,
     default_openclaw_config_path,
     default_openclaw_models_cache_path,
-    uninstall_openclaw_config_file,
-    uninstall_openclaw_models_cache_file,
-)
-from modeio_middleware.cli.setup_lib.openclaw_common import _read_route_metadata
-from modeio_middleware.cli.setup_lib.openclaw_routes import _resolve_preserve_provider_target
-from modeio_middleware.core.client_auth import (
-    inspect_codex_native_auth,
-    inspect_openclaw_native_auth,
-    inspect_opencode_native_auth,
 )
 
 DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:8787/v1"
 DEFAULT_UPSTREAM_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_UPSTREAM_RESPONSES_URL = "https://api.openai.com/v1/responses"
+_HARNESS_ADAPTERS = HarnessAdapterRegistry()
 
 
 def _detect_shell(os_name: str, env: Optional[Dict[str, str]] = None) -> str:
@@ -71,24 +55,11 @@ def _detect_shell(os_name: str, env: Optional[Dict[str, str]] = None) -> str:
 
 
 def _codex_env_command(shell: str, gateway_base_url: str) -> str:
-    normalized = build_client_gateway_base_url(gateway_base_url, "codex")
-    if shell == "powershell":
-        return f'$env:OPENAI_BASE_URL = "{normalized}"'
-    if shell == "cmd":
-        return f"set OPENAI_BASE_URL={normalized}"
-    if shell == "fish":
-        return f'set -x OPENAI_BASE_URL "{normalized}"'
-    return f'export OPENAI_BASE_URL="{normalized}"'
+    return codex_set_env_command(shell, gateway_base_url)
 
 
 def _codex_unset_env_command(shell: str) -> str:
-    if shell == "powershell":
-        return "Remove-Item Env:OPENAI_BASE_URL"
-    if shell == "cmd":
-        return "set OPENAI_BASE_URL="
-    if shell == "fish":
-        return "set -e OPENAI_BASE_URL"
-    return "unset OPENAI_BASE_URL"
+    return codex_unset_env_command(shell)
 
 
 def _check_gateway_health(health_url: str, timeout_seconds: int) -> HealthCheckResult:
@@ -192,94 +163,103 @@ def _path_parent_writable(path: Path) -> bool:
     return os.access(candidate, os.W_OK)
 
 
-def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
-    gateway_base_url = normalize_gateway_base_url(args.gateway_base_url)
-    os_name = detect_os_name(args.os_name)
-    shell = args.shell if args.shell != "auto" else _detect_shell(os_name)
-    health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
-    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
-    required_commands = list(_split_csv_values(args.require_commands))
-
+def _resolved_harness_paths(
+    args: argparse.Namespace,
+    *,
+    os_name: str,
+    env: Dict[str, str],
+) -> dict[str, Path]:
     opencode_path = (
         Path(args.opencode_config_path).expanduser()
         if args.opencode_config_path
-        else default_opencode_config_path(os_name=os_name)
+        else default_opencode_config_path(os_name=os_name, env=env)
     )
     openclaw_path = (
         Path(args.openclaw_config_path).expanduser()
         if args.openclaw_config_path
-        else default_openclaw_config_path(os_name=os_name)
+        else default_openclaw_config_path(os_name=os_name, env=env)
     )
     openclaw_models_cache_path = (
         Path(args.openclaw_models_cache_path).expanduser()
         if args.openclaw_models_cache_path
-        else default_openclaw_models_cache_path(config_path=openclaw_path)
+        else default_openclaw_models_cache_path(config_path=openclaw_path, env=env)
     )
     claude_path = (
         Path(args.claude_settings_path).expanduser()
         if args.claude_settings_path
         else default_claude_settings_path()
     )
-    codex_auth_path = home / ".codex" / "auth.json"
-    def _sanitize_native_client(entry: Dict[str, Any]) -> Dict[str, Any]:
-        sanitized = dict(entry)
-        sanitized.pop("authorization", None)
-        return sanitized
+    codex_config_path = default_codex_config_path(env=env)
+    return {
+        "codex": codex_config_path,
+        "opencode": opencode_path,
+        "openclaw": openclaw_path,
+        "openclaw_models_cache": openclaw_models_cache_path,
+        "claude": claude_path,
+    }
+
+
+def _sanitized_native_client_payload(client_name: str, env: Dict[str, str]) -> Dict[str, Any]:
+    adapter = _HARNESS_ADAPTERS.adapter_for(client_name)
+    return adapter.inspect_current_state(env=env).to_public_payload()
+
+
+def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
+    gateway_base_url = normalize_gateway_base_url(args.gateway_base_url)
+    os_name = detect_os_name(args.os_name)
+    shell = args.shell if args.shell != "auto" else _detect_shell(os_name)
+    health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
+    env = dict(os.environ)
+    required_commands = list(_split_csv_values(args.require_commands))
+    paths = _resolved_harness_paths(args, os_name=os_name, env=env)
 
     native_clients = {
-        "codex": _sanitize_native_client(inspect_codex_native_auth()),
-        "opencode": _sanitize_native_client(inspect_opencode_native_auth()),
-        "openclaw": _sanitize_native_client(inspect_openclaw_native_auth()),
-        "claude": {
-            "ready": True,
-            "guaranteed": True,
-            "strategy": "hook",
-            "reason": None,
-        },
+        "codex": _sanitized_native_client_payload("codex", env),
+        "opencode": _sanitized_native_client_payload("opencode", env),
+        "openclaw": _sanitized_native_client_payload("openclaw", env),
+        "claude": _HARNESS_ADAPTERS.adapter_for("claude")
+        .inspect_current_state(env=env)
+        .to_public_payload(),
     }
-    opencode_route_support: Dict[str, Any] = {
-        "supported": False,
-        "reason": "config_not_found",
-        "providerId": None,
-    }
-    if opencode_path.exists():
-        opencode_config = read_json_file(opencode_path)
-        opencode_route_support = _opencode_route_support(
-            config=opencode_config,
-            config_path=opencode_path,
-            env=dict(os.environ),
-        )
-        opencode_provider_id = current_opencode_provider_id(opencode_config)
-        if opencode_route_support.get("supported") and opencode_provider_id:
-            original_base_url, _ = _resolve_preserved_upstream_base_url(
-                opencode_config,
-                config_path=opencode_path,
-                provider_id=opencode_provider_id,
-            )
-            if not original_base_url:
-                opencode_route_support = {
-                    **opencode_route_support,
-                    "supported": False,
-                    "reason": "missing_upstream_base_url",
-                }
 
-    openclaw_route_support: Dict[str, Any] = {
-        "supported": False,
-        "reason": "config_not_found",
-    }
-    if openclaw_path.exists():
-        openclaw_config = read_json_file(openclaw_path)
-        openclaw_models_cache = (
-            read_json_file(openclaw_models_cache_path)
-            if openclaw_models_cache_path.exists()
-            else None
+    codex_attachment = _HARNESS_ADAPTERS.adapter_for("codex").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        shell=shell,
+        config_path=paths["codex"],
+    )
+    opencode_attachment = _HARNESS_ADAPTERS.adapter_for("opencode").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        os_name=os_name,
+        config_path=paths["opencode"],
+    )
+    openclaw_attachment = _HARNESS_ADAPTERS.adapter_for("openclaw").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        os_name=os_name,
+        config_path=paths["openclaw"],
+        models_cache_path=paths["openclaw_models_cache"],
+    )
+    claude_attachment = _HARNESS_ADAPTERS.adapter_for("claude").inspect_attachment(
+        gateway_base_url=gateway_base_url,
+        env=env,
+        config_path=paths["claude"],
+    )
+
+    codex_auth_path = native_clients["codex"].get("path")
+    opencode_route_support: Dict[str, Any] = dict(
+        (opencode_attachment.details or {}).get(
+            "routeSupport",
+            {"supported": False, "reason": "config_not_found", "providerId": None},
         )
-        openclaw_route_support = _resolve_preserve_provider_target(
-            openclaw_config,
-            gateway_base_url,
-            models_cache_data=openclaw_models_cache,
-            existing_route_metadata=_read_route_metadata(openclaw_path),
+    )
+    openclaw_route_support: Dict[str, Any] = dict(
+        (openclaw_attachment.details or {}).get(
+            "routeSupport",
+            {"supported": False, "reason": "config_not_found"},
         )
+    )
 
     binaries = {
         name: shutil.which(name) for name in ("codex", "opencode", "openclaw", "claude")
@@ -304,40 +284,38 @@ def _build_doctor_report(args: argparse.Namespace) -> Dict[str, Any]:
         "nativeClients": native_clients,
         "codex": {
             "shell": shell,
-            "setCommand": _codex_env_command(shell, gateway_base_url),
-            "unsetCommand": _codex_unset_env_command(shell),
+            "setCommand": codex_attachment.details.get("setCommand"),
+            "unsetCommand": codex_attachment.details.get("unsetCommand"),
             "binaryFound": binaries["codex"] is not None,
             "binaryPath": binaries["codex"],
-            "authPath": str(codex_auth_path),
-            "authPresent": codex_auth_path.exists(),
+            "configPath": str(paths["codex"]),
+            "authPath": codex_auth_path,
+            "authPresent": bool(codex_auth_path and Path(codex_auth_path).exists()),
         },
         "opencode": {
             "binaryFound": binaries["opencode"] is not None,
             "binaryPath": binaries["opencode"],
-            "path": str(opencode_path),
-            "configParentWritable": _path_parent_writable(opencode_path),
+            "path": str(paths["opencode"]),
+            "configParentWritable": _path_parent_writable(paths["opencode"]),
             "routeSupport": opencode_route_support,
         },
         "openclaw": {
             "binaryFound": binaries["openclaw"] is not None,
             "binaryPath": binaries["openclaw"],
-            "path": str(openclaw_path),
-            "configParentWritable": _path_parent_writable(openclaw_path),
-            "modelsCachePath": str(openclaw_models_cache_path),
+            "path": str(paths["openclaw"]),
+            "configParentWritable": _path_parent_writable(paths["openclaw"]),
+            "modelsCachePath": str(paths["openclaw_models_cache"]),
             "modelsCacheParentWritable": _path_parent_writable(
-                openclaw_models_cache_path
+                paths["openclaw_models_cache"]
             ),
             "routeSupport": openclaw_route_support,
         },
         "claude": {
             "binaryFound": binaries["claude"] is not None,
             "binaryPath": binaries["claude"],
-            "path": str(claude_path),
-            "configParentWritable": _path_parent_writable(claude_path),
-            "authCheck": {
-                "supported": False,
-                "message": "Claude auth is verified by the live smoke command itself; the doctor only checks binary/config readiness.",
-            },
+            "path": str(paths["claude"]),
+            "configParentWritable": _path_parent_writable(paths["claude"]),
+            "authCheck": claude_attachment.details.get("authCheck"),
         },
         "requiredCommands": required_commands,
         "checks": [],
@@ -390,6 +368,8 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
     os_name = detect_os_name(args.os_name)
     shell = args.shell if args.shell != "auto" else _detect_shell(os_name)
     health_url = args.health_url.strip() or derive_health_url(gateway_base_url)
+    env = dict(os.environ)
+    paths = _resolved_harness_paths(args, os_name=os_name, env=env)
 
     report: Dict[str, Any] = {
         "success": True,
@@ -406,8 +386,9 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
         },
         "codex": {
             "shell": shell,
-            "setCommand": _codex_env_command(shell, gateway_base_url),
-            "unsetCommand": _codex_unset_env_command(shell),
+            "setCommand": codex_set_env_command(shell, gateway_base_url),
+            "unsetCommand": codex_unset_env_command(shell),
+            "configPath": str(paths["codex"]),
         },
         "opencode": None,
         "openclaw": None,
@@ -428,96 +409,80 @@ def _build_report(args: argparse.Namespace) -> Dict[str, Any]:
         }
 
     if args.apply_opencode:
-        config_path = (
-            Path(args.opencode_config_path).expanduser()
-            if args.opencode_config_path
-            else default_opencode_config_path(os_name=os_name)
-        )
         if args.uninstall:
-            report["opencode"] = uninstall_opencode_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_opencode_base_url,
+            result = _HARNESS_ADAPTERS.adapter_for("opencode").detach(
+                HarnessDetachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["opencode"],
+                    force_remove=args.force_remove_opencode_base_url,
+                )
             )
+            report["opencode"] = result.details
         else:
-            report["opencode"] = apply_opencode_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                create_if_missing=args.create_opencode_config,
-                env=dict(os.environ),
+            result = _HARNESS_ADAPTERS.adapter_for("opencode").attach(
+                HarnessAttachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["opencode"],
+                    create_if_missing=args.create_opencode_config,
+                )
             )
+            report["opencode"] = result.details
         if isinstance(report["opencode"], dict) and report["opencode"].get("supported") is False:
             report["success"] = False
 
     if args.apply_openclaw:
-        config_path = (
-            Path(args.openclaw_config_path).expanduser()
-            if args.openclaw_config_path
-            else default_openclaw_config_path(os_name=os_name)
-        )
-        models_cache_path = (
-            Path(args.openclaw_models_cache_path).expanduser()
-            if args.openclaw_models_cache_path
-            else default_openclaw_models_cache_path(config_path=config_path)
-        )
         if args.uninstall:
-            models_cache_report = uninstall_openclaw_models_cache_file(
-                models_cache_path=models_cache_path,
-                gateway_base_url=gateway_base_url,
-                config_path=config_path,
-                force_remove=args.force_remove_openclaw_provider,
-            )
-            openclaw_report = uninstall_openclaw_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_openclaw_provider,
-            )
-            openclaw_report["modelsCache"] = models_cache_report
-            report["openclaw"] = openclaw_report
-        else:
-            openclaw_report = apply_openclaw_config_file(
-                config_path=config_path,
-                gateway_base_url=gateway_base_url,
-                create_if_missing=args.create_openclaw_config,
-                models_cache_path=models_cache_path,
-            )
-            if openclaw_report.get("supported") is True:
-                openclaw_report["modelsCache"] = apply_openclaw_models_cache_file(
-                    models_cache_path=models_cache_path,
+            result = _HARNESS_ADAPTERS.adapter_for("openclaw").detach(
+                HarnessDetachRequest(
                     gateway_base_url=gateway_base_url,
-                    config_path=config_path,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["openclaw"],
+                    models_cache_path=paths["openclaw_models_cache"],
+                    force_remove=args.force_remove_openclaw_provider,
                 )
-            else:
-                openclaw_report["modelsCache"] = {
-                    "path": str(models_cache_path),
-                    "changed": False,
-                    "created": False,
-                    "backupPath": None,
-                    "reason": "config_route_unsupported",
-                    "routeMode": "preserve_provider",
-                }
-            report["openclaw"] = openclaw_report
+            )
+            report["openclaw"] = result.details
+        else:
+            result = _HARNESS_ADAPTERS.adapter_for("openclaw").attach(
+                HarnessAttachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    os_name=os_name,
+                    config_path=paths["openclaw"],
+                    models_cache_path=paths["openclaw_models_cache"],
+                    create_if_missing=args.create_openclaw_config,
+                )
+            )
+            report["openclaw"] = result.details
         if isinstance(report["openclaw"], dict) and report["openclaw"].get("supported") is False:
             report["success"] = False
 
     if args.apply_claude:
-        claude_path = (
-            Path(args.claude_settings_path).expanduser()
-            if args.claude_settings_path
-            else default_claude_settings_path()
-        )
         if args.uninstall:
-            report["claude"] = uninstall_claude_settings_file(
-                config_path=claude_path,
-                gateway_base_url=gateway_base_url,
-                force_remove=args.force_remove_claude_hook_url,
+            result = _HARNESS_ADAPTERS.adapter_for("claude").detach(
+                HarnessDetachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    config_path=paths["claude"],
+                    force_remove=args.force_remove_claude_hook_url,
+                )
             )
+            report["claude"] = result.details
         else:
-            report["claude"] = apply_claude_settings_file(
-                config_path=claude_path,
-                gateway_base_url=gateway_base_url,
-                create_if_missing=args.create_claude_settings,
+            result = _HARNESS_ADAPTERS.adapter_for("claude").attach(
+                HarnessAttachRequest(
+                    gateway_base_url=gateway_base_url,
+                    env=env,
+                    config_path=paths["claude"],
+                    create_if_missing=args.create_claude_settings,
+                )
             )
+            report["claude"] = result.details
 
     return report
 

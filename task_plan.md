@@ -4,7 +4,7 @@
 Refactor `modeio-middleware` so a user with an already authed supported harness (`codex`, `opencode`, `openclaw`, or `claude`) can start middleware and use it naturally without extra provider setup, while keeping managed-upstream mode as an explicit fallback.
 
 ## Current Phase
-Phase 15
+Phase 18
 
 ## Phases
 
@@ -245,6 +245,20 @@ Phase 15
   - no smoke provider/model fallback remains for Codex/OpenCode/OpenClaw
   - no OpenClaw managed-mode product path remains in setup
   - middleware preserves exact harness-selected state or fails clearly
+
+### Phase 17: Provider-family abstraction and compatibility pause point
+- [x] Add one shared provider-family registry in `modeio_middleware/core/provider_policy.py` so future family work starts from one contract surface instead of more client-specific conditionals.
+- [x] Route existing OpenCode/OpenClaw policy resolution through the shared family registry without changing the current support matrix.
+- [x] Document the intentionally deferred compatibility items in user-facing and internal notes so frontend/example-plugin work can proceed without losing the restart point for compatibility expansion.
+- [x] Re-run targeted regression tests and live smoke after the registry change.
+- **Status:** complete
+
+### Phase 18: Harness attachment abstraction
+- [x] Add a first-class harness adapter layer so setup/doctor no longer mixes runtime support inspection with harness-specific attachment logic.
+- [x] Move OpenCode/OpenClaw/Claude patch-or-hook behavior behind typed adapters while keeping the current setup JSON/report shape stable.
+- [x] Represent Codex explicitly as an `env_session` attachment kind instead of leaking env-command logic directly into future CLI design.
+- [x] Re-run full Python tests and the supported live smoke matrix on top of the adapter refactor.
+- **Status:** complete
 
 ## Key Questions
 1. What exact backend/transport contract should `CodexNativeAdapter` target so native auth is actually valid end to end?
