@@ -20,6 +20,16 @@ from modeio_middleware.connectors.client_identity import (
     CLIENT_OPENCLAW,
     CLIENT_UNKNOWN,
 )
+from modeio_middleware.core.provider_policy import (
+    OPENCLAW_SUPPORTED_API_FAMILIES,
+    OpenCodeRoutePolicy,
+    normalize_provider_id as _policy_normalize_provider_id,
+    provider_base_url as _policy_provider_base_url,
+    resolve_openclaw_api_family,
+    resolve_opencode_route_policy,
+    route_metadata_entry as _policy_route_metadata_entry,
+    string_value as _policy_string_value,
+)
 from modeio_middleware.core.upstream_plan import (
     ResolvedAuthMaterial,
     ResolvedCredential,
@@ -51,15 +61,9 @@ PROVIDER_ALIASES = {
     "codex": PROVIDER_OPENAI_CODEX,
     "openai_codex": PROVIDER_OPENAI_CODEX,
 }
-OPENCLAW_SUPPORTED_API_FAMILIES = frozenset(
-    {
-        "openai-completions",
-        "anthropic-messages",
-    }
-)
 
 def normalize_provider_id(raw_provider_id: str | None) -> str:
-    text = str(raw_provider_id or "").strip().lower().replace("_", "-")
+    text = _policy_normalize_provider_id(raw_provider_id)
     if not text:
         return ""
     return PROVIDER_ALIASES.get(text, text)
@@ -261,6 +265,20 @@ def _default_transport_kind(provider_id: str) -> str:
     return TRANSPORT_OPENAI_COMPAT
 
 
+def _serialize_upstream_plan(plan: ResolvedUpstreamPlan) -> dict[str, Any]:
+    return {
+        "provider_id": plan.provider_id,
+        "transport_kind": plan.transport_kind,
+        "api_family": plan.api_family,
+        "upstream_base_url": plan.upstream_base_url,
+        "native_base_url": plan.native_base_url,
+        "model_override": plan.model_override,
+        "unsupported_family": plan.unsupported_family,
+        "supported_families": list(plan.supported_families),
+        "route_reason": plan.route_reason,
+    }
+
+
 def resolve_inspection_credential(inspection: CredentialInspection) -> ResolvedCredential:
     source = getattr(inspection, "auth_source", None) or getattr(inspection, "auth_env", None)
     auth_kind = str(getattr(inspection, "auth_kind", AUTH_KIND_MISSING) or AUTH_KIND_MISSING)
@@ -297,6 +315,60 @@ def resolve_inspection_upstream_plan(
 ) -> ResolvedUpstreamPlan:
     metadata = getattr(inspection, "metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
+    raw_plan = metadata.get("upstreamPlan")
+    if isinstance(raw_plan, dict):
+        supported_families = ()
+        raw_supported = raw_plan.get("supported_families")
+        if isinstance(raw_supported, list):
+            supported_families = tuple(
+                str(item) for item in raw_supported if str(item).strip()
+            )
+        return ResolvedUpstreamPlan(
+            provider_id=str(raw_plan.get("provider_id") or ""),
+            transport_kind=str(
+                raw_plan.get("transport_kind")
+                or getattr(inspection, "transport", "")
+                or TRANSPORT_OPENAI_COMPAT
+            ),
+            api_family=(
+                str(raw_plan.get("api_family")).strip()
+                if isinstance(raw_plan.get("api_family"), str)
+                and str(raw_plan.get("api_family")).strip()
+                else None
+            ),
+            upstream_base_url=(
+                str(raw_plan.get("upstream_base_url")).strip().rstrip("/")
+                if isinstance(raw_plan.get("upstream_base_url"), str)
+                and str(raw_plan.get("upstream_base_url")).strip()
+                else None
+            ),
+            native_base_url=(
+                str(raw_plan.get("native_base_url")).strip().rstrip("/")
+                if isinstance(raw_plan.get("native_base_url"), str)
+                and str(raw_plan.get("native_base_url")).strip()
+                else None
+            ),
+            model_override=(
+                str(raw_plan.get("model_override")).strip()
+                if isinstance(raw_plan.get("model_override"), str)
+                and str(raw_plan.get("model_override")).strip()
+                else None
+            ),
+            unsupported_family=(
+                str(raw_plan.get("unsupported_family")).strip()
+                if isinstance(raw_plan.get("unsupported_family"), str)
+                and str(raw_plan.get("unsupported_family")).strip()
+                else None
+            ),
+            supported_families=supported_families,
+            route_reason=(
+                str(raw_plan.get("route_reason")).strip()
+                if isinstance(raw_plan.get("route_reason"), str)
+                and str(raw_plan.get("route_reason")).strip()
+                else None
+            ),
+            metadata=dict(metadata),
+        )
     provider_id = str(getattr(inspection, "provider_id", "") or metadata.get("providerId") or "")
     unsupported_family = None
     if metadata.get("unsupportedFamily"):
@@ -352,75 +424,101 @@ def _context_upstream_plan(
     normalized_provider = normalize_provider_id(provider_id)
     metadata: dict[str, Any] = {"providerId": normalized_provider}
     if client_name == CLIENT_OPENCLAW:
+        upstream_base_url = _openclaw_preserved_upstream_base_url(normalized_provider, env)
         if normalized_provider == PROVIDER_OPENAI_CODEX:
-            return ResolvedUpstreamPlan(
+            plan = ResolvedUpstreamPlan(
                 provider_id=normalized_provider,
                 transport_kind=TRANSPORT_CODEX_NATIVE,
                 api_family="openai-codex-responses",
+                upstream_base_url=upstream_base_url,
                 unsupported_family="openai-codex-responses",
                 supported_families=tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES)),
-                metadata={
-                    **metadata,
+            )
+            metadata.update(
+                {
                     "apiFamily": "openai-codex-responses",
                     "unsupportedFamily": True,
                     "supportedFamilies": sorted(OPENCLAW_SUPPORTED_API_FAMILIES),
-                },
+                    **(
+                        {"upstreamBaseUrl": upstream_base_url}
+                        if upstream_base_url
+                        else {}
+                    ),
+                    "upstreamPlan": _serialize_upstream_plan(plan),
+                }
             )
+            return ResolvedUpstreamPlan(**{**plan.__dict__, "metadata": metadata})
         api_family = _openclaw_current_api_family(normalized_provider, env)
-        upstream_base_url = _openclaw_preserved_upstream_base_url(normalized_provider, env)
         if upstream_base_url:
             metadata["upstreamBaseUrl"] = upstream_base_url
-        if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
-            return ResolvedUpstreamPlan(
-                provider_id=normalized_provider,
-                transport_kind=_default_transport_kind(normalized_provider),
-                api_family=api_family,
-                upstream_base_url=upstream_base_url,
-                unsupported_family=api_family,
-                supported_families=tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES)),
-                metadata=metadata,
-            )
-        return ResolvedUpstreamPlan(
+        plan = ResolvedUpstreamPlan(
             provider_id=normalized_provider,
             transport_kind=_default_transport_kind(normalized_provider),
             api_family=api_family,
             upstream_base_url=upstream_base_url,
-            metadata=metadata,
+            unsupported_family=(
+                api_family
+                if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES
+                else None
+            ),
+            supported_families=(
+                tuple(sorted(OPENCLAW_SUPPORTED_API_FAMILIES))
+                if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES
+                else ()
+            ),
         )
+        metadata["upstreamPlan"] = _serialize_upstream_plan(plan)
+        if api_family not in OPENCLAW_SUPPORTED_API_FAMILIES:
+            return ResolvedUpstreamPlan(**{**plan.__dict__, "metadata": metadata})
+        return ResolvedUpstreamPlan(**{**plan.__dict__, "metadata": metadata})
 
     if normalized_provider == PROVIDER_OPENAI_CODEX:
         native_base_url = _codex_native_base_url(env)
         metadata["nativeBaseUrl"] = native_base_url
-        return ResolvedUpstreamPlan(
+        plan = ResolvedUpstreamPlan(
             provider_id=normalized_provider,
             transport_kind=TRANSPORT_CODEX_NATIVE,
             api_family="openai-codex-responses",
             native_base_url=native_base_url,
-            metadata=metadata,
         )
+        metadata["upstreamPlan"] = _serialize_upstream_plan(plan)
+        return ResolvedUpstreamPlan(**{**plan.__dict__, "metadata": metadata})
 
     if client_name == CLIENT_OPENCODE:
-        upstream_base_url = _opencode_preserved_upstream_base_url(normalized_provider, env)
-        if upstream_base_url:
-            metadata["upstreamBaseUrl"] = upstream_base_url
-        return ResolvedUpstreamPlan(
+        config_payload = _read_json_object(_opencode_config_path(env)) or {}
+        preserved_upstream_base_url = _opencode_preserved_upstream_base_url(
+            normalized_provider,
+            env,
+            payload=config_payload,
+        )
+        route_policy: OpenCodeRoutePolicy = resolve_opencode_route_policy(
+            config=config_payload,
+            auth_store=_opencode_auth_store(env),
+            default_upstream_base_url=preserved_upstream_base_url,
+        )
+        if route_policy.upstream_base_url:
+            metadata["upstreamBaseUrl"] = route_policy.upstream_base_url
+        plan = ResolvedUpstreamPlan(
             provider_id=normalized_provider,
             transport_kind=TRANSPORT_OPENAI_COMPAT,
             api_family=_default_api_family(normalized_provider),
-            upstream_base_url=upstream_base_url,
-            metadata=metadata,
+            upstream_base_url=route_policy.upstream_base_url,
+            route_reason=route_policy.reason,
         )
+        metadata["upstreamPlan"] = _serialize_upstream_plan(plan)
+        return ResolvedUpstreamPlan(**{**plan.__dict__, "metadata": metadata})
 
     if normalized_provider == PROVIDER_OPENAI:
         metadata["upstreamBaseUrl"] = OPENAI_COMPAT_BASE_URL
 
-    return ResolvedUpstreamPlan(
+    plan = ResolvedUpstreamPlan(
         provider_id=normalized_provider,
         transport_kind=_default_transport_kind(normalized_provider),
         api_family=_default_api_family(normalized_provider),
         upstream_base_url=metadata.get("upstreamBaseUrl"),
-        metadata=metadata,
     )
+    metadata["upstreamPlan"] = _serialize_upstream_plan(plan)
+    return ResolvedUpstreamPlan(**{**plan.__dict__, "metadata": metadata})
 
 
 @dataclass(frozen=True)
@@ -816,12 +914,18 @@ def _inspect_opencode_provider(
         )
 
     provider_obj = _opencode_provider_object(payload, selected_provider)
-    upstream_base_url = _opencode_preserved_upstream_base_url(
+    preserved_upstream_base_url = _opencode_preserved_upstream_base_url(
         selected_provider,
         env,
         payload=payload,
         provider_obj=provider_obj,
     )
+    route_policy: OpenCodeRoutePolicy = resolve_opencode_route_policy(
+        config=payload,
+        auth_store=_opencode_auth_store(env),
+        default_upstream_base_url=preserved_upstream_base_url,
+    )
+    upstream_base_url = route_policy.upstream_base_url
     base_metadata = {
         "providerId": selected_provider,
         "configPath": str(_opencode_config_path(env)),
@@ -842,11 +946,7 @@ def _inspect_opencode_provider(
     auth_store_path = _opencode_auth_store_path(env)
     auth_store = _opencode_auth_store(env)
     auth_entry = auth_store.get(selected_provider)
-    if (
-        normalize_provider_id(selected_provider) == PROVIDER_OPENAI
-        and isinstance(auth_entry, dict)
-        and str(auth_entry.get("type") or "").strip() == AUTH_KIND_OAUTH
-    ):
+    if not route_policy.supported:
         metadata = dict(base_metadata)
         metadata.update(
             {
@@ -855,6 +955,8 @@ def _inspect_opencode_provider(
                 "unsupportedTransport": True,
             }
         )
+        if route_policy.auth_type:
+            metadata["authType"] = route_policy.auth_type
         return _missing(
             selected_provider,
             strategy="unsupported_transport",
@@ -995,20 +1097,7 @@ def _openclaw_route_provider_metadata(
     env: Mapping[str, str],
     provider_id: str,
 ) -> dict[str, Any]:
-    payload = _openclaw_route_metadata(env)
-    providers = payload.get("providers")
-    normalized_provider = normalize_provider_id(provider_id)
-    if isinstance(providers, dict):
-        entry = providers.get(normalized_provider)
-        if isinstance(entry, dict):
-            return entry
-        for candidate in providers.values():
-            if not isinstance(candidate, dict):
-                continue
-            candidate_provider = normalize_provider_id(candidate.get("providerId"))
-            if candidate_provider == normalized_provider:
-                return candidate
-    return {}
+    return _policy_route_metadata_entry(_openclaw_route_metadata(env), provider_id)
 
 
 def _openclaw_models_cache_providers(env: Mapping[str, str]) -> dict[str, Any]:
@@ -1055,9 +1144,9 @@ def _openclaw_current_api_family(
     env: Mapping[str, str],
 ) -> str | None:
     metadata = _openclaw_route_provider_metadata(env, provider_id)
-    api_family = metadata.get("apiFamily")
-    if isinstance(api_family, str) and api_family.strip():
-        return api_family.strip().lower()
+    api_family = resolve_openclaw_api_family(provider_id, metadata)
+    if api_family:
+        return api_family
     config_payload = _read_json_object(_openclaw_state_dir(env) / "openclaw.json")
     providers = None
     if isinstance(config_payload, dict):
@@ -1067,24 +1156,17 @@ def _openclaw_current_api_family(
         for candidate_key, candidate_value in providers.items():
             if normalize_provider_id(candidate_key) != normalize_provider_id(provider_id):
                 continue
-            if isinstance(candidate_value, dict):
-                api_family = candidate_value.get("api")
-                if isinstance(api_family, str) and api_family.strip():
-                    return api_family.strip().lower()
+            api_family = resolve_openclaw_api_family(provider_id, candidate_value)
+            if api_family:
+                return api_family
     models_cache_providers = _openclaw_models_cache_providers(env)
     if isinstance(models_cache_providers, dict):
         for candidate_key, candidate_value in models_cache_providers.items():
             if normalize_provider_id(candidate_key) != normalize_provider_id(provider_id):
                 continue
-            if isinstance(candidate_value, dict):
-                api_family = candidate_value.get("api")
-                if isinstance(api_family, str) and api_family.strip():
-                    return api_family.strip().lower()
-    normalized_provider = normalize_provider_id(provider_id)
-    if normalized_provider == PROVIDER_ANTHROPIC:
-        return "anthropic-messages"
-    if normalized_provider == PROVIDER_OPENAI:
-        return "openai-completions"
+            api_family = resolve_openclaw_api_family(provider_id, candidate_value)
+            if api_family:
+                return api_family
     return None
 
 

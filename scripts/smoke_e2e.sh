@@ -36,6 +36,15 @@ run_live_claude=0
 live_agents_install_mode="repo"
 live_agents_install_target=""
 live_agents_keep_sandbox=0
+live_agents_opencode_provider=""
+live_agents_opencode_model=""
+live_agents_opencode_base_url=""
+live_agents_openclaw_families=""
+live_agents_openclaw_openai_provider=""
+live_agents_openclaw_openai_model=""
+live_agents_openclaw_anthropic_provider=""
+live_agents_openclaw_anthropic_model=""
+live_agents_openclaw_anthropic_base_url=""
 artifacts_root="${MODEIO_SMOKE_ARTIFACTS_DIR:-}"
 ARTIFACTS_DIR=""
 KEEP_ARTIFACTS=0
@@ -51,7 +60,7 @@ live_agent_matrix_status="not_run"
 
 usage() {
   cat <<'EOF' >&2
-Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH]
+Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-claude] [--install-mode MODE] [--install-target VALUE] [--keep-sandbox] [--artifacts-dir PATH] [--opencode-provider ID --opencode-model MODEL --opencode-base-url URL] [--openclaw-families LIST] [--openclaw-openai-provider ID --openclaw-openai-model MODEL] [--openclaw-anthropic-provider ID --openclaw-anthropic-model MODEL --openclaw-anthropic-base-url URL]
 
   --live                Deprecated generic gateway smoke; currently reported as skipped
   --live-agents         Run both live agent paths: OpenAI-compatible clients and Claude hooks
@@ -61,6 +70,15 @@ Usage: smoke_e2e.sh [--live] [--live-agents] [--live-openai-agents] [--live-clau
   --install-target VAL  Optional wheel/path/git target used with --install-mode
   --keep-sandbox        Keep the live-agent temp HOME/XDG sandbox for debugging
   --artifacts-dir PATH  Persist logs and JSON outputs under PATH/<timestamp-pid>/
+  --opencode-provider   Force a supported OpenCode provider in the sandbox for live smoke
+  --opencode-model      Exact provider/model used with --opencode-provider
+  --opencode-base-url   Exact upstream base URL used with --opencode-provider
+  --openclaw-families   OpenClaw family selection: current or explicit supported families
+  --openclaw-openai-provider   Exact OpenClaw provider id used for openai-completions live smoke
+  --openclaw-openai-model      Exact OpenClaw provider/model ref used for openai-completions
+  --openclaw-anthropic-provider   Exact OpenClaw provider id used for anthropic-messages live smoke
+  --openclaw-anthropic-model      Exact OpenClaw provider/model ref used for anthropic-messages
+  --openclaw-anthropic-base-url   Exact upstream base URL used with --openclaw-anthropic-provider
 EOF
 }
 
@@ -97,6 +115,78 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep-sandbox)
       live_agents_keep_sandbox=1
+      ;;
+    --opencode-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_opencode_provider="$2"
+      shift
+      ;;
+    --opencode-model)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_opencode_model="$2"
+      shift
+      ;;
+    --opencode-base-url)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_opencode_base_url="$2"
+      shift
+      ;;
+    --openclaw-families)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_families="$2"
+      shift
+      ;;
+    --openclaw-openai-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_openai_provider="$2"
+      shift
+      ;;
+    --openclaw-openai-model)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_openai_model="$2"
+      shift
+      ;;
+    --openclaw-anthropic-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_anthropic_provider="$2"
+      shift
+      ;;
+    --openclaw-anthropic-model)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_anthropic_model="$2"
+      shift
+      ;;
+    --openclaw-anthropic-base-url)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      live_agents_openclaw_anthropic_base_url="$2"
+      shift
       ;;
     --artifacts-dir)
       if [[ $# -lt 2 ]]; then
@@ -733,6 +823,34 @@ run_live_agent_matrix_smoke() {
 
   if [[ -n "$live_agents_install_target" ]]; then
     smoke_args+=(--install-target "$live_agents_install_target")
+  fi
+
+  if [[ -n "$live_agents_opencode_provider" ]]; then
+    smoke_args+=(--opencode-provider "$live_agents_opencode_provider")
+  fi
+  if [[ -n "$live_agents_opencode_model" ]]; then
+    smoke_args+=(--opencode-model "$live_agents_opencode_model")
+  fi
+  if [[ -n "$live_agents_opencode_base_url" ]]; then
+    smoke_args+=(--opencode-base-url "$live_agents_opencode_base_url")
+  fi
+  if [[ -n "$live_agents_openclaw_families" ]]; then
+    smoke_args+=(--openclaw-families "$live_agents_openclaw_families")
+  fi
+  if [[ -n "$live_agents_openclaw_openai_provider" ]]; then
+    smoke_args+=(--openclaw-openai-provider "$live_agents_openclaw_openai_provider")
+  fi
+  if [[ -n "$live_agents_openclaw_openai_model" ]]; then
+    smoke_args+=(--openclaw-openai-model "$live_agents_openclaw_openai_model")
+  fi
+  if [[ -n "$live_agents_openclaw_anthropic_provider" ]]; then
+    smoke_args+=(--openclaw-anthropic-provider "$live_agents_openclaw_anthropic_provider")
+  fi
+  if [[ -n "$live_agents_openclaw_anthropic_model" ]]; then
+    smoke_args+=(--openclaw-anthropic-model "$live_agents_openclaw_anthropic_model")
+  fi
+  if [[ -n "$live_agents_openclaw_anthropic_base_url" ]]; then
+    smoke_args+=(--openclaw-anthropic-base-url "$live_agents_openclaw_anthropic_base_url")
   fi
 
   if [[ "$live_agents_keep_sandbox" -eq 1 ]]; then

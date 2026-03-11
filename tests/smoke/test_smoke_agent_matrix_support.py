@@ -25,9 +25,16 @@ from smoke_matrix.common import (  # noqa: E402
     default_upstream_model,
     parse_agents,
 )
+from tests.helpers.openclaw_builder import (  # noqa: E402
+    build_openclaw_config,
+    build_openclaw_models_cache,
+    build_openclaw_provider,
+    build_openclaw_route_metadata,
+)
 from smoke_matrix.sandbox import (  # noqa: E402
     build_sandbox_env,
     build_sandbox_paths,
+    configure_opencode_supported_provider,
     configure_openclaw_supported_family,
     resolve_codex_smoke_model,
     resolve_opencode_smoke_model,
@@ -107,7 +114,9 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
         self.assertEqual(args.claude_model, "sonnet")
         self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
         self.assertEqual(args.model, "gpt-4o-mini")
+        self.assertEqual(args.opencode_provider, "")
         self.assertEqual(args.opencode_model, "")
+        self.assertEqual(args.opencode_base_url, "")
         self.assertEqual(args.install_mode, "repo")
         self.assertEqual(args.install_target, "")
         self.assertEqual(args.openclaw_families, "current")
@@ -170,7 +179,9 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
 
         self.assertEqual(args.upstream_base_url, "https://api.openai.com/v1")
         self.assertEqual(args.model, "gpt-4o-mini")
+        self.assertEqual(args.opencode_provider, "")
         self.assertEqual(args.opencode_model, "")
+        self.assertEqual(args.opencode_base_url, "")
 
     def test_resolve_codex_smoke_model_returns_none_for_generic_default(self):
         import smoke_agent_matrix  # noqa: E402
@@ -224,7 +235,7 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
 
             self.assertEqual(resolved, "openai/gpt-5.4")
 
-    def test_resolve_opencode_smoke_model_falls_back_to_recent_state(self):
+    def test_resolve_opencode_smoke_model_raises_without_selected_config_model(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "opencode.json"
@@ -244,12 +255,55 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            resolved = resolve_opencode_smoke_model(
-                config_path=config_path,
-                state_path=state_path,
+            with self.assertRaises(ValueError):
+                resolve_opencode_smoke_model(
+                    config_path=config_path,
+                    state_path=state_path,
+                )
+
+    def test_configure_opencode_supported_provider_overrides_sandbox_selection(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "opencode.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "openai/gpt-5.4",
+                        "provider": {
+                            "openai": {
+                                "options": {
+                                    "baseURL": "https://api.openai.com/v1",
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
             )
 
-            self.assertEqual(resolved, "openai/gpt-5.4")
+            report = configure_opencode_supported_provider(
+                config_path=config_path,
+                provider_id="zenmux",
+                model_ref="zenmux/gpt-5.4",
+                base_url="https://zenmux.ai/api/v1",
+            )
+
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["providerId"], "zenmux")
+            self.assertTrue(report["routeMetadataChanged"])
+            self.assertEqual(payload["model"], "zenmux/gpt-5.4")
+            self.assertEqual(
+                payload["provider"]["zenmux"]["options"]["baseURL"],
+                "https://zenmux.ai/api/v1",
+            )
+            route_payload = json.loads(
+                config_path.with_name("opencode.json.modeio-route.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                route_payload["providers"]["zenmux"]["originalBaseUrl"],
+                "https://zenmux.ai/api/v1",
+            )
 
     def test_resolve_opencode_smoke_model_raises_when_state_missing(self):
         with TemporaryDirectory() as temp_dir:
@@ -278,55 +332,47 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             paths["openclaw_models_cache"].parent.mkdir(parents=True, exist_ok=True)
             paths["openclaw_config"].write_text(
                 json.dumps(
-                    {
-                        "agents": {
-                            "defaults": {
-                                "model": {"primary": "zenmux/gpt-5.3-codex"}
-                            }
+                    build_openclaw_config(
+                        primary="zenmux/gpt-5.3-codex",
+                        providers={
+                            "anthropic": build_openclaw_provider(
+                                api="anthropic-messages",
+                                base_url="https://api.anthropic.com",
+                                models=[
+                                    {
+                                        "id": "anthropic/claude-sonnet-4-6",
+                                        "name": "Claude Sonnet 4.6",
+                                    }
+                                ],
+                            )
                         },
-                        "models": {
-                            "providers": {
-                                "anthropic": {
-                                    "api": "anthropic-messages",
-                                    "baseUrl": "https://api.anthropic.com",
-                                    "models": [
-                                        {
-                                            "id": "anthropic/claude-sonnet-4-6",
-                                            "name": "Claude Sonnet 4.6",
-                                        }
-                                    ],
-                                }
-                            }
-                        }
-                    }
+                    )
                 ),
                 encoding="utf-8",
             )
             paths["openclaw_models_cache"].write_text(
                 json.dumps(
-                    {
-                        "models": {
-                            "providers": {
-                                "zenmux": {
-                                    "api": "openai-completions",
-                                    "baseUrl": "https://zenmux.ai/api/v1",
-                                    "models": [
-                                        {
-                                            "id": "openai/gpt-5.3-codex",
-                                            "name": "GPT 5.3 Codex",
-                                        }
-                                    ],
-                                },
-                            }
+                    build_openclaw_models_cache(
+                        providers={
+                            "zenmux": build_openclaw_provider(
+                                api="openai-completions",
+                                base_url="https://zenmux.ai/api/v1",
+                                models=[
+                                    {
+                                        "id": "openai/gpt-5.3-codex",
+                                        "name": "GPT 5.3 Codex",
+                                    }
+                                ],
+                            )
                         }
-                    }
+                    )
                 ),
                 encoding="utf-8",
             )
             paths["openclaw_config"].with_name("openclaw.json.modeio-route.json").write_text(
                 json.dumps(
-                    {
-                        "providers": {
+                    build_openclaw_route_metadata(
+                        {
                             "zenmux": {
                                 "providerId": "zenmux",
                                 "providerKey": "zenmux",
@@ -338,9 +384,9 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                                 "providerKey": "anthropic",
                                 "apiFamily": "anthropic-messages",
                                 "originalBaseUrl": "https://api.anthropic.com",
-                            }
+                            },
                         }
-                    }
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -350,16 +396,16 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
 
             self.assertEqual(len(scenarios), 1)
             scenario = scenarios[0]
-            self.assertEqual(scenario["family"], "openai-completions")
-            self.assertEqual(scenario["providerKey"], "zenmux")
-            self.assertEqual(scenario["modelRef"], "zenmux/gpt-5.3-codex")
+            self.assertEqual(scenario.family, "openai-completions")
+            self.assertEqual(scenario.provider_key, "zenmux")
+            self.assertEqual(scenario.model_ref, "zenmux/gpt-5.3-codex")
             self.assertEqual(
-                scenario["realBaseUrl"],
+                scenario.real_base_url,
                 "https://zenmux.ai/api/v1",
             )
-            self.assertEqual(scenario["source"], "current_primary")
+            self.assertEqual(scenario.source, "current_primary")
 
-    def test_resolve_openclaw_family_scenarios_skips_when_current_family_unsupported(self):
+    def test_resolve_openclaw_family_scenarios_errors_when_current_family_unsupported(self):
         with TemporaryDirectory() as temp_dir:
             paths = build_sandbox_paths(Path(temp_dir))
             paths["openclaw_config"].parent.mkdir(parents=True, exist_ok=True)
@@ -410,8 +456,8 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
 
             self.assertEqual(len(scenarios), 1)
             scenario = scenarios[0]
-            self.assertTrue(scenario["skipped"])
-            self.assertEqual(scenario["reason"], "unsupported_current_family")
+            self.assertTrue(scenario.error)
+            self.assertEqual(scenario.reason, "unsupported_current_family")
 
     def test_resolve_openclaw_family_scenarios_requires_current_primary_to_match_explicit_family(self):
         with TemporaryDirectory() as temp_dir:
@@ -459,8 +505,8 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
 
             self.assertEqual(len(scenarios), 1)
             scenario = scenarios[0]
-            self.assertTrue(scenario["error"])
-            self.assertEqual(scenario["reason"], "current_primary_family_mismatch")
+            self.assertTrue(scenario.error)
+            self.assertEqual(scenario.reason, "current_primary_family_mismatch")
 
     def test_configure_openclaw_supported_family_updates_config_and_cache(self):
         with TemporaryDirectory() as temp_dir:
@@ -472,11 +518,13 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
                 model_ref="anthropic/claude-sonnet-4-6",
                 api_family="anthropic-messages",
                 base_url="http://127.0.0.1:8787",
+                real_base_url="https://api.anthropic.com",
                 provider_fields={"authHeader": False},
             )
 
             self.assertTrue(result["configChanged"])
             self.assertTrue(result["modelsCacheChanged"])
+            self.assertTrue(result["routeMetadataChanged"])
 
             config_payload = json.loads(paths["openclaw_config"].read_text(encoding="utf-8"))
             self.assertEqual(
@@ -497,6 +545,18 @@ class TestSmokeAgentMatrixSupport(unittest.TestCase):
             self.assertEqual(cache_provider["api"], "anthropic-messages")
             self.assertEqual(cache_provider["authHeader"], False)
             self.assertEqual(cache_provider["models"][0]["id"], "claude-sonnet-4-6")
+
+            route_payload = json.loads(
+                paths["openclaw_config"]
+                .with_name("openclaw.json.modeio-route.json")
+                .read_text(encoding="utf-8")
+            )
+            route_entry = route_payload["providers"]["anthropic"]
+            self.assertEqual(route_entry["apiFamily"], "anthropic-messages")
+            self.assertEqual(route_entry["originalBaseUrl"], "https://api.anthropic.com")
+            self.assertEqual(
+                route_entry["originalModelsCacheBaseUrl"], "https://api.anthropic.com"
+            )
 
 
 if __name__ == "__main__":

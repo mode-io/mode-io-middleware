@@ -206,32 +206,84 @@ def resolve_opencode_smoke_model(
     config_path: Path,
     state_path: Path,
 ) -> str:
+    del state_path
     config_payload = _read_json_object(config_path)
     config_model = config_payload.get("model")
     if isinstance(config_model, str) and config_model.strip():
         return config_model.strip()
 
-    state_payload = _read_json_object(state_path)
-    recent = state_payload.get("recent")
-    if isinstance(recent, list):
-        for entry in recent:
-            if not isinstance(entry, dict):
-                continue
-            provider_id = entry.get("providerID")
-            model_id = entry.get("modelID")
-            if not isinstance(provider_id, str) or not provider_id.strip():
-                continue
-            if not isinstance(model_id, str) or not model_id.strip():
-                continue
-            normalized_provider = provider_id.strip()
-            normalized_model = model_id.strip()
-            if "/" in normalized_model:
-                return normalized_model
-            return f"{normalized_provider}/{normalized_model}"
-
     raise ValueError(
-        f"unable to determine OpenCode selected model from {config_path} or {state_path}"
+        f"unable to determine OpenCode selected model from {config_path}"
     )
+
+
+def configure_opencode_supported_provider(
+    *,
+    config_path: Path,
+    provider_id: str,
+    model_ref: str,
+    base_url: str,
+) -> Dict[str, object]:
+    normalized_provider = str(provider_id).strip()
+    normalized_model = str(model_ref).strip()
+    normalized_base_url = str(base_url).strip().rstrip("/")
+    if not normalized_provider:
+        raise ValueError("provider_id is required")
+    if not normalized_model:
+        raise ValueError("model_ref is required")
+    if not normalized_base_url:
+        raise ValueError("base_url is required")
+    if "/" not in normalized_model:
+        normalized_model = f"{normalized_provider}/{normalized_model}"
+
+    config_payload = _read_json_object(config_path)
+    provider_root = _ensure_object(config_payload.get("provider"))
+    provider_entry = _ensure_object(provider_root.get(normalized_provider))
+    options_obj = _ensure_object(provider_entry.get("options"))
+    changed = False
+
+    if config_payload.get("model") != normalized_model:
+        config_payload["model"] = normalized_model
+        changed = True
+    if options_obj.get("baseURL") != normalized_base_url:
+        options_obj["baseURL"] = normalized_base_url
+        changed = True
+
+    provider_entry["options"] = options_obj
+    provider_root[normalized_provider] = provider_entry
+    config_payload["provider"] = provider_root
+
+    if changed or not config_path.exists():
+        _write_json_object(config_path, config_payload)
+
+    route_metadata_path = config_path.with_name(f"{config_path.name}.modeio-route.json")
+    route_metadata = _read_json_object(route_metadata_path)
+    providers_obj = _ensure_object(route_metadata.get("providers"))
+    provider_metadata = _ensure_object(providers_obj.get(normalized_provider))
+    route_changed = False
+    desired_metadata = {
+        "providerId": normalized_provider,
+        "originalBaseUrl": normalized_base_url,
+        "routeMode": "preserve_provider",
+    }
+    for field_name, field_value in desired_metadata.items():
+        if provider_metadata.get(field_name) != field_value:
+            provider_metadata[field_name] = field_value
+            route_changed = True
+    providers_obj[normalized_provider] = provider_metadata
+    route_metadata["providers"] = providers_obj
+    if route_changed or not route_metadata_path.exists():
+        _write_json_object(route_metadata_path, route_metadata)
+
+    return {
+        "providerId": normalized_provider,
+        "modelRef": normalized_model,
+        "baseUrl": normalized_base_url,
+        "configPath": str(config_path),
+        "routeMetadataPath": str(route_metadata_path),
+        "changed": changed or not config_path.exists(),
+        "routeMetadataChanged": route_changed or not route_metadata_path.exists(),
+    }
 
 
 def _resolve_openclaw_cache_providers(
@@ -268,6 +320,7 @@ def configure_openclaw_supported_family(
     model_ref: str,
     api_family: str,
     base_url: str,
+    real_base_url: str | None = None,
     provider_fields: Dict[str, object] | None = None,
 ) -> Dict[str, object]:
     report = {
@@ -275,10 +328,12 @@ def configure_openclaw_supported_family(
         "modelRef": model_ref,
         "apiFamily": api_family,
         "baseUrl": base_url,
+        "realBaseUrl": real_base_url,
         "configPath": str(config_path),
         "modelsCachePath": str(models_cache_path),
         "configChanged": False,
         "modelsCacheChanged": False,
+        "routeMetadataChanged": False,
     }
     normalized_model_id = _normalized_openclaw_model_id(model_ref)
     extra_fields = dict(provider_fields or {})
@@ -350,6 +405,32 @@ def configure_openclaw_supported_family(
     if cache_changed or not models_cache_path.exists():
         _write_json_object(models_cache_path, cache_payload)
         report["modelsCacheChanged"] = True
+
+    normalized_real_base_url = str(real_base_url or "").strip().rstrip("/")
+    if normalized_real_base_url:
+        route_metadata_path = config_path.with_name(f"{config_path.name}.modeio-route.json")
+        route_metadata = _read_json_object(route_metadata_path)
+        providers_obj = _ensure_object(route_metadata.get("providers"))
+        provider_metadata = _ensure_object(providers_obj.get(provider_key))
+        route_changed = False
+        desired_fields = {
+            "providerId": provider_key,
+            "providerKey": provider_key,
+            "apiFamily": api_family,
+            "originalBaseUrl": normalized_real_base_url,
+            "originalModelsCacheBaseUrl": normalized_real_base_url,
+            "configApiPresent": True,
+            "modelsCacheApiPresent": True,
+        }
+        for field_name, field_value in desired_fields.items():
+            if provider_metadata.get(field_name) != field_value:
+                provider_metadata[field_name] = field_value
+                route_changed = True
+        providers_obj[provider_key] = provider_metadata
+        route_metadata["providers"] = providers_obj
+        if route_changed or not route_metadata_path.exists():
+            _write_json_object(route_metadata_path, route_metadata)
+            report["routeMetadataChanged"] = True
 
     return report
 

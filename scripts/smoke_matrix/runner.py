@@ -28,7 +28,9 @@ from smoke_matrix.common import (
     write_json as _write_json,
     write_text as _write_text,
 )
+from smoke_matrix.models import OpenClawFamilyScenario, SmokeAgentReport
 from smoke_matrix.openclaw_family import _slug_token_part
+from smoke_matrix.outcome import classify_agent_outcome
 from smoke_matrix.sandbox import (
     build_sandbox_env as _build_sandbox_env,
     configure_openclaw_supported_family as _configure_openclaw_supported_family,
@@ -243,6 +245,7 @@ def skipped_agent_report(
     agent: str,
     report_name: str,
     diagnostic: str,
+    product_ok: bool = False,
 ) -> Dict[str, object]:
     return {
         "name": agent,
@@ -261,9 +264,9 @@ def skipped_agent_report(
             "matchedPaths": [],
         },
         "diagnostic": diagnostic,
-        "ok": True,
+        "ok": False,
         "outcome": "skipped",
-        "productOk": True,
+        "productOk": product_ok,
     }
 
 
@@ -343,7 +346,6 @@ def run_agent_check(
         status = response_obj.get("status") if isinstance(response_obj, dict) else None
         if isinstance(status, int):
             upstream_statuses.append(status)
-    tap_kind = "claude_hook_tap" if agent == "claude" else "upstream_tap"
     transport_check_ok = (
         int(result["exitCode"]) == 0
         and int(tap_window["eventCount"]) >= 1
@@ -353,72 +355,43 @@ def run_agent_check(
             or bool(matched_paths)
         )
     )
-
-    diagnostic = None
-    outcome = "product_failed"
     stdout_text = str(result["stdout"])
     stderr_text = str(result["stderr"])
-    if agent == "codex":
-        if "Missing scopes: api.responses.write" in stdout_text or "Missing scopes: api.responses.write" in stderr_text:
-            diagnostic = "Codex native OAuth reaches upstream, but the current token lacks `api.responses.write`."
-            outcome = "external_blocked"
-        elif "refresh token was already used" in stderr_text:
-            diagnostic = "Codex auth store needs a fresh login before native middleware smoke can pass."
-            outcome = "warning"
-    elif agent == "opencode":
-        if "OpenAI API key is missing" in stdout_text:
-            diagnostic = "OpenCode is still on the `openai` provider but this sandbox has no reusable `OPENAI_API_KEY`."
-            outcome = "external_blocked"
-    elif agent == "openclaw":
-        route_label = (
-            "Anthropic Messages"
-            if expected_tap_path_fragment == "/v1/messages"
-            else "chat completions"
-        )
-        if 429 in upstream_statuses:
-            diagnostic = (
-                f"OpenClaw native bridge reaches upstream {route_label}, "
-                "but the current token/account is rate limited."
-            )
-            outcome = "external_blocked"
-        elif 401 in upstream_statuses:
-            diagnostic = (
-                f"OpenClaw native bridge reaches upstream {route_label}, "
-                "but the current auth is rejected for this route."
-            )
-            outcome = "external_blocked"
+    classified = classify_agent_outcome(
+        agent=agent,
+        exit_code=int(result["exitCode"]),
+        transport_check_ok=transport_check_ok,
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+        upstream_statuses=upstream_statuses,
+        expected_tap_path_fragment=expected_tap_path_fragment,
+    )
 
-    if transport_check_ok:
-        outcome = "passed"
-        diagnostic = None
-    elif diagnostic is None:
-        diagnostic = "Agent run did not produce the expected successful upstream traffic."
-
-    product_ok = outcome in {"passed", "warning", "external_blocked"}
-
-    return {
-        "name": agent,
-        "reportName": report_name or agent,
-        "token": token,
-        "command": command,
-        "exitCode": result["exitCode"],
-        "timedOut": result["timedOut"],
-        "durationMs": result["durationMs"],
-        "stdoutPath": str(stdout_path),
-        "stderrPath": str(stderr_path),
-        "tokenInOutput": token in output_text,
-        "tapKind": tap_kind,
-        "tap": {
+    return SmokeAgentReport(
+        name=agent,
+        report_name=report_name or agent,
+        exit_code=int(result["exitCode"]),
+        timed_out=bool(result["timedOut"]),
+        duration_ms=int(result["durationMs"]),
+        stdout_path=str(stdout_path),
+        stderr_path=str(stderr_path),
+        token_in_output=token in output_text,
+        tap_kind=classified.tap_kind,
+        tap={
             "window": tap_window,
             "token": tap_token,
             "upstreamStatuses": upstream_statuses,
             "matchedPaths": matched_paths,
         },
-        "diagnostic": diagnostic,
-        "ok": transport_check_ok,
-        "outcome": outcome,
-        "productOk": product_ok,
-    }
+        diagnostic=classified.diagnostic,
+        ok=transport_check_ok,
+        outcome=classified.outcome,
+        product_ok=classified.product_ok,
+        extras={
+            "token": token,
+            "command": command,
+        },
+    ).to_dict()
 
 
 def run_openclaw_family_checks(
@@ -433,51 +406,51 @@ def run_openclaw_family_checks(
     run_id: str,
     timeout_seconds: int,
     gateway_host: str,
-    scenarios: Sequence[Dict[str, object]],
+    scenarios: Sequence[OpenClawFamilyScenario],
 ) -> List[Dict[str, object]]:
     reports: List[Dict[str, object]] = []
     for index, scenario in enumerate(scenarios, start=1):
-        if bool(scenario.get("skipped")):
+        if scenario.skipped:
             reports.append(
                 {
                     "name": "openclaw",
-                    "reportName": str(scenario.get("name") or f"openclaw:{index}"),
-                    "family": scenario.get("family"),
+                    "reportName": scenario.name or f"openclaw:{index}",
+                    "family": scenario.family,
                     "ok": True,
                     "outcome": "skipped",
                     "productOk": True,
                     "diagnostic": str(
-                        scenario.get("reason") or "OpenClaw current state is unsupported for middleware smoke"
+                        scenario.reason or "OpenClaw current state is unsupported for middleware smoke"
                     ),
                     "tap": {"window": {"eventCount": 0, "successCount": 0, "paths": []}},
                 }
             )
             continue
-        if bool(scenario.get("error")):
+        if scenario.error:
             reports.append(
                 {
                     "name": "openclaw",
-                    "reportName": str(scenario.get("name") or f"openclaw:{index}"),
-                    "family": scenario.get("family"),
+                    "reportName": scenario.name or f"openclaw:{index}",
+                    "family": scenario.family,
                     "ok": False,
                     "outcome": "product_failed",
                     "productOk": False,
                     "diagnostic": str(
-                        scenario.get("reason") or "OpenClaw family scenario is unresolved"
+                        scenario.reason or "OpenClaw family scenario is unresolved"
                     ),
                     "tap": {"window": {"eventCount": 0, "successCount": 0, "paths": []}},
                 }
             )
             continue
 
-        family = str(scenario.get("family") or "")
-        provider_key = str(scenario.get("providerKey") or "")
-        real_base_url = str(scenario.get("realBaseUrl") or "").strip()
+        family = str(scenario.family or "")
+        provider_key = str(scenario.provider_key or "")
+        real_base_url = str(scenario.real_base_url or "").strip()
         if not provider_key or not real_base_url:
             reports.append(
                 {
                     "name": "openclaw",
-                    "reportName": str(scenario.get("name") or f"openclaw:{index}"),
+                    "reportName": scenario.name or f"openclaw:{index}",
                     "family": family,
                     "ok": False,
                     "outcome": "product_failed",
@@ -488,7 +461,7 @@ def run_openclaw_family_checks(
             )
             continue
 
-        family_slug = _slug_token_part(str(scenario.get("name") or family))
+        family_slug = _slug_token_part(str(scenario.name or family))
         tap_jsonl_path = run_dir / f"{family_slug}-tap-exchanges.jsonl"
         tap_stdout_path = run_dir / f"{family_slug}-tap.log"
         tap_port = _free_port()
@@ -531,10 +504,11 @@ def run_openclaw_family_checks(
                 config_path=openclaw_config_path,
                 models_cache_path=openclaw_models_cache_path,
                 provider_key=provider_key,
-                model_ref=str(scenario.get("modelRef") or ""),
+                model_ref=str(scenario.model_ref or ""),
                 api_family=family,
                 base_url=family_base_url,
-                provider_fields=dict(scenario.get("providerFields") or {}),
+                real_base_url=family_base_url,
+                provider_fields=dict(scenario.provider_fields or {}),
             )
             scenario_patch_path = run_dir / f"{family_slug}-scenario.json"
             _write_json(scenario_patch_path, scenario_patch)
@@ -564,8 +538,8 @@ def run_openclaw_family_checks(
                 agent="openclaw",
                 index=index,
                 run_id=run_id,
-                report_name=str(scenario.get("name") or f"openclaw:{family}"),
-                model=str(scenario.get("modelRef") or ""),
+                report_name=str(scenario.name or f"openclaw:{family}"),
+                model=str(scenario.model_ref or ""),
                 claude_model="",
                 repo_root=repo_root,
                 run_dir=run_dir,
@@ -574,13 +548,13 @@ def run_openclaw_family_checks(
                 claude_settings_path=None,
                 tap_jsonl_path=tap_jsonl_path,
                 expected_tap_path_fragment=str(
-                    scenario.get("expectedTapPathFragment") or ""
+                    scenario.expected_tap_path_fragment or ""
                 )
                 or None,
             )
             agent_report["family"] = family
             agent_report["providerKey"] = provider_key
-            agent_report["modelRef"] = scenario.get("modelRef")
+            agent_report["modelRef"] = scenario.model_ref
             agent_report["realBaseUrl"] = real_base_url
             agent_report["tap"]["logPath"] = str(tap_jsonl_path)
             agent_report["tap"]["stdoutPath"] = str(tap_stdout_path)
@@ -591,10 +565,10 @@ def run_openclaw_family_checks(
             reports.append(
                 {
                     "name": "openclaw",
-                    "reportName": str(scenario.get("name") or f"openclaw:{family}"),
+                    "reportName": str(scenario.name or f"openclaw:{family}"),
                     "family": family,
                     "providerKey": provider_key,
-                    "modelRef": scenario.get("modelRef"),
+                    "modelRef": scenario.model_ref,
                     "realBaseUrl": real_base_url,
                     "ok": False,
                     "outcome": "product_failed",

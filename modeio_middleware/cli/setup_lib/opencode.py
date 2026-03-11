@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from modeio_middleware.cli.setup_lib.common import (
-    build_client_gateway_base_url,
     SetupError,
     detect_os_name,
     ensure_object,
@@ -17,10 +16,15 @@ from modeio_middleware.cli.setup_lib.common import (
     utc_timestamp,
     write_json_file,
 )
+from modeio_middleware.core.provider_policy import (
+    OpenCodeRoutePolicy,
+    build_client_gateway_base_url,
+    provider_base_url as _policy_provider_base_url,
+    resolve_opencode_route_policy,
+)
 
 OPENAI_UPSTREAM_BASE_URL = "https://api.openai.com/v1"
 OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER = "preserve_provider"
-OPENCODE_UNSUPPORTED_OAUTH_PROVIDER_IDS = frozenset({"openai"})
 
 
 def default_opencode_config_path(
@@ -122,52 +126,33 @@ def _opencode_route_support(
     env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     resolved_env = _env_mapping(env)
-    provider_id = current_opencode_provider_id(config)
-    if not provider_id:
-        return {
-            "providerId": None,
-            "routeMode": OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER,
-            "supported": False,
-            "reason": "missing_active_provider",
-            "configPath": str(config_path),
-        }
-    normalized_provider = _normalize_provider_id(provider_id)
+    provider_id = current_opencode_provider_id(config) or ""
+    preserved_upstream_base_url, _ = _resolve_preserved_upstream_base_url(
+        config,
+        config_path=config_path,
+        provider_id=provider_id,
+    )
+    route_policy: OpenCodeRoutePolicy = resolve_opencode_route_policy(
+        config=config,
+        auth_store=_opencode_auth_store(resolved_env),
+        default_upstream_base_url=preserved_upstream_base_url,
+    )
     payload: Dict[str, Any] = {
-        "providerId": provider_id,
-        "routeMode": OPENCODE_ROUTE_MODE_PRESERVE_PROVIDER,
-        "supported": True,
+        "providerId": route_policy.provider_id,
+        "routeMode": route_policy.route_mode,
+        "supported": route_policy.supported,
+        "reason": route_policy.reason,
+        "configPath": str(config_path),
     }
     auth_store_path = _opencode_auth_store_path(resolved_env)
-    auth_entry = _opencode_auth_store(resolved_env).get(normalized_provider)
-    if (
-        normalized_provider in OPENCODE_UNSUPPORTED_OAUTH_PROVIDER_IDS
-        and isinstance(auth_entry, dict)
-        and str(auth_entry.get("type") or "").strip() == "oauth"
-    ):
-        payload.update(
-            {
-                "supported": False,
-                "reason": "provider_uses_internal_oauth_transport",
-                "configPath": str(config_path),
-                "authStorePath": str(auth_store_path),
-                "authType": "oauth",
-            }
-        )
+    if route_policy.auth_type:
+        payload["authStorePath"] = str(auth_store_path)
+        payload["authType"] = route_policy.auth_type
     return payload
 
 
 def _provider_base_url(provider_obj: Dict[str, Any]) -> str | None:
-    options_obj = provider_obj.get("options")
-    if isinstance(options_obj, dict):
-        for field_name in ("baseURL", "baseUrl"):
-            value = options_obj.get(field_name)
-            if isinstance(value, str) and value.strip():
-                return value.strip().rstrip("/")
-    for field_name in ("baseURL", "baseUrl"):
-        value = provider_obj.get(field_name)
-        if isinstance(value, str) and value.strip():
-            return value.strip().rstrip("/")
-    return None
+    return _policy_provider_base_url(provider_obj)
 
 
 def _default_upstream_base_url(provider_id: str) -> str | None:

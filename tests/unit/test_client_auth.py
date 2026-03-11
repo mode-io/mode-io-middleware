@@ -23,6 +23,10 @@ from modeio_middleware.core.client_auth import (  # noqa: E402
     inspect_openclaw_native_auth,
     resolve_client_upstream_authorization,
 )
+from tests.helpers.openclaw_builder import (  # noqa: E402
+    build_openclaw_config,
+    build_openclaw_provider,
+)
 from modeio_middleware.core.provider_auth import (  # noqa: E402
     CredentialResolver,
     OpenClawSelectionResolver,
@@ -31,6 +35,30 @@ from modeio_middleware.core.provider_auth import (  # noqa: E402
 
 
 class TestClientAuth(unittest.TestCase):
+    def _write_openclaw_selected_provider(
+        self,
+        *,
+        state_dir: Path,
+        primary: str,
+        provider_key: str,
+        api_family: str,
+        base_url: str,
+    ) -> None:
+        (state_dir / "openclaw.json").write_text(
+            json.dumps(
+                build_openclaw_config(
+                    primary=primary,
+                    providers={
+                        provider_key: build_openclaw_provider(
+                            api=api_family,
+                            base_url=base_url,
+                        )
+                    },
+                )
+            ),
+            encoding="utf-8",
+        )
+
     def test_resolver_defaults_codex_to_openai_codex_provider(self):
         resolver = CredentialResolver()
         provider_id = resolver.resolve_provider_id(client_name=CLIENT_CODEX)
@@ -97,8 +125,16 @@ class TestClientAuth(unittest.TestCase):
 
     def test_openclaw_bridge_overrides_placeholder_auth(self):
         with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
             agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
             agent_dir.mkdir(parents=True)
+            self._write_openclaw_selected_provider(
+                state_dir=state_dir,
+                primary="openai/gpt-4.1",
+                provider_key="openai",
+                api_family="openai-completions",
+                base_url="https://api.openai.com/v1",
+            )
             (agent_dir / "auth-profiles.json").write_text(
                 json.dumps(
                     {
@@ -393,8 +429,16 @@ class TestClientAuth(unittest.TestCase):
 
     def test_openclaw_inspection_uses_profile_store(self):
         with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
             agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
             agent_dir.mkdir(parents=True)
+            self._write_openclaw_selected_provider(
+                state_dir=state_dir,
+                primary="openai/gpt-4.1",
+                provider_key="openai",
+                api_family="openai-completions",
+                base_url="https://api.openai.com/v1",
+            )
             (agent_dir / "auth-profiles.json").write_text(
                 json.dumps(
                     {
@@ -536,8 +580,16 @@ class TestClientAuth(unittest.TestCase):
 
     def test_openclaw_anthropic_inspection_uses_anthropic_family(self):
         with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
             agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
             agent_dir.mkdir(parents=True)
+            self._write_openclaw_selected_provider(
+                state_dir=state_dir,
+                primary="anthropic/claude-3-7-sonnet",
+                provider_key="anthropic",
+                api_family="anthropic-messages",
+                base_url="https://api.anthropic.com",
+            )
             (agent_dir / "auth-profiles.json").write_text(
                 json.dumps(
                     {
@@ -565,8 +617,16 @@ class TestClientAuth(unittest.TestCase):
     def test_openclaw_anthropic_oauth_token_preserves_bearer_auth(self):
         resolver = CredentialResolver()
         with TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / ".openclaw"
             agent_dir = Path(temp_dir) / ".openclaw" / "agents" / "main" / "agent"
             agent_dir.mkdir(parents=True)
+            self._write_openclaw_selected_provider(
+                state_dir=state_dir,
+                primary="anthropic/claude-3-7-sonnet",
+                provider_key="anthropic",
+                api_family="anthropic-messages",
+                base_url="https://api.anthropic.com",
+            )
             (agent_dir / "auth-profiles.json").write_text(
                 json.dumps(
                     {

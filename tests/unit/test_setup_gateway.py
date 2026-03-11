@@ -16,6 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = REPO_ROOT
 sys.path.insert(0, str(PACKAGE_DIR))
 
+from tests.helpers.openclaw_builder import (  # noqa: E402
+    build_openclaw_config,
+    build_openclaw_models_cache,
+    build_openclaw_provider,
+)
+
 from modeio_middleware.cli import setup as setup_gateway  # noqa: E402
 from modeio_middleware.cli.setup_lib.claude import (  # noqa: E402
     apply_claude_settings_file,
@@ -320,6 +326,58 @@ class TestSetupGateway(unittest.TestCase):
         self.assertFalse(result["supported"])
         self.assertEqual(result["reason"], "missing_upstream_base_url")
 
+    def test_apply_opencode_config_file_accepts_preserved_loopback_via_route_metadata(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "opencode.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "model": "opencode/gpt-5.4",
+                        "provider": {
+                            "opencode": {
+                                "options": {
+                                    "baseURL": "http://127.0.0.1:9999",
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            path.with_name("opencode.json.modeio-route.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "opencode": {
+                                "providerId": "opencode",
+                                "originalBaseUrl": "http://127.0.0.1:9999",
+                                "hadExplicitBaseUrl": True,
+                                "routeMode": "preserve_provider",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            auth_store = Path(temp_dir) / ".local" / "share" / "opencode" / "auth.json"
+            auth_store.parent.mkdir(parents=True, exist_ok=True)
+            auth_store.write_text(
+                json.dumps({"opencode": {"type": "api", "key": "sk-opencode-test"}}),
+                encoding="utf-8",
+            )
+
+            result = apply_opencode_config_file(
+                config_path=path,
+                gateway_base_url="http://127.0.0.1:8787/v1",
+                create_if_missing=False,
+                env={"HOME": temp_dir},
+            )
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["supported"])
+        self.assertEqual(result["providerId"], "opencode")
+        self.assertEqual(result["originalBaseUrl"], "http://127.0.0.1:9999")
+
     def test_apply_opencode_config_file_requires_active_provider(self):
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "opencode.json"
@@ -367,17 +425,15 @@ class TestSetupGateway(unittest.TestCase):
         self.assertEqual(path, Path("/tmp/custom/agents/main/agent/models.json"))
 
     def test_apply_openclaw_provider_route_preserves_provider_context_by_default(self):
-        source = {
-            "agents": {"defaults": {"model": {"primary": "openai/gpt-4.1"}}},
-            "models": {
-                "providers": {
-                    "openai": {
-                        "api": "openai-completions",
-                        "baseUrl": "https://api.openai.com/v1",
-                    }
-                }
+        source = build_openclaw_config(
+            primary="openai/gpt-4.1",
+            providers={
+                "openai": build_openclaw_provider(
+                    api="openai-completions",
+                    base_url="https://api.openai.com/v1",
+                )
             },
-        }
+        )
         updated, changed = apply_openclaw_provider_route(
             source,
             "http://127.0.0.1:8787/v1",
@@ -399,17 +455,15 @@ class TestSetupGateway(unittest.TestCase):
             path = Path(temp_dir) / "openclaw.json"
             path.write_text(
                 json.dumps(
-                    {
-                        "agents": {"defaults": {"model": {"primary": "openai/gpt-4.1"}}},
-                        "models": {
-                            "providers": {
-                                "openai": {
-                                    "api": "openai-completions",
-                                    "baseUrl": "https://api.openai.com/v1",
-                                }
-                            }
+                    build_openclaw_config(
+                        primary="openai/gpt-4.1",
+                        providers={
+                            "openai": build_openclaw_provider(
+                                api="openai-completions",
+                                base_url="https://api.openai.com/v1",
+                            )
                         },
-                    }
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -440,17 +494,15 @@ class TestSetupGateway(unittest.TestCase):
             config_path = Path(temp_dir) / "openclaw.json"
             config_path.write_text(
                 json.dumps(
-                    {
-                        "agents": {"defaults": {"model": {"primary": "openai/gpt-4.1"}}},
-                        "models": {
-                            "providers": {
-                                "openai": {
-                                    "api": "openai-completions",
-                                    "baseUrl": "https://api.openai.com/v1",
-                                }
-                            }
+                    build_openclaw_config(
+                        primary="openai/gpt-4.1",
+                        providers={
+                            "openai": build_openclaw_provider(
+                                api="openai-completions",
+                                base_url="https://api.openai.com/v1",
+                            )
                         },
-                    }
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -458,17 +510,15 @@ class TestSetupGateway(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(
-                    {
-                        "models": {
-                            "providers": {
-                                "openai": {
-                                    "api": "openai-completions",
-                                    "baseUrl": "https://api.openai.com/v1",
-                                    "models": [{"id": "gpt-4.1"}],
-                                }
-                            }
+                    build_openclaw_models_cache(
+                        providers={
+                            "openai": build_openclaw_provider(
+                                api="openai-completions",
+                                base_url="https://api.openai.com/v1",
+                                models=[{"id": "gpt-4.1"}],
+                            )
                         }
-                    }
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -496,17 +546,15 @@ class TestSetupGateway(unittest.TestCase):
             self.assertEqual(payload["models"]["providers"], {})
 
     def test_apply_openclaw_provider_route_native_mode_preserves_provider_context(self):
-        source = {
-            "agents": {"defaults": {"model": {"primary": "openai/gpt-4.1"}}},
-            "models": {
-                "providers": {
-                    "openai": {
-                        "api": "openai-completions",
-                        "baseUrl": "https://api.openai.com/v1",
-                    }
-                }
+        source = build_openclaw_config(
+            primary="openai/gpt-4.1",
+            providers={
+                "openai": build_openclaw_provider(
+                    api="openai-completions",
+                    base_url="https://api.openai.com/v1",
+                )
             },
-        }
+        )
         updated, changed = apply_openclaw_provider_route(
             source,
             "http://127.0.0.1:8787/v1",
@@ -524,17 +572,15 @@ class TestSetupGateway(unittest.TestCase):
         self.assertNotIn("modeio-middleware", updated["models"]["providers"])
 
     def test_apply_openclaw_provider_route_native_mode_preserves_anthropic_provider_context(self):
-        source = {
-            "agents": {"defaults": {"model": {"primary": "anthropic/claude-sonnet-4"}}},
-            "models": {
-                "providers": {
-                    "anthropic": {
-                        "api": "anthropic-messages",
-                        "baseUrl": "https://api.anthropic.com",
-                    }
-                }
+        source = build_openclaw_config(
+            primary="anthropic/claude-sonnet-4",
+            providers={
+                "anthropic": build_openclaw_provider(
+                    api="anthropic-messages",
+                    base_url="https://api.anthropic.com",
+                )
             },
-        }
+        )
         updated, changed = apply_openclaw_provider_route(
             source,
             "http://127.0.0.1:8787/v1",

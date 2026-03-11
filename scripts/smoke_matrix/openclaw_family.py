@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from smoke_matrix.models import OpenClawFamilyScenario
+
 SUPPORTED_OPENCLAW_FAMILIES = ("openai-completions", "anthropic-messages")
 CURRENT_OPENCLAW_FAMILY_TOKEN = "current"
 
@@ -186,22 +188,22 @@ def parse_openclaw_families(raw: str) -> tuple[str, ...]:
     return tuple(deduped)
 
 
-def _error_scenario(family: str, reason: str) -> Dict[str, object]:
-    return {
-        "name": f"openclaw:{family}",
-        "family": family,
-        "error": True,
-        "reason": reason,
-    }
+def _error_scenario(family: str, reason: str) -> OpenClawFamilyScenario:
+    return OpenClawFamilyScenario(
+        name=f"openclaw:{family}",
+        family=family,
+        error=True,
+        reason=reason,
+    )
 
 
-def _skipped_scenario(name: str, reason: str) -> Dict[str, object]:
-    return {
-        "name": name,
-        "family": None,
-        "skipped": True,
-        "reason": reason,
-    }
+def _skipped_scenario(name: str, reason: str) -> OpenClawFamilyScenario:
+    return OpenClawFamilyScenario(
+        name=name,
+        family=None,
+        skipped=True,
+        reason=reason,
+    )
 
 
 def _resolve_family_provider(
@@ -245,25 +247,25 @@ def _resolve_current_primary_scenario(
     current_provider: str | None,
     current_model_id: str | None,
     provider_entries: Dict[str, Dict[str, object]],
-) -> Dict[str, object]:
+) -> OpenClawFamilyScenario:
     if not current_provider:
-        return _skipped_scenario("openclaw:current", "missing_current_primary")
+        return _error_scenario("current", "missing_current_primary")
     if _normalize_provider_key(current_provider) == "openai-codex":
-        return _skipped_scenario("openclaw:current", "unsupported_current_family")
+        return _error_scenario("current", "unsupported_current_family")
 
     entry = provider_entries.get(_normalize_provider_key(current_provider))
     if not isinstance(entry, dict):
-        return _skipped_scenario("openclaw:current", "missing_current_provider_entry")
+        return _error_scenario("current", "missing_current_provider_entry")
 
     provider_key = _string_value(entry.get("providerKey"))
     if not provider_key:
-        return _skipped_scenario("openclaw:current", "missing_current_provider_key")
+        return _error_scenario("current", "missing_current_provider_key")
 
     family = _string_value(entry.get("apiFamily"))
     if not family:
-        return _skipped_scenario("openclaw:current", "missing_current_api_family")
+        return _error_scenario("current", "missing_current_api_family")
     if family not in SUPPORTED_OPENCLAW_FAMILIES:
-        return _skipped_scenario("openclaw:current", "unsupported_current_family")
+        return _error_scenario("current", "unsupported_current_family")
 
     chosen_model = _resolve_family_model(
         provider_key=provider_key,
@@ -273,34 +275,34 @@ def _resolve_current_primary_scenario(
         entry=entry,
     )
     if not chosen_model:
-        return _skipped_scenario("openclaw:current", "current_primary_model_unresolved")
+        return _error_scenario("current", "current_primary_model_unresolved")
 
     real_base_url = _string_value(entry.get("realBaseUrl"))
     if not real_base_url:
-        return _skipped_scenario("openclaw:current", "missing_current_upstream_base_url")
+        return _error_scenario("current", "missing_current_upstream_base_url")
 
     model_ref = _normalize_openclaw_model_ref(provider_key, chosen_model)
-    return {
-        "name": f"openclaw:{family}",
-        "family": family,
-        "providerKey": provider_key,
-        "modelRef": model_ref,
-        "realBaseUrl": real_base_url.rstrip("/"),
-        "apiFamily": family,
-        "providerFields": dict(entry.get("providerFields") or {}),
-        "expectedTapPathFragment": (
+    return OpenClawFamilyScenario(
+        name=f"openclaw:{family}",
+        family=family,
+        provider_key=provider_key,
+        model_ref=model_ref,
+        real_base_url=real_base_url.rstrip("/"),
+        api_family=family,
+        provider_fields=dict(entry.get("providerFields") or {}),
+        expected_tap_path_fragment=(
             "/v1/messages" if family == "anthropic-messages" else "/chat/completions"
         ),
-        "source": "current_primary",
-    }
+        source="current_primary",
+    )
 
 
 def resolve_openclaw_family_scenarios(
     *,
     paths: Dict[str, Path],
     args: argparse.Namespace,
-) -> List[Dict[str, object]]:
-    scenarios: List[Dict[str, object]] = []
+) -> List[OpenClawFamilyScenario]:
+    scenarios: List[OpenClawFamilyScenario] = []
     requested_families = parse_openclaw_families(args.openclaw_families)
     provider_entries = _collect_openclaw_provider_entries(
         config_path=paths["openclaw_config"],
@@ -375,19 +377,19 @@ def resolve_openclaw_family_scenarios(
 
         model_ref = _normalize_openclaw_model_ref(provider_key, chosen_model)
         scenarios.append(
-            {
-                "name": f"openclaw:{family}",
-                "family": family,
-                "providerKey": provider_key,
-                "modelRef": model_ref,
-                "realBaseUrl": real_base_url.rstrip("/"),
-                "apiFamily": family,
-                "providerFields": dict(entry.get("providerFields") or {}),
-                "expectedTapPathFragment": (
+            OpenClawFamilyScenario(
+                name=f"openclaw:{family}",
+                family=family,
+                provider_key=provider_key,
+                model_ref=model_ref,
+                real_base_url=real_base_url.rstrip("/"),
+                api_family=family,
+                provider_fields=dict(entry.get("providerFields") or {}),
+                expected_tap_path_fragment=(
                     "/v1/messages" if family == "anthropic-messages" else "/chat/completions"
                 ),
-                "source": "existing_provider",
-            }
+                source="existing_provider",
+            )
         )
 
     return scenarios

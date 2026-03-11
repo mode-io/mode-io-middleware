@@ -26,11 +26,24 @@ Built-in monitor with live traces, filters, before/after payload inspection, hoo
 
 ## Supported clients
 
-- Codex CLI
-- Claude Code
-- OpenCode
-  Supported when the selected OpenCode provider is redirectable through its configured base URL. Built-in `openai` with ChatGPT OAuth stays outside middleware because OpenCode rewrites that path internally.
-- OpenClaw
+Middleware expects an already-working harness and reuses that harness's own auth. It does not log you in, choose a different provider for you, or fall back to a different auth path if your current client setup is unsupported.
+
+| Client | Status |
+| --- | --- |
+| `Codex CLI` | ✅ Supported |
+| `Claude Code` | ✅ Supported |
+| `OpenCode` | ⚠️ Partially supported |
+| `OpenClaw` | ⚠️ Partially supported |
+
+More detail:
+
+- `Codex CLI`: works with Codex's normal native auth.
+- `Claude Code`: works with Claude's normal native auth.
+- `OpenCode`: works today for normal API-key or proxy-style providers that use a standard provider API endpoint.
+- `OpenCode`: does not work yet for built-in `openai` with ChatGPT OAuth.
+- `OpenCode`: does not work yet for built-in `anthropic` with subscription OAuth.
+- `OpenClaw`: works today for normal OpenAI-compatible and Anthropic-compatible providers.
+- `OpenClaw`: does not work yet for OpenClaw's built-in Codex or ChatGPT-style provider path.
 
 ## Public surface
 

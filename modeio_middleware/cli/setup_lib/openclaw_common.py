@@ -7,16 +7,24 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional
 
 from modeio_middleware.cli.setup_lib.common import (
-    build_client_gateway_base_url,
     SetupError,
     detect_os_name,
     ensure_object,
     read_json_file,
     utc_timestamp,
     write_json_file,
+)
+from modeio_middleware.core.provider_policy import (
+    OPENCLAW_ROUTE_MODE_PRESERVE_PROVIDER,
+    OPENCLAW_SUPPORTED_API_FAMILIES,
+    normalize_provider_id as _policy_normalize_provider_id,
+    openclaw_provider_gateway_base_url,
+    resolve_openclaw_api_family,
+    route_metadata_entry as _route_metadata_entry,
+    string_value as _policy_string_value,
 )
 
 OPENCLAW_PROVIDER_ID = "modeio-middleware"
@@ -25,7 +33,6 @@ OPENCLAW_MODEL_REF = f"{OPENCLAW_PROVIDER_ID}/{OPENCLAW_MODEL_ID}"
 OPENCLAW_MODEL_NAME = "Modeio Middleware Default"
 OPENCLAW_DEFAULT_API_KEY = "modeio-middleware"
 OPENCLAW_AUTH_MODE_NATIVE = "native"
-OPENCLAW_AUTH_MODE_MANAGED = "managed"
 OPENCLAW_DEFAULT_STATE_DIRNAME = ".openclaw"
 OPENCLAW_CONFIG_FILENAMES = {
     "openclaw.json",
@@ -33,13 +40,6 @@ OPENCLAW_CONFIG_FILENAMES = {
     "moltbot.json",
     "moldbot.json",
 }
-OPENCLAW_ROUTE_MODE_PRESERVE_PROVIDER = "preserve_provider"
-OPENCLAW_SUPPORTED_API_FAMILIES = {
-    "openai-completions",
-    "anthropic-messages",
-}
-
-
 def _route_metadata_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.name}.modeio-route.json")
 
@@ -68,58 +68,12 @@ def _remove_route_metadata(config_path: Path) -> None:
         sidecar_path.unlink()
 
 
-def _route_model_ref(model_id: str) -> str:
-    return f"{OPENCLAW_PROVIDER_ID}/{model_id}"
-
-
-def _model_name(model_id: str) -> str:
-    if model_id == OPENCLAW_MODEL_ID:
-        return OPENCLAW_MODEL_NAME
-    return f"Modeio Middleware {model_id}"
-
-
-def _upsert_provider_model(models_value: Any, model_id: str) -> Tuple[Sequence[Any], bool]:
-    default_model = {
-        "id": model_id,
-        "name": _model_name(model_id),
-    }
-    if not isinstance(models_value, list):
-        return [default_model], True
-
-    updated_models = copy.deepcopy(models_value)
-    for index, model in enumerate(updated_models):
-        if not isinstance(model, dict):
-            continue
-        if model.get("id") != model_id:
-            continue
-
-        changed = False
-        if model.get("name") != default_model["name"]:
-            model["name"] = default_model["name"]
-            changed = True
-        updated_models[index] = model
-        return updated_models, changed
-
-    updated_models.append(default_model)
-    return updated_models, True
-
-
 def _string_value(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    return text if text else None
+    return _policy_string_value(value)
 
 
 def _normalize_provider_id(raw_provider_id: str | None) -> str:
-    return str(raw_provider_id or "").strip().lower().replace("_", "-")
-
-
-def _normalize_anthropic_base_url(base_url: str) -> str:
-    text = base_url.rstrip("/")
-    if text.endswith("/v1"):
-        return text[:-3]
-    return text
+    return _policy_normalize_provider_id(raw_provider_id)
 
 
 def _provider_gateway_base_url(
@@ -128,14 +82,11 @@ def _provider_gateway_base_url(
     provider_key: str,
     api_family: str,
 ) -> str:
-    base_url = build_client_gateway_base_url(
+    return openclaw_provider_gateway_base_url(
         gateway_base_url,
-        "openclaw",
-        provider_name=provider_key,
+        provider_key=provider_key,
+        api_family=api_family,
     )
-    if api_family == "anthropic-messages":
-        return _normalize_anthropic_base_url(base_url)
-    return base_url
 
 
 def _resolve_existing_primary(config: Dict[str, Any]) -> str | None:
@@ -152,50 +103,6 @@ def _resolve_existing_primary(config: Dict[str, Any]) -> str | None:
     if not isinstance(primary, str) or "/" not in primary:
         return None
     return primary
-
-
-def _resolve_managed_route_target(
-    config: Dict[str, Any],
-    auth_mode: str,
-    existing_route_metadata: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    previous_primary = _resolve_existing_primary(config)
-    actual_mode = auth_mode
-    native_provider = None
-    native_model = None
-    route_model = OPENCLAW_MODEL_ID
-
-    if auth_mode == OPENCLAW_AUTH_MODE_NATIVE and previous_primary:
-        provider_name, model_id = previous_primary.split("/", 1)
-        if provider_name != OPENCLAW_PROVIDER_ID:
-            native_provider = provider_name
-            native_model = model_id
-            route_model = model_id
-    if (
-        auth_mode == OPENCLAW_AUTH_MODE_NATIVE
-        and not native_provider
-        and isinstance(existing_route_metadata, dict)
-    ):
-        metadata_provider = existing_route_metadata.get("nativeProvider")
-        metadata_model = existing_route_metadata.get("nativeModelId")
-        metadata_previous = existing_route_metadata.get("previousPrimary")
-        if isinstance(metadata_provider, str) and metadata_provider.strip():
-            native_provider = metadata_provider
-            if isinstance(metadata_model, str) and metadata_model.strip():
-                native_model = metadata_model
-                route_model = metadata_model
-            if isinstance(metadata_previous, str) and metadata_previous.strip():
-                previous_primary = metadata_previous
-    if auth_mode == OPENCLAW_AUTH_MODE_NATIVE and not native_provider:
-        actual_mode = OPENCLAW_AUTH_MODE_MANAGED
-
-    return {
-        "authMode": actual_mode,
-        "previousPrimary": previous_primary,
-        "nativeProvider": native_provider,
-        "nativeModelId": native_model,
-        "routeModelId": route_model,
-    }
 
 
 def default_openclaw_config_path(
@@ -294,26 +201,8 @@ def _provider_from_mapping(
     return provider_key, None
 
 
-def _legacy_previous_primary(existing_route_metadata: Dict[str, Any]) -> str | None:
-    previous_primary = existing_route_metadata.get("previousPrimary")
-    if isinstance(previous_primary, str) and "/" in previous_primary:
-        return previous_primary
-    return None
-
-
 def _normalize_api_family(provider_key: str, *provider_objects: Any) -> str | None:
-    for provider_object in provider_objects:
-        if not isinstance(provider_object, dict):
-            continue
-        api_family = _string_value(provider_object.get("api"))
-        if api_family:
-            return api_family.lower()
-    normalized_provider = _normalize_provider_id(provider_key)
-    if normalized_provider == "anthropic":
-        return "anthropic-messages"
-    if normalized_provider == "openai":
-        return "openai-completions"
-    return None
+    return resolve_openclaw_api_family(provider_key, *provider_objects)
 
 
 def _preserve_provider_metadata(existing_route_metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -336,8 +225,4 @@ def _preserve_metadata_entry(
     existing_route_metadata: Dict[str, Any],
     provider_id: str,
 ) -> Dict[str, Any]:
-    providers = existing_route_metadata.get("providers")
-    if not isinstance(providers, dict):
-        return {}
-    entry = providers.get(provider_id)
-    return copy.deepcopy(entry) if isinstance(entry, dict) else {}
+    return _route_metadata_entry(existing_route_metadata, provider_id)

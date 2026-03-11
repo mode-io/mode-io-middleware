@@ -9,7 +9,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from modeio_middleware.cli.setup_lib.openclaw_common import (
     OPENCLAW_AUTH_MODE_NATIVE,
-    OPENCLAW_MODEL_ID,
     OPENCLAW_ROUTE_MODE_PRESERVE_PROVIDER,
     SetupError,
     _read_route_metadata,
@@ -22,12 +21,9 @@ from modeio_middleware.cli.setup_lib.openclaw_common import (
 from modeio_middleware.cli.setup_lib.openclaw_routes import (
     _apply_preserve_provider_models_cache,
     _apply_preserve_provider_route,
-    _remove_managed_models_cache_provider,
-    _remove_managed_provider_route,
     _resolve_preserve_provider_target,
     _restore_preserve_provider_config,
     _restore_preserve_provider_models_cache,
-    _managed_metadata_mode,
     _write_preserve_provider_metadata,
 )
 
@@ -63,15 +59,8 @@ def remove_openclaw_provider_route(
     route_model_id: str,
     previous_primary: str | None,
 ) -> Tuple[Dict[str, Any], bool, Optional[str], str]:
-    return _remove_managed_provider_route(
-        config,
-        gateway_base_url,
-        force_remove=force_remove,
-        auth_mode=auth_mode,
-        native_provider=native_provider,
-        route_model_id=route_model_id,
-        previous_primary=previous_primary,
-    )
+    del gateway_base_url, force_remove, auth_mode, native_provider, route_model_id, previous_primary
+    return copy.deepcopy(config), False, None, "managed_route_removed"
 
 
 def apply_openclaw_config_file(
@@ -163,45 +152,6 @@ def uninstall_openclaw_config_file(
 
     config_data = read_json_file(config_path)
     route_meta = _read_route_metadata(config_path)
-    if _managed_metadata_mode(route_meta):
-        auth_mode = str(route_meta.get("authMode") or OPENCLAW_AUTH_MODE_MANAGED)
-        native_provider = route_meta.get("nativeProvider")
-        route_model_id = str(route_meta.get("routeModelId") or OPENCLAW_MODEL_ID)
-        previous_primary = route_meta.get("previousPrimary")
-        updated, changed, removed_value, reason = _remove_managed_provider_route(
-            config_data,
-            gateway_base_url,
-            force_remove=force_remove,
-            auth_mode=auth_mode,
-            native_provider=(
-                str(native_provider) if isinstance(native_provider, str) else None
-            ),
-            route_model_id=route_model_id,
-            previous_primary=(
-                str(previous_primary) if isinstance(previous_primary, str) else None
-            ),
-        )
-
-        backup_path = None
-        if changed:
-            backup_path = config_path.with_name(f"{config_path.name}.bak.{utc_timestamp()}")
-            shutil.copy2(config_path, backup_path)
-            write_json_file(config_path, updated)
-            _remove_route_metadata(config_path)
-
-        return {
-            "path": str(config_path),
-            "changed": changed,
-            "backupPath": str(backup_path) if backup_path else None,
-            "reason": reason,
-            "removedBaseUrl": removed_value,
-            "authMode": auth_mode,
-            "nativeProvider": (
-                str(native_provider) if isinstance(native_provider, str) else None
-            ),
-            "routeMode": "managed_provider",
-        }
-
     updated, changed, updated_meta, reason = _restore_preserve_provider_config(
         config_data,
         gateway_base_url,
@@ -292,13 +242,8 @@ def remove_openclaw_models_cache_provider(
     auth_mode: str,
     native_provider: str | None,
 ) -> Tuple[Dict[str, Any], bool, Optional[str], str]:
-    return _remove_managed_models_cache_provider(
-        config,
-        gateway_base_url,
-        force_remove=force_remove,
-        auth_mode=auth_mode,
-        native_provider=native_provider,
-    )
+    del gateway_base_url, force_remove, auth_mode, native_provider
+    return copy.deepcopy(config), False, None, "managed_route_removed"
 
 
 def uninstall_openclaw_models_cache_file(
@@ -322,36 +267,6 @@ def uninstall_openclaw_models_cache_file(
 
     config_data = read_json_file(models_cache_path)
     route_meta = _read_route_metadata(config_path)
-    if _managed_metadata_mode(route_meta):
-        resolved_auth_mode = str(route_meta.get("authMode") or "managed")
-        resolved_native_provider = route_meta.get("nativeProvider")
-        updated, changed, removed_value, reason = _remove_managed_models_cache_provider(
-            config_data,
-            gateway_base_url,
-            force_remove=force_remove,
-            auth_mode=resolved_auth_mode,
-            native_provider=(
-                str(resolved_native_provider)
-                if isinstance(resolved_native_provider, str)
-                else None
-            ),
-        )
-
-        backup_path = None
-        if changed:
-            backup_path = models_cache_path.with_name(f"{models_cache_path.name}.bak.{utc_timestamp()}")
-            shutil.copy2(models_cache_path, backup_path)
-            write_json_file(models_cache_path, updated)
-
-        return {
-            "path": str(models_cache_path),
-            "changed": changed,
-            "backupPath": str(backup_path) if backup_path else None,
-            "reason": reason,
-            "removedBaseUrl": removed_value,
-            "routeMode": "managed_provider",
-        }
-
     updated, changed, reason = _restore_preserve_provider_models_cache(
         config_data,
         gateway_base_url,
