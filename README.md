@@ -2,16 +2,33 @@
 
 `modeio-middleware` is a local AI gateway for policy, plugins, and live observability.
 
-Put it between agent clients and your upstream model provider to inspect traffic, enforce local policy, run external plugins, and open a built-in monitoring dashboard without rewriting the clients your team already uses.
+Put it between agent clients and their current upstream provider route to inspect traffic, enforce local policy, run external plugins, and open a built-in monitoring dashboard without replacing the clients your team already uses.
 
 ![ModeIO Monitor dashboard](.github/assets/monitor-dashboard.png)
 
 Built-in monitor with live traces, filters, before/after payload inspection, hook activity, and operator-friendly detail views.
 
+## Product direction
+
+Middleware is a protection layer for an already-working harness, not a replacement harness.
+
+- The harness stays the owner of login, auth material, provider choice, model choice, and end-user UX.
+- Middleware attaches in front of the harness's current route and adds two policy passes around model traffic: one before the upstream call and one after the upstream response.
+- Plugins operate on a normalized semantic payload instead of raw provider JSON.
+- If a plugin rewrites that semantic payload, middleware denormalizes the change back into the provider-native or harness-native shape before forwarding it.
+- Today, supported harnesses still require explicit `middleware enable <harness>` setup and controller coverage is not universal yet. The direction is to make middleware adopt the already-working harness state with less operator friction, without taking ownership of the user's auth/provider/model choices.
+
+```text
+user prompt -> harness payload -> middleware normalize -> plugins -> denormalize -> provider
+provider response -> middleware normalize -> plugins -> denormalize -> harness
+```
+
+For Claude Code, the same pattern applies, except the final step maps back to Claude's hook output contract instead of provider HTTP JSON.
+
 ## Why teams use it
 
-- Drop in a local control layer in front of model traffic without changing client workflows
-- Keep provider-compatible routes for chat and responses APIs
+- Add a local control layer around model traffic without replacing the harness
+- Keep provider-compatible routes for chat, responses, and Anthropic messages
 - See what the middleware actually did through a built-in browser dashboard
 - Support Claude Code with a native hook connector
 - Extend behavior with external `stdio-jsonrpc` plugins instead of patching core code
@@ -19,14 +36,14 @@ Built-in monitor with live traces, filters, before/after payload inspection, hoo
 
 ## What you get
 
-- `OpenAI-compatible gateway`: route supported clients through a familiar `/v1` surface
+- `Provider-preserving gateway`: route supported clients through chat, responses, and Anthropic message surfaces while preserving harness-owned provider selection
 - `Built-in observability`: inspect live traces, before/after payloads, block events, errors, and hook activity in the browser
-- `Plugin platform`: author, validate, and conformance-test external plugins with a stable contract
+- `Plugin platform`: author, validate, and conformance-test external plugins against a normalized semantic payload contract
 - `Local-first operations`: keep policy logic and monitoring close to where the agents run
 
 ## Supported clients
 
-Middleware expects an already-working harness and reuses that harness's own auth. It does not log you in, choose a different provider for you, or fall back to a different auth path if your current client setup is unsupported.
+Middleware expects an already-working harness and reuses that harness's current auth and provider route when possible. It does not log you in, choose a different provider for you, choose a different model for you, or fall back to a different auth path if your current harness state is unsupported.
 
 ### Current controller support landscape
 
@@ -70,6 +87,7 @@ Traffic routes:
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `POST /v1/messages`
 - `POST /connectors/claude/hooks`
 
 Monitoring and ops routes:
@@ -110,7 +128,7 @@ middleware inspect openclaw --json
 middleware inspect claude --json
 ```
 
-2. Enable supported harnesses. Middleware inspects the exact current harness-selected state first, and it fails clearly if that state is unsupported:
+2. Enable supported harnesses. Today this attach step is explicit: middleware inspects the exact current harness-selected state first, and it fails clearly if that state is unsupported:
 
 ```bash
 middleware enable opencode
