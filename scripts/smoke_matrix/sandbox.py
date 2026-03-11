@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
-import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib
 
 
 def build_sandbox_paths(root: Path) -> Dict[str, Path]:
