@@ -208,7 +208,13 @@ python -m unittest discover tests -p 'test_*.py'
 ./scripts/release_check.sh
 ```
 
-Live routing check against the supported controller matrix:
+Direct upstream live smoke using API-key auth:
+
+```bash
+./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
+```
+
+Supported controller-matrix live smoke:
 
 ```bash
 ./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import socket
 import threading
 import zlib
@@ -281,6 +282,9 @@ def create_app(config: GatewayRuntimeConfig) -> Starlette:
             "version": CONTRACT_VERSION,
             "profiles": sorted(list((engine.config.profiles or {}).keys())),
         }
+        dev_instance_id = os.environ.get("MODEIO_DEV_INSTANCE_ID")
+        if dev_instance_id:
+            payload["devInstanceId"] = dev_instance_id
         return _json_response(200, payload)
 
     async def dashboard_index(_request: Request) -> Response:
