@@ -35,8 +35,7 @@ Issues = "https://github.com/mode-io/mode-io-middleware/issues"
 Documentation = "https://github.com/mode-io/mode-io-middleware/blob/main/QUICKSTART.md"
 
 [project.scripts]
-modeio-middleware-gateway = "modeio_middleware.cli.gateway:main"
-modeio-middleware-setup = "modeio_middleware.cli.setup:main"
+middleware = "modeio_middleware.cli.middleware:main"
 modeio-middleware-new-plugin = "modeio_middleware.cli.new_plugin:main"
 modeio-middleware-validate-plugin = "modeio_middleware.cli.validate_plugin_manifest:main"
 modeio-middleware-plugin-conformance = "modeio_middleware.cli.plugin_conformance:main"

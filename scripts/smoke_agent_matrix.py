@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -19,7 +19,6 @@ try:  # Python 3.14+
 except Exception:  # pragma: no cover
     _zstd_codec = None
 
-from modeio_middleware.cli.setup_lib.upstream import OPENAI_UPSTREAM_BASE_URL
 from smoke_matrix.common import (
     check_required_commands as _check_required_commands,
     default_upstream_base_url,
@@ -27,15 +26,10 @@ from smoke_matrix.common import (
     default_artifacts_root,
     default_repo_root,
     free_port as _free_port,
-    load_tap_events as _load_tap_events,
     parse_agents as _parse_agents,
-    run_command_capture as _run_command_capture,
-    tap_token_metrics as _tap_token_metrics,
-    tap_window_metrics as _tap_window_metrics,
     utc_stamp as _utc_stamp,
     wait_for_url as _wait_for_url,
     write_json as _write_json,
-    write_text as _write_text,
 )
 from smoke_matrix.openclaw_family import (
     SUPPORTED_OPENCLAW_FAMILIES,
@@ -43,13 +37,12 @@ from smoke_matrix.openclaw_family import (
     resolve_openclaw_family_scenarios as _resolve_openclaw_family_scenarios,
 )
 from smoke_matrix.runner import (
-    request_with_bytes as _request_with_bytes,
+    run_controller_disable_all as _run_controller_disable_all,
+    run_controller_enable as _run_controller_enable,
+    run_controller_inspect as _run_controller_inspect,
     run_agent_check as _run_agent_check,
-    run_doctor as _run_doctor,
-    run_gateway_smoke_checks as _run_gateway_smoke_checks,
     run_json_cli_command as _run_json_cli_command,
     run_openclaw_family_checks as _run_openclaw_family_checks,
-    run_setup as _run_setup,
     skipped_agent_report as _skipped_agent_report,
     start_logged_process as _start_logged_process,
     stop_process as _stop_process,
@@ -59,13 +52,13 @@ from smoke_matrix.sandbox import (
     build_sandbox_env as _build_sandbox_env,
     build_sandbox_paths as _build_sandbox_paths,
     configure_opencode_supported_provider as _configure_opencode_supported_provider,
-    resolve_codex_smoke_model as _resolve_codex_config_model,
     resolve_opencode_smoke_model as _resolve_opencode_smoke_model,
     seed_codex_credentials as _seed_codex_credentials,
     seed_opencode_state as _seed_opencode_state,
     seed_openclaw_state as _seed_openclaw_state,
 )
 from smoke_matrix.runtime import prepare_runtime as _prepare_runtime
+from modeio_middleware.cli.setup_lib.claude import apply_claude_settings_file
 
 DEFAULT_UPSTREAM_BASE_URL = default_upstream_base_url(dict(os.environ))
 DEFAULT_UPSTREAM_MODEL = default_upstream_model(dict(os.environ))
@@ -94,19 +87,19 @@ def _resolve_codex_smoke_model(requested_model: str) -> str | None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run isolated live smoke tests via codex/opencode/openclaw/claude through modeio-middleware."
+        description="Run isolated live smoke tests via the middleware controller for supported harnesses."
     )
     parser.add_argument(
         "--agents",
-        default="codex,opencode,openclaw,claude",
-        help="Comma-separated agent list (codex,opencode,openclaw,claude)",
+        default="opencode,openclaw,claude",
+        help="Comma-separated harness list (codex,opencode,openclaw,claude)",
     )
     parser.add_argument(
         "--model",
         default=DEFAULT_UPSTREAM_MODEL,
         help=(
-            "OpenAI-compatible model name used as the generic fallback; "
-            "Codex smoke uses a Codex-native default when this stays at the generic default"
+            "OpenAI-compatible model name used only for generic non-preserve-provider checks; "
+            "supported controller smoke uses the harness-selected model by default"
         ),
     )
     parser.add_argument(
@@ -241,12 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = run_dir / "summary.json"
     tap_jsonl_path = run_dir / "tap-exchanges.jsonl"
     tap_stdout_path = run_dir / "tap-proxy.log"
-    codex_tap_jsonl_path = run_dir / "codex-tap-exchanges.jsonl"
-    codex_tap_stdout_path = run_dir / "codex-tap.log"
-    claude_tap_jsonl_path = run_dir / "claude-hook-exchanges.jsonl"
-    claude_tap_stdout_path = run_dir / "claude-hook-tap.log"
-    gateway_log_path = run_dir / "gateway.log"
-    setup_payload_path = run_dir / "setup-report.json"
+    controller_config_path = run_dir / "controller" / "middleware.json"
 
     report: Dict[str, object] = {
         "success": False,
@@ -261,7 +249,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "agentModels": {
             "openaiCompatible": args.model,
-            "codex": None,
             "opencode": args.opencode_model or None,
             "claude": args.claude_model,
         },
@@ -275,11 +262,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "logPath": str(tap_jsonl_path),
             "stdoutPath": str(tap_stdout_path),
         },
-        "codexNativeTap": None,
         "opencodeTap": None,
-        "claudeHookTap": None,
-        "doctor": None,
-        "setup": None,
+        "inspect": None,
+        "controller": None,
         "openclawFamilyScenarios": [],
         "gatewayChecks": [],
         "agents": [],
@@ -295,24 +280,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         "opencodeConfig": str(paths["opencode_config"]),
         "openclawConfig": str(paths["openclaw_config"]),
         "openclawModelsCache": str(paths["openclaw_models_cache"]),
+        "controllerConfig": str(controller_config_path),
         "kept": bool(args.keep_sandbox),
     }
 
-    tap_process: Optional[subprocess.Popen] = None
-    tap_log_handle = None
-    codex_tap_process: Optional[subprocess.Popen] = None
-    codex_tap_log_handle = None
-    opencode_tap_process: Optional[subprocess.Popen] = None
-    opencode_tap_log_handle = None
     claude_tap_process: Optional[subprocess.Popen] = None
     claude_tap_log_handle = None
-    gateway_process: Optional[subprocess.Popen] = None
-    gateway_log_handle = None
+    opencode_tap_process: Optional[subprocess.Popen] = None
+    opencode_tap_log_handle = None
+    runtime = None
 
     try:
         agents = _parse_agents(args.agents)
         needs_claude = "claude" in agents
-        needs_openai_agents = any(agent != "claude" for agent in agents)
+        needs_openai_agents = any(agent in {"opencode", "openclaw"} for agent in agents)
         report["mode"] = (
             "live-agents"
             if needs_claude and needs_openai_agents
@@ -374,11 +355,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     base_url=forced_base_url,
                 )
             )
-        explicit_codex_model = _resolve_codex_smoke_model(args.model)
-        resolved_codex_model = explicit_codex_model or _resolve_codex_config_model(
-            config_path=paths["codex_config"],
-        )
-        report["agentModels"]["codex"] = resolved_codex_model
         resolved_opencode_model = (
             args.opencode_model.strip()
             or _resolve_opencode_smoke_model(
@@ -400,10 +376,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         gateway_port = args.gateway_port if args.gateway_port > 0 else _free_port()
         tap_port = args.tap_port if args.tap_port > 0 else _free_port()
+        claude_tap_port = args.claude_tap_port if args.claude_tap_port > 0 else _free_port()
         gateway_base_url = f"http://{args.gateway_host}:{gateway_port}/v1"
         gateway_health_url = f"http://{args.gateway_host}:{gateway_port}/healthz"
         tap_base_url = f"http://{args.gateway_host}:{tap_port}"
-        gateway_root_url = gateway_base_url.rsplit("/v1", 1)[0]
+        claude_gateway_root = f"http://{args.gateway_host}:{gateway_port}"
+        claude_tap_base_url = f"http://{args.gateway_host}:{claude_tap_port}"
 
         env = _build_sandbox_env(
             runtime.env,
@@ -411,111 +389,84 @@ def main(argv: Sequence[str] | None = None) -> int:
             gateway_base_url=gateway_base_url,
         )
 
-        report["doctor"] = _run_doctor(
-            setup_command=runtime.setup_command,
+        report["inspect"] = _run_controller_inspect(
+            controller_command=runtime.controller_command,
             repo_root=repo_root,
             env=env,
-            agents=agents,
-            gateway_base_url=gateway_base_url,
+            controller_config_path=controller_config_path,
             opencode_config_path=paths["opencode_config"],
             openclaw_config_path=paths["openclaw_config"],
             openclaw_models_cache_path=paths["openclaw_models_cache"],
             claude_settings_path=paths["claude_settings"],
+            codex_config_path=paths["codex_config"],
             timeout_seconds=args.command_timeout_seconds,
+            host=args.gateway_host,
+            port=gateway_port,
         )
-        native_clients_report = report.get("doctor", {}).get("nativeClients", {})
-        opencode_native_report = (
-            native_clients_report.get("opencode", {})
-            if isinstance(native_clients_report, dict)
+        harness_reports = report.get("inspect", {}).get("harnesses", {})
+        opencode_report = (
+            harness_reports.get("opencode", {})
+            if isinstance(harness_reports, dict)
             else {}
         )
-        opencode_transport = (
-            opencode_native_report.get("transport")
-            if isinstance(opencode_native_report, dict)
-            else None
+        opencode_inspection = (
+            opencode_report.get("inspection", {})
+            if isinstance(opencode_report, dict)
+            else {}
         )
         opencode_provider_id = (
-            str(opencode_native_report.get("providerId") or "").strip()
-            if isinstance(opencode_native_report, dict)
+            str(opencode_report.get("selection", {}).get("providerId") or opencode_inspection.get("providerId") or "").strip()
+            if isinstance(opencode_inspection, dict)
             else ""
         )
         opencode_upstream_base_url = (
-            str(opencode_native_report.get("upstreamBaseUrl") or "").strip()
-            if isinstance(opencode_native_report, dict)
+            str(opencode_inspection.get("upstreamBaseUrl") or "").strip()
+            if isinstance(opencode_inspection, dict)
             else ""
         )
 
-        gateway_upstream_chat_url = f"{OPENAI_UPSTREAM_BASE_URL}/chat/completions"
-        gateway_upstream_responses_url = f"{OPENAI_UPSTREAM_BASE_URL}/responses"
-        if needs_openai_agents:
+        if needs_claude:
+            claude_tap_jsonl_path = run_dir / "claude-hook-exchanges.jsonl"
+            claude_tap_stdout_path = run_dir / "claude-hook-tap.log"
             tap_command = [
                 sys.executable,
                 str(repo_root / "scripts" / "upstream_tap_proxy.py"),
                 "--host",
                 args.gateway_host,
                 "--port",
-                str(tap_port),
+                str(claude_tap_port),
                 "--target-base-url",
-                args.upstream_base_url,
+                claude_gateway_root,
                 "--log-jsonl",
-                str(tap_jsonl_path),
+                str(claude_tap_jsonl_path),
             ]
-            tap_process, tap_log_handle = _start_logged_process(
+            claude_tap_process, claude_tap_log_handle = _start_logged_process(
                 command=tap_command,
                 cwd=repo_root,
                 env=env,
-                log_path=tap_stdout_path,
+                log_path=claude_tap_stdout_path,
             )
             if not _wait_for_url(
-                f"{tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
+                f"{claude_tap_base_url}/healthz", timeout_seconds=args.startup_timeout_seconds
             ):
-                raise RuntimeError("tap proxy failed to become healthy")
-            gateway_upstream_chat_url = f"{tap_base_url}/v1/chat/completions"
-            gateway_upstream_responses_url = f"{tap_base_url}/v1/responses"
-            report["tap"]["baseUrl"] = tap_base_url
-            report["tap"]["port"] = tap_port
-            if "codex" in agents:
-                codex_tap_port = _free_port()
-                codex_tap_base_url = f"http://{args.gateway_host}:{codex_tap_port}"
-                codex_tap_command = [
-                    sys.executable,
-                    str(repo_root / "scripts" / "upstream_tap_proxy.py"),
-                    "--host",
-                    args.gateway_host,
-                    "--port",
-                    str(codex_tap_port),
-                    "--target-base-url",
-                    "https://chatgpt.com/backend-api/codex",
-                    "--log-jsonl",
-                    str(codex_tap_jsonl_path),
-                ]
-                codex_tap_process, codex_tap_log_handle = _start_logged_process(
-                    command=codex_tap_command,
-                    cwd=repo_root,
-                    env=env,
-                    log_path=codex_tap_stdout_path,
-                )
-                if not _wait_for_url(
-                    f"{codex_tap_base_url}/healthz",
-                    timeout_seconds=args.startup_timeout_seconds,
-                ):
-                    raise RuntimeError("codex native tap proxy failed to become healthy")
-                env["MODEIO_CODEX_NATIVE_BASE_URL"] = codex_tap_base_url
-                report["codexNativeTap"] = {
-                    "baseUrl": codex_tap_base_url,
-                    "port": codex_tap_port,
-                    "logPath": str(codex_tap_jsonl_path),
-                    "stdoutPath": str(codex_tap_stdout_path),
-                    "targetBaseUrl": "https://chatgpt.com/backend-api/codex",
-                }
-            if (
-                "opencode" in agents
-                and isinstance(opencode_native_report, dict)
-                and opencode_native_report.get("supported") is not False
-                and opencode_transport != "codex_native"
-                and opencode_provider_id
-                and opencode_upstream_base_url
-            ):
+                raise RuntimeError("Claude hook tap proxy failed to become healthy")
+            report["claudeTap"] = {
+                "baseUrl": claude_tap_base_url,
+                "port": claude_tap_port,
+                "logPath": str(claude_tap_jsonl_path),
+                "stdoutPath": str(claude_tap_stdout_path),
+                "targetBaseUrl": claude_gateway_root,
+            }
+        else:
+            report["claudeTap"] = {"skipped": True, "reason": "claude-not-requested"}
+
+        if (
+            "opencode" in agents
+            and isinstance(opencode_report, dict)
+            and opencode_report.get("controllerSupported") is True
+            and opencode_provider_id
+            and opencode_upstream_base_url
+        ):
                 opencode_tap_jsonl_path = run_dir / "opencode-tap-exchanges.jsonl"
                 opencode_tap_stdout_path = run_dir / "opencode-tap.log"
                 opencode_tap_port = _free_port()
@@ -558,101 +509,103 @@ def main(argv: Sequence[str] | None = None) -> int:
                         base_url=opencode_tap_base_url,
                     )
                 )
-        else:
-            report["tap"]["skipped"] = True
-            report["tap"]["reason"] = "openai-compatible-agents-not-requested"
-
-        gateway_command = [
-            *runtime.gateway_command,
-            "--host",
-            args.gateway_host,
-            "--port",
-            str(gateway_port),
-            "--upstream-chat-url",
-            gateway_upstream_chat_url,
-            "--upstream-responses-url",
-            gateway_upstream_responses_url,
-        ]
-        gateway_process, gateway_log_handle = _start_logged_process(
-            command=gateway_command,
-            cwd=repo_root,
-            env=env,
-            log_path=gateway_log_path,
-        )
-        if not _wait_for_url(
-            gateway_health_url, timeout_seconds=args.startup_timeout_seconds
-        ):
-            raise RuntimeError("middleware gateway failed to become healthy")
 
         report["gateway"] = {
             "baseUrl": gateway_base_url,
             "healthUrl": gateway_health_url,
-            "logPath": str(gateway_log_path),
             "host": args.gateway_host,
             "port": gateway_port,
+            "configPath": str(controller_config_path),
         }
 
-        claude_gateway_base_url = gateway_base_url
-        if needs_claude:
-            claude_tap_port = (
-                args.claude_tap_port if args.claude_tap_port > 0 else _free_port()
-            )
-            claude_tap_base_url = f"http://{args.gateway_host}:{claude_tap_port}"
-            claude_tap_command = [
-                sys.executable,
-                str(repo_root / "scripts" / "upstream_tap_proxy.py"),
-                "--host",
-                args.gateway_host,
-                "--port",
-                str(claude_tap_port),
-                "--target-base-url",
-                gateway_root_url,
-                "--log-jsonl",
-                str(claude_tap_jsonl_path),
-            ]
-            claude_tap_process, claude_tap_log_handle = _start_logged_process(
-                command=claude_tap_command,
-                cwd=repo_root,
-                env=env,
-                log_path=claude_tap_stdout_path,
-            )
-            if not _wait_for_url(
-                f"{claude_tap_base_url}/healthz",
-                timeout_seconds=args.startup_timeout_seconds,
-            ):
-                raise RuntimeError("claude hook tap proxy failed to become healthy")
-            claude_gateway_base_url = f"{claude_tap_base_url}/v1"
-            report["claudeHookTap"] = {
-                "baseUrl": claude_tap_base_url,
-                "port": claude_tap_port,
-                "logPath": str(claude_tap_jsonl_path),
-                "stdoutPath": str(claude_tap_stdout_path),
-                "targetBaseUrl": gateway_root_url,
-            }
-
-        setup_payload = _run_setup(
-            setup_command=runtime.setup_command,
-            repo_root=repo_root,
-            env=env,
-            gateway_base_url=gateway_base_url,
-            claude_gateway_base_url=claude_gateway_base_url,
-            opencode_config_path=paths["opencode_config"],
-            openclaw_config_path=paths["openclaw_config"],
-            openclaw_models_cache_path=paths["openclaw_models_cache"],
-            claude_settings_path=paths["claude_settings"],
-            timeout_seconds=args.command_timeout_seconds,
-            configure_opencode=(
-                "opencode" in agents
-                and not (
-                    isinstance(opencode_native_report, dict)
-                    and opencode_native_report.get("supported") is False
+        controller_actions: Dict[str, object] = {}
+        if "opencode" in agents:
+            if isinstance(opencode_report, dict) and opencode_report.get("controllerSupported") is not True:
+                report["agents"].append(
+                    _skipped_agent_report(
+                        agent="opencode",
+                        report_name="opencode",
+                        diagnostic=(
+                            str(opencode_report.get("reason") or "").strip()
+                            or "OpenCode selected provider is not currently supported by the middleware controller."
+                        ),
+                        product_ok=False,
+                    )
                 )
+            else:
+                controller_actions["opencode"] = _run_controller_enable(
+                    controller_command=runtime.controller_command,
+                    repo_root=repo_root,
+                    env=env,
+                    harness_name="opencode",
+                    controller_config_path=controller_config_path,
+                    opencode_config_path=paths["opencode_config"],
+                    openclaw_config_path=paths["openclaw_config"],
+                    openclaw_models_cache_path=paths["openclaw_models_cache"],
+                    claude_settings_path=paths["claude_settings"],
+                    codex_config_path=paths["codex_config"],
+                    timeout_seconds=args.command_timeout_seconds,
+                    host=args.gateway_host,
+                    port=gateway_port,
+                )
+        if needs_claude:
+            claude_report = (
+                harness_reports.get("claude", {})
+                if isinstance(harness_reports, dict)
+                else {}
+            )
+            if isinstance(claude_report, dict) and claude_report.get("controllerSupported") is not True:
+                report["agents"].append(
+                    _skipped_agent_report(
+                        agent="claude",
+                        report_name="claude",
+                        diagnostic=(
+                            str(claude_report.get("reason") or "").strip()
+                            or "Claude current state is not currently supported by the middleware controller."
+                        ),
+                        product_ok=False,
+                    )
+                )
+            else:
+                controller_actions["claude"] = _run_controller_enable(
+                    controller_command=runtime.controller_command,
+                    repo_root=repo_root,
+                    env=env,
+                    harness_name="claude",
+                    controller_config_path=controller_config_path,
+                    opencode_config_path=paths["opencode_config"],
+                    openclaw_config_path=paths["openclaw_config"],
+                    openclaw_models_cache_path=paths["openclaw_models_cache"],
+                    claude_settings_path=paths["claude_settings"],
+                    codex_config_path=paths["codex_config"],
+                    timeout_seconds=args.command_timeout_seconds,
+                    host=args.gateway_host,
+                    port=gateway_port,
+                )
+                apply_claude_settings_file(
+                    config_path=paths["claude_settings"],
+                    gateway_base_url=claude_tap_base_url,
+                    create_if_missing=True,
+                )
+        report["controller"] = {
+            "actions": controller_actions,
+            "status": (
+                _run_json_cli_command(
+                    command=[
+                        *runtime.controller_command,
+                        "status",
+                        "--json",
+                        "--config",
+                        str(controller_config_path),
+                    ],
+                    cwd=repo_root,
+                    env=env,
+                    timeout_seconds=args.command_timeout_seconds,
+                )[0]
+                if controller_actions
+                else None
             ),
-            configure_openclaw=False,
-            configure_claude=needs_claude,
-        )
-        report["setup"] = setup_payload
-        _write_json(setup_payload_path, setup_payload)
+        }
 
         report["gatewayChecks"] = [
             {
@@ -667,33 +620,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             if agent == "openclaw":
                 report["agents"].extend(
                     _run_openclaw_family_checks(
-                        setup_command=runtime.setup_command,
+                        controller_command=runtime.controller_command,
                         repo_root=repo_root,
                         env=env,
-                        gateway_base_url=gateway_base_url,
+                        controller_config_path=controller_config_path,
                         openclaw_config_path=paths["openclaw_config"],
                         openclaw_models_cache_path=paths["openclaw_models_cache"],
+                        opencode_config_path=paths["opencode_config"],
+                        claude_settings_path=paths["claude_settings"],
+                        codex_config_path=paths["codex_config"],
                         run_dir=run_dir,
                         run_id=run_id,
                         timeout_seconds=args.command_timeout_seconds,
                         gateway_host=args.gateway_host,
+                        gateway_port=gateway_port,
                         scenarios=openclaw_family_scenarios,
                     )
                 )
                 continue
-            if (
-                agent == "opencode"
-                and isinstance(opencode_native_report, dict)
-                and opencode_native_report.get("supported") is False
-            ):
+            if agent == "opencode" and "opencode" not in controller_actions:
+                continue
+            if agent == "claude" and "claude" not in controller_actions:
+                continue
+            if agent == "codex":
                 report["agents"].append(
                     _skipped_agent_report(
-                        agent="opencode",
-                        report_name="opencode",
-                        diagnostic=(
-                            str(opencode_native_report.get("reason") or "").strip()
-                            or "OpenCode selected provider is not redirectable through middleware."
-                        ),
+                        agent="codex",
+                        report_name="codex",
+                        diagnostic="Codex controller mode is not supported yet.",
+                        product_ok=False,
                     )
                 )
                 continue
@@ -705,9 +660,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_id=run_id,
                     report_name=None,
                     model=(
-                        resolved_codex_model
-                        if agent == "codex"
-                        else resolved_opencode_model
+                        resolved_opencode_model
                         if agent == "opencode"
                         else args.model
                     ),
@@ -721,19 +674,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else None,
                     tap_jsonl_path=(
                         claude_tap_jsonl_path
-                        if agent == "claude"
-                        else opencode_tap_jsonl_path
+                        if (
+                            agent == "claude"
+                            and claude_tap_process is not None
+                        )
+                        else
+                        opencode_tap_jsonl_path
                         if (
                             agent == "opencode"
                             and opencode_tap_process is not None
-                        )
-                        else codex_tap_jsonl_path
-                        if (
-                            codex_tap_process is not None
-                            and (
-                                agent == "codex"
-                                or (agent == "opencode" and opencode_transport == "codex_native")
-                            )
                         )
                         else tap_jsonl_path
                     ),
@@ -747,16 +696,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["success"] = False
         report["error"] = str(error)
     finally:
-        _stop_process(claude_tap_process)
+        try:
+            if runtime is not None:
+                _run_controller_disable_all(
+                    controller_command=runtime.controller_command,
+                    repo_root=repo_root,
+                    env=env,
+                    controller_config_path=controller_config_path,
+                    timeout_seconds=args.command_timeout_seconds,
+                )
+        except Exception:
+            pass
         _stop_process(opencode_tap_process)
-        _stop_process(codex_tap_process)
-        _stop_process(gateway_process)
-        _stop_process(tap_process)
-        _close_handle(claude_tap_log_handle)
+        _stop_process(claude_tap_process)
         _close_handle(opencode_tap_log_handle)
-        _close_handle(codex_tap_log_handle)
-        _close_handle(gateway_log_handle)
-        _close_handle(tap_log_handle)
+        _close_handle(claude_tap_log_handle)
 
     report["finishedAt"] = _utc_stamp()
     _write_json(summary_path, report)

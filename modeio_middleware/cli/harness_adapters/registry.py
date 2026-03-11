@@ -17,12 +17,20 @@ class HarnessAdapterRegistry:
             "openclaw": OpenClawHarnessAdapter(),
             "claude": ClaudeHarnessAdapter(),
         }
+        self._aliases: dict[str, str] = {
+            "codex-cli": "codex",
+            "claude-code": "claude",
+        }
 
     def adapter_names(self) -> tuple[str, ...]:
         return tuple(self._adapters.keys())
 
-    def adapter_for(self, harness_name: str) -> HarnessAdapter:
+    def normalize_name(self, harness_name: str) -> str:
         normalized = str(harness_name or "").strip().lower().replace("_", "-")
+        return self._aliases.get(normalized, normalized)
+
+    def adapter_for(self, harness_name: str) -> HarnessAdapter:
+        normalized = self.normalize_name(harness_name)
         try:
             return self._adapters[normalized]
         except KeyError as error:

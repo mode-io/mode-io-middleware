@@ -18,6 +18,7 @@ from modeio_middleware.cli.setup_lib.openclaw import (
     uninstall_openclaw_models_cache_file,
 )
 from modeio_middleware.cli.setup_lib.openclaw_common import _read_route_metadata
+from modeio_middleware.cli.setup_lib.openclaw_common import _resolve_existing_primary
 from modeio_middleware.cli.setup_lib.openclaw_routes import _resolve_preserve_provider_target
 
 from .base import (
@@ -39,6 +40,32 @@ class OpenClawHarnessAdapter(HarnessAdapter):
     harness_name = CLIENT_OPENCLAW
     binary_name = "openclaw"
     attachment_kind = ATTACHMENT_KIND_CONFIG_PATCH
+
+    def _inspection_env(
+        self,
+        *,
+        env: Mapping[str, str] | None,
+        os_name: str | None,
+        config_path: Path | None,
+        models_cache_path: Path | None,
+    ) -> dict[str, str]:
+        resolved_env = dict(env or {})
+        resolved_config_path = self._resolved_config_path(
+            env=resolved_env,
+            os_name=os_name,
+            config_path=config_path,
+        )
+        resolved_models_cache_path = self._resolved_models_cache_path(
+            env=resolved_env,
+            config_path=resolved_config_path,
+            models_cache_path=models_cache_path,
+        )
+        agent_dir = resolved_models_cache_path.parent
+        resolved_env.setdefault("OPENCLAW_CONFIG_PATH", str(resolved_config_path))
+        resolved_env.setdefault("OPENCLAW_AGENT_DIR", str(agent_dir))
+        resolved_env.setdefault("PI_CODING_AGENT_DIR", str(agent_dir))
+        resolved_env.setdefault("OPENCLAW_STATE_DIR", str(resolved_config_path.parent))
+        return resolved_env
 
     def _resolved_config_path(
         self,
@@ -67,17 +94,31 @@ class OpenClawHarnessAdapter(HarnessAdapter):
         *,
         env: Mapping[str, str] | None = None,
         os_name: str | None = None,
+        config_path: Path | None = None,
+        models_cache_path: Path | None = None,
     ) -> HarnessInspection:
-        del os_name
-        resolved_env = dict(env or {})
+        resolved_env = self._inspection_env(
+            env=env,
+            os_name=os_name,
+            config_path=config_path,
+            models_cache_path=models_cache_path,
+        )
         inspection = _RESOLVER.inspect(client_name=CLIENT_OPENCLAW, env=resolved_env)
         payload = inspection.to_public_dict()
+        resolved_config_path = self._resolved_config_path(
+            env=resolved_env,
+            os_name=os_name,
+            config_path=config_path,
+        )
         selection = HarnessSelection(
             provider_id=payload.get("providerId"),
             api_family=payload.get("apiFamily"),
             profile_id=payload.get("selectedProfileId"),
         )
         primary_ref = payload.get("primaryRef")
+        if not isinstance(primary_ref, str) and resolved_config_path.exists():
+            config = read_json_file(resolved_config_path)
+            primary_ref = _resolve_existing_primary(config)
         if isinstance(primary_ref, str) and "/" in primary_ref:
             _, model_id = primary_ref.split("/", 1)
             selection = HarnessSelection(

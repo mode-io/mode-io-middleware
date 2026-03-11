@@ -28,16 +28,29 @@ Built-in monitor with live traces, filters, before/after payload inspection, hoo
 
 Middleware expects an already-working harness and reuses that harness's own auth. It does not log you in, choose a different provider for you, or fall back to a different auth path if your current client setup is unsupported.
 
+### Current controller support landscape
+
+This branch establishes the support boundary for the new `middleware` controller command.
+
+| Harness | `middleware inspect` | `middleware enable` / `disable` | Works today when... | Not yet |
+| --- | --- | --- | --- | --- |
+| `Codex CLI` | ✅ Yes | ❌ No | Runtime support exists outside the new controller lifecycle | Controller-managed Codex attach/detach |
+| `Claude Code` | ✅ Yes | ✅ Yes | Claude is already logged in and working normally | None in the current controller scope |
+| `OpenCode` | ✅ Yes | ⚠️ Partial | The current selected provider is a normal API-key or proxy-style provider that can be rerouted, such as the built-in `opencode` provider with API-key auth | Built-in `openai` with ChatGPT OAuth, built-in `anthropic` with subscription OAuth, Anthropic-style provider paths |
+| `OpenClaw` | ✅ Yes | ⚠️ Partial | The current selected provider is a normal OpenAI-compatible or Anthropic-compatible provider | OpenClaw's built-in Codex or ChatGPT-style provider path |
+
+Compatibility expansion is intentionally paused at this matrix for now.
+
 | Client | Status |
 | --- | --- |
-| `Codex CLI` | ✅ Supported |
+| `Codex CLI` | ⚠️ Not yet supported in controller mode |
 | `Claude Code` | ✅ Supported |
 | `OpenCode` | ⚠️ Partially supported |
 | `OpenClaw` | ⚠️ Partially supported |
 
 More detail:
 
-- `Codex CLI`: works with Codex's normal native auth.
+- `Codex CLI`: runtime support exists, but the new `middleware` controller does not manage Codex yet.
 - `Claude Code`: works with Claude's normal native auth.
 - `OpenCode`: works today for normal API-key or proxy-style providers that use a standard provider API endpoint.
 - `OpenCode`: does not work yet for built-in `openai` with ChatGPT OAuth.
@@ -89,42 +102,47 @@ python -m pip install .
 
 ## Quick start
 
-1. Start the gateway:
+1. Inspect the harnesses you want to use:
 
 ```bash
-modeio-middleware-gateway \
-  --host 127.0.0.1 \
-  --port 8787 \
-  --upstream-chat-url "https://api.openai.com/v1/chat/completions" \
-  --upstream-responses-url "https://api.openai.com/v1/responses"
+middleware inspect opencode --json
+middleware inspect openclaw --json
+middleware inspect claude --json
+```
+
+2. Enable supported harnesses. Middleware inspects the exact current harness-selected state first, and it fails clearly if that state is unsupported:
+
+```bash
+middleware enable opencode
+middleware enable openclaw
+middleware enable claude
+```
+
+3. Check status and open the dashboard:
+
+```bash
+middleware status --json
+curl -s http://127.0.0.1:8787/healthz
+open http://127.0.0.1:8787/modeio/dashboard
+```
+
+4. Disable one harness or all harnesses when you are done:
+
+```bash
+middleware disable openclaw
+middleware disable --all
 ```
 
 Source-checkout maintainers should prefer the repo-local wrapper instead of the installed entrypoint:
 
 ```bash
-python scripts/dev_gateway.py --fresh
+python scripts/middleware.py inspect opencode --json
+python scripts/middleware.py enable opencode
 ```
 
-That flow keeps dev config and discovered plugins under `./.modeio-dev/` instead of `~/.config/modeio/`, so local review stays isolated from your normal user runtime.
+That flow keeps the controller and runtime state under the configured ModeIO runtime home instead of asking users to compose legacy setup and gateway commands manually.
 
-2. Route supported clients through it:
-
-```bash
-export OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
-modeio-middleware-setup --apply-opencode
-modeio-middleware-setup --apply-openclaw
-modeio-middleware-setup --apply-claude --create-claude-settings
-```
-
-3. Verify health and open the dashboard:
-
-```bash
-modeio-middleware-setup --health-check --json
-curl -s http://127.0.0.1:8787/healthz
-open http://127.0.0.1:8787/modeio/dashboard
-```
-
-4. Send one request through the middleware:
+5. Send one request through the middleware:
 
 ```bash
 curl -i http://127.0.0.1:8787/v1/chat/completions \
@@ -190,15 +208,7 @@ python -m unittest discover tests -p 'test_*.py'
 ./scripts/release_check.sh
 ```
 
-Live routing check against a real upstream:
-
-```bash
-./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
-```
-
-Live OpenAI-compatible agent smoke now defaults to harness-native auth only: Codex uses the client-scoped gateway route, redirectable OpenCode providers preserve their own provider config, and OpenClaw bridges its current auth/profile through a client-scoped middleware route. Middleware does not provide a managed upstream fallback.
-
-Full agent-matrix smoke is available for local or self-hosted environments where Codex, Claude, OpenCode, and OpenClaw CLIs are installed:
+Live routing check against the supported controller matrix:
 
 ```bash
 ./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
@@ -208,7 +218,7 @@ Full agent-matrix smoke is available for local or self-hosted environments where
 
 Fresh-install acceptance smoke uses the packaged middleware entrypoints from a temp virtualenv while keeping agent configs in a temp sandbox:
 
-- This path assumes `codex`, `opencode`, `openclaw`, and `claude` are already installed and authenticated on the host.
+- This path assumes `opencode`, `openclaw`, and `claude` are already installed and authenticated on the host.
 - Only the middleware under test is freshly installed for the run.
 
 ```bash

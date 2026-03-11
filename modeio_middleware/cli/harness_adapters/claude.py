@@ -41,8 +41,10 @@ class ClaudeHarnessAdapter(HarnessAdapter):
         *,
         env: Mapping[str, str] | None = None,
         os_name: str | None = None,
+        config_path: Path | None = None,
+        models_cache_path: Path | None = None,
     ) -> HarnessInspection:
-        del env, os_name
+        del env, os_name, config_path, models_cache_path
         return HarnessInspection(
             harness_name=self.harness_name,
             binary_name=self.binary_name,

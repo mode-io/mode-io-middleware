@@ -227,6 +227,7 @@ def configure_opencode_supported_provider(
     provider_id: str,
     model_ref: str,
     base_url: str,
+    real_base_url: str | None = None,
 ) -> Dict[str, object]:
     normalized_provider = str(provider_id).strip()
     normalized_model = str(model_ref).strip()
@@ -267,7 +268,7 @@ def configure_opencode_supported_provider(
     route_changed = False
     desired_metadata = {
         "providerId": normalized_provider,
-        "originalBaseUrl": normalized_base_url,
+        "originalBaseUrl": str(real_base_url or normalized_base_url).strip().rstrip("/"),
         "routeMode": "preserve_provider",
     }
     for field_name, field_value in desired_metadata.items():

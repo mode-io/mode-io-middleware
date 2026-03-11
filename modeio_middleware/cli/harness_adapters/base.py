@@ -134,6 +134,8 @@ class HarnessAdapter(ABC):
     harness_name: str
     binary_name: str
     attachment_kind: str
+    controller_supported: bool = True
+    controller_unsupported_reason: str | None = None
 
     def _binary_path(self) -> str | None:
         return shutil.which(self.binary_name)
@@ -144,8 +146,13 @@ class HarnessAdapter(ABC):
         *,
         env: Mapping[str, str] | None = None,
         os_name: str | None = None,
+        config_path: Path | None = None,
+        models_cache_path: Path | None = None,
     ) -> HarnessInspection:
         raise NotImplementedError
+
+    def controller_support_reason(self) -> str | None:
+        return self.controller_unsupported_reason
 
     @abstractmethod
     def inspect_attachment(

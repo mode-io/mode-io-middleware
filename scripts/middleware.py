@@ -9,7 +9,7 @@ PACKAGE_ROOT = SCRIPT_DIR.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from modeio_middleware.cli.setup import main
+from modeio_middleware.cli.middleware import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

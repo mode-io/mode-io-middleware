@@ -2,6 +2,7 @@
 
 import io
 import json
+import socket
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -15,7 +16,7 @@ HELPERS_DIR = REPO_ROOT / "tests" / "helpers"
 sys.path.insert(0, str(PACKAGE_DIR))
 sys.path.insert(0, str(HELPERS_DIR))
 
-from modeio_middleware.cli import setup as setup_gateway  # noqa: E402
+from modeio_middleware.cli import middleware as middleware_cli  # noqa: E402
 from gateway_harness import (  # noqa: E402
     completion_payload,
     post_json,
@@ -25,15 +26,21 @@ from gateway_harness import (  # noqa: E402
 )
 
 
-def _run_setup_json(args):
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+        handle.bind(("127.0.0.1", 0))
+        return int(handle.getsockname()[1])
+
+
+def _run_cli_json(args):
     out = io.StringIO()
     with redirect_stdout(out):
-        code = setup_gateway.main(args)
+        code = middleware_cli.main([*args, "--json"])
     return code, json.loads(out.getvalue())
 
 
 class TestSmokeOpenCodeFlow(unittest.TestCase):
-    def test_opencode_setup_apply_route_and_uninstall(self):
+    def test_opencode_enable_route_and_disable_all(self):
         def response_factory(path, payload):
             if path.endswith("/v1/chat/completions"):
                 content = ""
@@ -74,186 +81,127 @@ class TestSmokeOpenCodeFlow(unittest.TestCase):
         gateway = None
         try:
             upstream, gateway = start_gateway_pair(response_factory, stream_factory=stream_factory)
-
             with TemporaryDirectory() as temp_dir:
-                opencode_config = (
-                    Path(temp_dir) / ".config" / "opencode" / "opencode.json"
-                )
-                gateway_base_url = f"{gateway.base_url}/v1"
-
-                with mock.patch.dict(
-                    "os.environ",
-                    {
-                        "HOME": temp_dir,
-                        "XDG_CONFIG_HOME": str(Path(temp_dir) / ".config"),
-                    },
-                    clear=False,
-                ):
-                    opencode_config.parent.mkdir(parents=True, exist_ok=True)
-                    opencode_config.write_text(
-                        json.dumps(
-                            {
-                                "model": "openai/gpt-test",
-                                "provider": {
-                                    "openai": {
-                                        "options": {
-                                            "baseURL": f"{upstream.base_url}/v1",
-                                        }
-                                    }
-                                },
-                            }
-                        ),
-                        encoding="utf-8",
-                    )
-                    opencode_config.with_name("opencode.json.modeio-route.json").write_text(
-                        json.dumps(
-                            {
-                                "providers": {
-                                    "openai": {
-                                        "providerId": "openai",
-                                        "originalBaseUrl": f"{upstream.base_url}/v1",
-                                        "hadExplicitBaseUrl": True,
-                                        "routeMode": "preserve_provider",
+                root = Path(temp_dir)
+                modeio_config = root / "modeio" / "middleware.json"
+                opencode_config = root / ".config" / "opencode" / "opencode.json"
+                opencode_config.parent.mkdir(parents=True, exist_ok=True)
+                opencode_config.write_text(
+                    json.dumps(
+                        {
+                            "model": "openai/gpt-test",
+                            "provider": {
+                                "openai": {
+                                    "options": {
+                                        "baseURL": f"{upstream.base_url}/v1",
+                                        "apiKey": "sk-opencode-test",
                                     }
                                 }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                opencode_config.with_name("opencode.json.modeio-route.json").write_text(
+                    json.dumps(
+                        {
+                            "providers": {
+                                "openai": {
+                                    "providerId": "openai",
+                                    "originalBaseUrl": f"{upstream.base_url}/v1",
+                                    "hadExplicitBaseUrl": True,
+                                    "routeMode": "preserve_provider",
+                                }
                             }
-                        ),
-                        encoding="utf-8",
-                    )
-                    apply_code, apply_payload = _run_setup_json(
-                        [
-                            "--apply-opencode",
-                            "--gateway-base-url",
-                            gateway_base_url,
-                            "--opencode-config-path",
-                            str(opencode_config),
-                            "--health-check",
-                            "--json",
-                        ]
-                    )
-                    self.assertEqual(apply_code, 0)
-                    self.assertTrue(apply_payload["success"])
-                    self.assertTrue(apply_payload["gateway"]["health"]["ok"])
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                port = _free_port()
+                env = {
+                    "HOME": temp_dir,
+                    "XDG_CONFIG_HOME": str(root / ".config"),
+                    "XDG_STATE_HOME": str(root / ".state"),
+                    "XDG_CACHE_HOME": str(root / ".cache"),
+                }
+                try:
+                    with mock.patch.dict("os.environ", env, clear=False):
+                        enable_code, enable_payload = _run_cli_json(
+                            [
+                                "--config",
+                                str(modeio_config),
+                                "--opencode-config-path",
+                                str(opencode_config),
+                                "enable",
+                                "opencode",
+                                "--host",
+                                "127.0.0.1",
+                                "--port",
+                                str(port),
+                            ]
+                        )
+                        self.assertEqual(enable_code, 0)
+                        self.assertTrue(enable_payload["success"])
 
-                    config_payload = json.loads(opencode_config.read_text(encoding="utf-8"))
-                    self.assertEqual(
-                        config_payload["provider"]["openai"]["options"]["baseURL"],
-                        f"{gateway.base_url}/clients/opencode/openai/v1",
-                    )
-                    route_metadata_path = opencode_config.with_name(
-                        "opencode.json.modeio-route.json"
-                    )
-                    route_metadata = json.loads(route_metadata_path.read_text(encoding="utf-8"))
-                    self.assertEqual(
-                        route_metadata["providers"]["openai"]["routeMode"],
-                        "preserve_provider",
-                    )
-                    self.assertEqual(
-                        route_metadata["providers"]["openai"]["originalBaseUrl"],
-                        f"{upstream.base_url}/v1",
-                    )
+                        routed_headers = {"Authorization": "Bearer harness-secret"}
+                        chat_status, chat_headers, chat_payload = post_json(
+                            f"http://127.0.0.1:{port}",
+                            "/clients/opencode/openai/v1/chat/completions",
+                            {
+                                "model": "gpt-test",
+                                "messages": [{"role": "user", "content": "smoke-chat"}],
+                                "modeio": {"profile": "dev"},
+                            },
+                            headers=routed_headers,
+                        )
+                        self.assertEqual(chat_status, 200)
+                        self.assertEqual(chat_payload["choices"][0]["message"]["content"], "smoke-chat")
+                        self.assertIn("x-modeio-request-id", {k.lower(): v for k, v in chat_headers.items()})
 
-                    chat_status, chat_headers, chat_payload = post_json(
-                        gateway.base_url,
-                        "/v1/chat/completions",
-                        {
-                            "model": "gpt-test",
-                            "messages": [{"role": "user", "content": "smoke-chat"}],
-                            "modeio": {"profile": "dev"},
-                        },
-                    )
-                    self.assertEqual(chat_status, 400)
-                    self.assertEqual(chat_payload["error"]["code"], "MODEIO_VALIDATION_ERROR")
+                        responses_status, _, responses_payload_data = post_json(
+                            f"http://127.0.0.1:{port}",
+                            "/clients/opencode/openai/v1/responses",
+                            {
+                                "model": "gpt-test",
+                                "input": "smoke-responses",
+                                "modeio": {"profile": "dev"},
+                            },
+                            headers=routed_headers,
+                        )
+                        self.assertEqual(responses_status, 200)
+                        self.assertEqual(responses_payload_data["output_text"], "smoke-responses")
 
-                    responses_status, responses_headers, responses_payload_data = post_json(
-                        gateway.base_url,
-                        "/v1/responses",
-                        {
-                            "model": "gpt-test",
-                            "input": "smoke-responses",
-                            "modeio": {"profile": "dev"},
-                        },
-                    )
-                    self.assertEqual(responses_status, 400)
-                    self.assertEqual(
-                        responses_payload_data["error"]["code"],
-                        "MODEIO_VALIDATION_ERROR",
-                    )
+                        stream_status, stream_headers, stream_text = post_stream(
+                            f"http://127.0.0.1:{port}",
+                            "/clients/opencode/openai/v1/chat/completions",
+                            {
+                                "model": "gpt-test",
+                                "stream": True,
+                                "messages": [{"role": "user", "content": "stream-smoke"}],
+                                "modeio": {"profile": "dev"},
+                            },
+                            headers=routed_headers,
+                        )
+                        self.assertEqual(stream_status, 200)
+                        self.assertEqual(
+                            {k.lower(): v for k, v in stream_headers.items()}.get("x-modeio-streaming"),
+                            "true",
+                        )
+                        self.assertIn("[DONE]", stream_text)
 
-                    routed_headers = {"Authorization": "Bearer harness-secret"}
-
-                    chat_status, chat_headers, chat_payload = post_json(
-                        gateway.base_url,
-                        "/clients/opencode/openai/v1/chat/completions",
-                        {
-                            "model": "gpt-test",
-                            "messages": [{"role": "user", "content": "smoke-chat"}],
-                            "modeio": {"profile": "dev"},
-                        },
-                        headers=routed_headers,
-                    )
-                    self.assertEqual(chat_status, 200)
-                    self.assertEqual(chat_payload["choices"][0]["message"]["content"], "smoke-chat")
-                    self.assertIn("x-modeio-request-id", {k.lower(): v for k, v in chat_headers.items()})
-
-                    responses_status, responses_headers, responses_payload_data = post_json(
-                        gateway.base_url,
-                        "/clients/opencode/openai/v1/responses",
-                        {
-                            "model": "gpt-test",
-                            "input": "smoke-responses",
-                            "modeio": {"profile": "dev"},
-                        },
-                        headers=routed_headers,
-                    )
-                    self.assertEqual(responses_status, 200)
-                    self.assertEqual(responses_payload_data["output_text"], "smoke-responses")
-                    self.assertIn("x-modeio-request-id", {k.lower(): v for k, v in responses_headers.items()})
-
-                    stream_status, stream_headers, stream_text = post_stream(
-                        gateway.base_url,
-                        "/clients/opencode/openai/v1/chat/completions",
-                        {
-                            "model": "gpt-test",
-                            "stream": True,
-                            "messages": [{"role": "user", "content": "stream-smoke"}],
-                            "modeio": {"profile": "dev"},
-                        },
-                        headers=routed_headers,
-                    )
-                    self.assertEqual(stream_status, 200)
-                    self.assertEqual(
-                        {k.lower(): v for k, v in stream_headers.items()}.get("x-modeio-streaming"),
-                        "true",
-                    )
-                    self.assertIn("[DONE]", stream_text)
-
-                    for received in upstream.requests:
-                        body = received.get("body")
-                        if isinstance(body, dict):
-                            self.assertNotIn("modeio", body)
-
-                    uninstall_code, uninstall_payload = _run_setup_json(
-                        [
-                            "--apply-opencode",
-                            "--uninstall",
-                            "--force-remove-opencode-base-url",
-                            "--gateway-base-url",
-                            gateway_base_url,
-                            "--opencode-config-path",
-                            str(opencode_config),
-                            "--json",
-                        ]
-                    )
-                    self.assertEqual(uninstall_code, 0)
-                    self.assertTrue(uninstall_payload["success"])
-
-                    config_after = json.loads(opencode_config.read_text(encoding="utf-8"))
-                    self.assertEqual(
-                        config_after["provider"]["openai"]["options"]["baseURL"],
-                        f"{upstream.base_url}/v1",
-                    )
-                    self.assertFalse(route_metadata_path.exists())
+                        disable_code, disable_payload = _run_cli_json(
+                            [
+                                "--config",
+                                str(modeio_config),
+                                "disable",
+                                "--all",
+                            ]
+                        )
+                        self.assertEqual(disable_code, 0)
+                        self.assertTrue(disable_payload["success"])
+                finally:
+                    with mock.patch.dict("os.environ", env, clear=False):
+                        _run_cli_json(["--config", str(modeio_config), "disable", "--all"])
         finally:
             if gateway is not None:
                 gateway.stop()
