@@ -526,6 +526,7 @@ def run_openclaw_family_checks(
         family_slug = _slug_token_part(str(scenario.name or family))
         tap_jsonl_path = run_dir / f"{family_slug}-tap-exchanges.jsonl"
         tap_stdout_path = run_dir / f"{family_slug}-tap.log"
+        tap_body_dir = run_dir / f"{family_slug}-tap-bodies"
         tap_port = _free_port()
         family_tap_base_url = f"http://{gateway_host}:{tap_port}"
         tap_command = [
@@ -539,6 +540,8 @@ def run_openclaw_family_checks(
             real_base_url,
             "--log-jsonl",
             str(tap_jsonl_path),
+            "--body-dir",
+            str(tap_body_dir),
         ]
         tap_process: Optional[subprocess.Popen] = None
         tap_log_handle = None

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
+import gzip
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,6 +44,32 @@ class TestUpstreamTapProxy(unittest.TestCase):
         self.assertEqual(sanitized["authorizationPrefix"], "Bearer")
         self.assertTrue(sanitized["xApiKeyPresent"])
         self.assertFalse(sanitized["apiKeyPresent"])
+
+    def test_write_body_artifacts_stores_raw_and_decoded_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body_dir = Path(tmp)
+            payload = {"ok": True, "items": [1, 2, 3]}
+            raw = gzip.compress(json.dumps(payload).encode("utf-8"))
+
+            result = tap_proxy._write_body_artifacts(
+                body_dir=body_dir,
+                request_id="req123",
+                direction="response",
+                body=raw,
+                content_type="application/json",
+                content_encoding="gzip",
+            )
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            raw_path = Path(result["rawBodyPath"])
+            decoded_path = Path(result["decodedJsonPath"])
+            self.assertTrue(raw_path.exists())
+            self.assertTrue(decoded_path.exists())
+            self.assertEqual(raw_path.read_bytes(), raw)
+            self.assertEqual(json.loads(decoded_path.read_text()), payload)
+            self.assertEqual(result["decodedFormat"], "json")
+            self.assertEqual(result["decodedFromEncoding"], "gzip")
 
 
 if __name__ == "__main__":

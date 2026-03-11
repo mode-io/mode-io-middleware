@@ -234,6 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = run_dir / "summary.json"
     tap_jsonl_path = run_dir / "tap-exchanges.jsonl"
     tap_stdout_path = run_dir / "tap-proxy.log"
+    tap_body_dir = run_dir / "tap-bodies"
     controller_config_path = run_dir / "controller" / "middleware.json"
 
     report: Dict[str, object] = {
@@ -261,6 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "tap": {
             "logPath": str(tap_jsonl_path),
             "stdoutPath": str(tap_stdout_path),
+            "bodyDir": str(tap_body_dir),
         },
         "opencodeTap": None,
         "inspect": None,
@@ -439,6 +441,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 claude_gateway_root,
                 "--log-jsonl",
                 str(claude_tap_jsonl_path),
+                "--body-dir",
+                str(run_dir / "claude-hook-tap-bodies"),
             ]
             claude_tap_process, claude_tap_log_handle = _start_logged_process(
                 command=tap_command,
@@ -455,6 +459,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "port": claude_tap_port,
                 "logPath": str(claude_tap_jsonl_path),
                 "stdoutPath": str(claude_tap_stdout_path),
+                "bodyDir": str(run_dir / "claude-hook-tap-bodies"),
                 "targetBaseUrl": claude_gateway_root,
             }
         else:
@@ -478,11 +483,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.gateway_host,
                     "--port",
                     str(opencode_tap_port),
-                    "--target-base-url",
-                    opencode_upstream_base_url,
-                    "--log-jsonl",
-                    str(opencode_tap_jsonl_path),
-                ]
+                "--target-base-url",
+                opencode_upstream_base_url,
+                "--log-jsonl",
+                str(opencode_tap_jsonl_path),
+                "--body-dir",
+                str(run_dir / "opencode-tap-bodies"),
+            ]
                 opencode_tap_process, opencode_tap_log_handle = _start_logged_process(
                     command=opencode_tap_command,
                     cwd=repo_root,
@@ -499,6 +506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "port": opencode_tap_port,
                     "logPath": str(opencode_tap_jsonl_path),
                     "stdoutPath": str(opencode_tap_stdout_path),
+                    "bodyDir": str(run_dir / "opencode-tap-bodies"),
                     "targetBaseUrl": opencode_upstream_base_url,
                 }
                 report["sandbox"]["tapInjectedOpenCodeProvider"] = (

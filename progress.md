@@ -45,3 +45,21 @@
 - Result:
   - full Python suite passed (`258` tests)
   - supported live smoke passed for Codex, OpenCode, OpenClaw `openai-completions`, and Claude
+
+### Phase 7: Raw payload capture hardening
+- **Status:** complete
+- Actions taken:
+  - upgraded the smoke tap proxy to persist full raw request/response bodies as sidecar files
+  - added best-effort decoded JSON/text sidecars for gzip, zstd, JSON, and SSE/text-friendly bodies
+  - passed tap body directories through the live smoke runners for Codex, OpenCode, OpenClaw family scenarios, and Claude
+  - added a unit test for tap-sidecar capture and gzip decoding
+  - imported the richer live artifact into the local-only payload corpus under `.local/payloads/captured`
+- Validation:
+  - `./.venv/bin/python -m unittest tests.unit.test_upstream_tap_proxy`
+  - `./.venv/bin/python -m unittest tests.smoke.test_smoke_agent_matrix_support`
+  - `./.venv/bin/python -m unittest discover tests -p 'test_*.py'`
+  - `bash ./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/payload-raw-capture-live --opencode-provider opencode --opencode-model opencode/gpt-5.4 --opencode-base-url https://opencode.ai/zen/v1 --openclaw-families openai-completions --openclaw-openai-provider zenmux --openclaw-openai-model zenmux/gpt-5.3-codex`
+- Result:
+  - full suite passed (`259` tests)
+  - supported live smoke passed again
+  - the local corpus now contains richer raw captures for Codex, OpenCode, OpenClaw, and Claude
