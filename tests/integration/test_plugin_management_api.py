@@ -62,12 +62,11 @@ def main():
                     {
                         "decision": {
                             "action": "patch",
-                            "patch_target": "request_body",
-                            "patches": [
+                            "operations": [
                                 {
-                                    "op": "replace",
-                                    "path": "/messages/0/content",
-                                    "value": "rewritten by discovered plugin",
+                                    "op": "replace_text",
+                                    "target": "prompt",
+                                    "text": "rewritten by discovered plugin",
                                 }
                             ],
                             "findings": [],

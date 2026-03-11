@@ -172,6 +172,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Repository root containing the smoke harness checkout",
     )
     parser.add_argument(
+        "--agent-work-dir",
+        default="",
+        help=(
+            "Optional working directory for harness commands. Defaults to the repository root; "
+            "use this to capture action-heavy payloads safely in a temp workspace."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-file",
+        default="",
+        help=(
+            "Optional file containing a custom prompt template. If it contains '{token}', "
+            "that placeholder is replaced; otherwise the smoke token instruction is appended."
+        ),
+    )
+    parser.add_argument(
         "--install-mode",
         choices=("repo", "wheel", "path", "git"),
         default="repo",
@@ -221,12 +237,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _load_prompt_text(prompt_file: str) -> str | None:
+    path_value = prompt_file.strip()
+    if not path_value:
+        return None
+    path = Path(path_value).expanduser().resolve()
+    return path.read_text(encoding="utf-8")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     started_at = _utc_stamp()
     run_id = f"{started_at.lower()}-{os.getpid()}"
 
     repo_root = Path(args.repo_root).expanduser().resolve()
+    agent_work_dir = (
+        Path(args.agent_work_dir).expanduser().resolve()
+        if args.agent_work_dir.strip()
+        else repo_root
+    )
+    prompt_text = _load_prompt_text(args.prompt_file)
     artifacts_root = Path(args.artifacts_dir).expanduser().resolve()
     run_dir = artifacts_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = run_dir / "summary.json"
     tap_jsonl_path = run_dir / "tap-exchanges.jsonl"
     tap_stdout_path = run_dir / "tap-proxy.log"
+    tap_body_dir = run_dir / "tap-bodies"
     controller_config_path = run_dir / "controller" / "middleware.json"
 
     report: Dict[str, object] = {
@@ -256,11 +287,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "mode": args.install_mode,
             "installTarget": args.install_target or None,
         },
+        "prompt": {
+            "customPromptFile": str(Path(args.prompt_file).expanduser().resolve())
+            if args.prompt_file.strip()
+            else None,
+            "agentWorkDir": str(agent_work_dir),
+        },
         "sandbox": {},
         "gateway": {},
         "tap": {
             "logPath": str(tap_jsonl_path),
             "stdoutPath": str(tap_stdout_path),
+            "bodyDir": str(tap_body_dir),
         },
         "opencodeTap": None,
         "inspect": None,
@@ -439,6 +477,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 claude_gateway_root,
                 "--log-jsonl",
                 str(claude_tap_jsonl_path),
+                "--body-dir",
+                str(run_dir / "claude-hook-tap-bodies"),
             ]
             claude_tap_process, claude_tap_log_handle = _start_logged_process(
                 command=tap_command,
@@ -455,6 +495,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "port": claude_tap_port,
                 "logPath": str(claude_tap_jsonl_path),
                 "stdoutPath": str(claude_tap_stdout_path),
+                "bodyDir": str(run_dir / "claude-hook-tap-bodies"),
                 "targetBaseUrl": claude_gateway_root,
             }
         else:
@@ -478,11 +519,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.gateway_host,
                     "--port",
                     str(opencode_tap_port),
-                    "--target-base-url",
-                    opencode_upstream_base_url,
-                    "--log-jsonl",
-                    str(opencode_tap_jsonl_path),
-                ]
+                "--target-base-url",
+                opencode_upstream_base_url,
+                "--log-jsonl",
+                str(opencode_tap_jsonl_path),
+                "--body-dir",
+                str(run_dir / "opencode-tap-bodies"),
+            ]
                 opencode_tap_process, opencode_tap_log_handle = _start_logged_process(
                     command=opencode_tap_command,
                     cwd=repo_root,
@@ -499,6 +542,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "port": opencode_tap_port,
                     "logPath": str(opencode_tap_jsonl_path),
                     "stdoutPath": str(opencode_tap_stdout_path),
+                    "bodyDir": str(run_dir / "opencode-tap-bodies"),
                     "targetBaseUrl": opencode_upstream_base_url,
                 }
                 report["sandbox"]["tapInjectedOpenCodeProvider"] = (
@@ -622,6 +666,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _run_openclaw_family_checks(
                         controller_command=runtime.controller_command,
                         repo_root=repo_root,
+                        work_dir=agent_work_dir,
                         env=env,
                         controller_config_path=controller_config_path,
                         openclaw_config_path=paths["openclaw_config"],
@@ -635,6 +680,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         gateway_host=args.gateway_host,
                         gateway_port=gateway_port,
                         scenarios=openclaw_family_scenarios,
+                        prompt_text=prompt_text,
                     )
                 )
                 continue
@@ -666,6 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     claude_model=args.claude_model,
                     repo_root=repo_root,
+                    work_dir=agent_work_dir,
                     run_dir=run_dir,
                     env=env,
                     timeout_seconds=args.command_timeout_seconds,
@@ -686,6 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         else tap_jsonl_path
                     ),
+                    prompt_text=prompt_text,
                 )
             )
 

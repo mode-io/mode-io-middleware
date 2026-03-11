@@ -18,6 +18,8 @@ class HookEnvelope:
     context: Optional[Dict[str, Any]] = None
     request_context: Optional[Dict[str, Any]] = None
     response_context: Optional[Dict[str, Any]] = None
+    payload: Optional[Dict[str, Any]] = None
+    native: Optional[Dict[str, Any]] = None
     request_body: Optional[Dict[str, Any]] = None
     request_headers: Optional[Dict[str, str]] = None
     response_body: Optional[Dict[str, Any]] = None
@@ -48,16 +50,14 @@ class HookEnvelope:
 
         if self.response_context is not None:
             payload["response_context"] = self.response_context
-        if self.request_body is not None:
-            payload["request_body"] = self.request_body
+        if self.payload is not None:
+            payload["payload"] = self.payload
+        if self.native is not None:
+            payload["native"] = self.native
         if self.request_headers is not None:
             payload["request_headers"] = self.request_headers
-        if self.response_body is not None:
-            payload["response_body"] = self.response_body
         if self.response_headers is not None:
             payload["response_headers"] = self.response_headers
-        if self.event is not None:
-            payload["event"] = self.event
 
         for key in (
             "source",

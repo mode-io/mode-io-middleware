@@ -67,7 +67,16 @@ Request params:
       "can_block": true
     },
     "plugin_config": {},
-    "request_body": {}
+    "payload": {
+      "phase": "request",
+      "endpointKind": "chat_completions",
+      "source": "openai_gateway",
+      "timeline": [],
+      "views": {}
+    },
+    "native": {
+      "request_body": {}
+    }
   }
 }
 ```
@@ -92,6 +101,8 @@ Optional host metadata fields may be present in `input` for connector-aware plug
 - `source_event`: connector-native event name
 - `surface_capabilities`: connector action support map (`can_patch`, `can_block`)
 - `native_event`: sanitized connector-native payload when available
+- `payload`: normalized semantic payload used by plugins as the primary editable surface
+- `native`: raw/native transport payload exposed only as a debug or escape hatch
 
 ## Hooks
 
@@ -117,7 +128,23 @@ Host mapping to middleware actions:
 - `patch -> modify`
 - `block -> block`
 
-Patch action uses RFC6902 operations (`add`, `replace`, `remove`) plus `patch_target`.
+`patch` means semantic mutation operations applied against the normalized payload, not raw RFC6902 body patches.
+
+Supported semantic operations in v1:
+
+- `prepend_text`
+- `append_text`
+- `replace_text`
+- `insert_context`
+- `patch_action_args`
+- `replace_action`
+- `replace_observation`
+
+Instruction semantics:
+
+- source instructions are read-only
+- plugins may add middleware/plugin context with `insert_context`
+- safe action substitution should be expressed with `replace_action`, not by mutating source instructions
 
 ## Non-Intrusive Modes
 

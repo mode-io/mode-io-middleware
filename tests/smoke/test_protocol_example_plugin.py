@@ -19,9 +19,29 @@ def _sample_hook_input() -> dict:
         "request_id": "req_example_plugin",
         "endpoint_kind": "chat_completions",
         "profile": "dev",
-        "request_body": {
-            "model": "gpt-test",
-            "messages": [{"role": "user", "content": "hello"}],
+        "payload": {
+            "phase": "request",
+            "endpointKind": "chat_completions",
+            "source": "openai_gateway",
+            "timeline": [
+                {
+                    "id": "msg:0",
+                    "kind": "prompt",
+                    "origin": "user",
+                    "writable": True,
+                    "text": "hello",
+                }
+            ],
+            "views": {
+                "prompt": {"units": [{"id": "msg:0", "text": "hello"}], "count": 1, "text": "hello"},
+            },
+            "metadata": {"connectorContext": {"source": "openai_gateway"}},
+        },
+        "native": {
+            "request_body": {
+                "model": "gpt-test",
+                "messages": [{"role": "user", "content": "hello"}],
+            }
         },
         "request_headers": {},
         "plugin_config": {},

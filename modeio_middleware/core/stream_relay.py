@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, Iterator, List
 
+from modeio_middleware.core.payload_codec import normalize_stream_event_payload
 from modeio_middleware.core.plugin_manager import ActivePlugin, PluginManager
 from modeio_middleware.core.sse import iter_sse_events, serialize_sse_event
 
@@ -54,6 +55,13 @@ def iter_transformed_sse_stream(
                 profile=profile,
                 request_context=request_context,
                 event=parsed_event,
+                normalized_payload=normalize_stream_event_payload(
+                    endpoint_kind=endpoint_kind,
+                    source=str(request_context.get("source") or "stream"),
+                    event=parsed_event,
+                    request_context=request_context,
+                ).to_public_dict(),
+                native_payload={"event": parsed_event},
                 shared_state=shared_state,
                 on_plugin_error=on_plugin_error,
                 services=services,

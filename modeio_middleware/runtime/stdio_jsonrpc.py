@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from modeio_middleware.core.hook_envelope import HookEnvelope
-from modeio_middleware.protocol.jsonpatch import apply_json_patch
 from modeio_middleware.protocol.manifest import PluginManifest
 from modeio_middleware.protocol.messages import (
     METHOD_INITIALIZE,
@@ -37,17 +36,6 @@ def _to_timeout_map(raw: Dict[str, int]) -> Dict[str, int]:
             continue
         timeouts[key.strip()] = int(value)
     return timeouts
-
-
-def _default_patch_target(hook_name: str) -> str:
-    if hook_name == "pre_request":
-        return "request_body"
-    if hook_name == "post_response":
-        return "response_body"
-    if hook_name == "post_stream_event":
-        return "event"
-    raise ValueError(f"patch is not supported for hook '{hook_name}'")
-
 
 class StdioJsonRpcRuntime(PluginRuntime):
     runtime_name = "stdio_jsonrpc"
@@ -110,13 +98,12 @@ class StdioJsonRpcRuntime(PluginRuntime):
             "profile",
             "context",
             "plugin_config",
-            "request_body",
+            "payload",
+            "native",
             "request_headers",
-            "response_body",
             "response_headers",
             "request_context",
             "response_context",
-            "event",
             "plugin_state",
             "source",
             "source_event",
@@ -128,40 +115,6 @@ class StdioJsonRpcRuntime(PluginRuntime):
             for key, value in raw_input.items()
             if key in allowed_keys
         }
-
-    def _apply_patch(
-        self,
-        hook_name: str,
-        hook_input: HookEnvelope | Dict[str, Any],
-        decision: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        raw_ops = decision.get("patches")
-        if not isinstance(raw_ops, list):
-            raise ValueError(f"plugin '{self.plugin_name}' patch action requires 'patches' array")
-
-        target = decision.get("patch_target")
-        if not isinstance(target, str) or not target.strip():
-            target = _default_patch_target(hook_name)
-        else:
-            target = target.strip()
-
-        if target not in {"request_body", "response_body", "event"}:
-            raise ValueError(f"plugin '{self.plugin_name}' returned unsupported patch target '{target}'")
-
-        base_input = (
-            hook_input.to_protocol_input()
-            if isinstance(hook_input, HookEnvelope)
-            else hook_input
-        )
-        base_value = base_input.get(target)
-        if not isinstance(base_value, dict):
-            raise ValueError(f"plugin '{self.plugin_name}' patch target '{target}' must be an object")
-
-        patched_value = apply_json_patch(base_value, raw_ops)
-        normalized = dict(decision)
-        normalized["action"] = "modify"
-        normalized[target] = patched_value
-        return normalized
 
     def invoke(self, hook_name: str, hook_input: HookEnvelope | Dict[str, Any]) -> Any:
         protocol_hook_name = to_protocol_hook_name(hook_name)
@@ -181,9 +134,6 @@ class StdioJsonRpcRuntime(PluginRuntime):
             mapped = dict(decision)
             mapped["action"] = PROTOCOL_TO_INTERNAL_ACTION[action]
             decision = mapped
-
-        if decision.get("action") == "modify" and action == PROTOCOL_ACTION_PATCH:
-            decision = self._apply_patch(hook_name, hook_input, decision)
 
         return decision
 

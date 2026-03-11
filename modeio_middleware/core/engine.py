@@ -20,6 +20,7 @@ from modeio_middleware.core.observability.service import build_request_journal_s
 from modeio_middleware.core.pipeline_session import PipelineSession
 from modeio_middleware.core.pipeline_orchestrator import PipelineOrchestrator
 from modeio_middleware.core.plugin_manager import PluginManager
+from modeio_middleware.core.payload_codec import normalize_response_payload
 from modeio_middleware.core.profiles import DEFAULT_PROFILE
 from modeio_middleware.core.response_assembler import ResponseAssembler
 from modeio_middleware.core.response_models import ProcessResult, StreamProcessResult
@@ -126,8 +127,12 @@ class MiddlewareEngine:
             phase=invocation.phase,
             profile=invocation.profile,
             stream=invocation.stream,
-            request_body=invocation.request_body or None,
-            response_body=invocation.response_body or None,
+            request_payload=invocation.normalized_payload or None,
+            response_payload=invocation.normalized_payload or None
+            if invocation.phase == "post_response"
+            else None,
+            native_request_body=invocation.request_body or None,
+            native_response_body=invocation.response_body or None,
         )
 
     def _journal_finish_error(self, request_id: str, error: MiddlewareError) -> None:
@@ -182,7 +187,8 @@ class MiddlewareEngine:
             return
         journal.record_pre_result(
             request_id=session.request_id,
-            effective_request_body=result.body,
+            effective_request_payload=result.normalized_payload,
+            effective_native_request_body=result.body,
             pre_actions=list(result.actions),
             degraded=list(result.degraded),
             findings=list(result.findings),
@@ -198,7 +204,8 @@ class MiddlewareEngine:
             return
         journal.record_post_result(
             request_id=session.request_id,
-            effective_response_body=result.body,
+            effective_response_payload=result.normalized_payload,
+            effective_native_response_body=result.body,
             post_actions=list(result.actions),
             degraded=list(result.degraded),
             findings=list(result.findings),
@@ -222,6 +229,8 @@ class MiddlewareEngine:
             endpoint_kind=invocation.endpoint_kind,
             profile=session.profile,
             request_body=invocation.request_body,
+            normalized_payload=invocation.normalized_payload,
+            native_payload=invocation.native_payload,
             request_headers=invocation.incoming_headers,
             context=request_context,
             shared_state=shared_state,
@@ -251,6 +260,16 @@ class MiddlewareEngine:
             profile=session.profile,
             request_context=request_context,
             response_body=response_body,
+            normalized_payload=normalize_response_payload(
+                endpoint_kind=invocation.endpoint_kind,
+                source=invocation.source,
+                response_body=response_body,
+                connector_context=invocation.connector_context,
+            ).to_public_dict(),
+            native_payload={
+                "response_body": response_body,
+                "connector_context": invocation.connector_context,
+            },
             response_headers=response_headers,
             shared_state=shared_state,
             on_plugin_error=on_plugin_error,
@@ -431,7 +450,13 @@ class MiddlewareEngine:
             if journal is not None:
                 journal.record_upstream_result(
                     request_id=session.request_id,
-                    response_body=upstream_response.payload,
+                    response_payload=normalize_response_payload(
+                        endpoint_kind=invocation.endpoint_kind,
+                        source=invocation.source,
+                        response_body=upstream_response.payload,
+                        connector_context=invocation.connector_context,
+                    ).to_public_dict(),
+                    native_response_body=upstream_response.payload,
                 )
 
             post_result = self._run_post_response_phase(

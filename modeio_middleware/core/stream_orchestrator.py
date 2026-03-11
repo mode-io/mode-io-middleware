@@ -61,7 +61,9 @@ class StreamOrchestrator:
         )
         if journal is not None:
             journal.record_upstream_result(
-                request_id=session.request_id, response_body=None
+                request_id=session.request_id,
+                response_payload=None,
+                native_response_body=None,
             )
 
         post_start_result = self._plugin_manager.apply_post_stream_start(
@@ -81,7 +83,8 @@ class StreamOrchestrator:
         if journal is not None:
             journal.record_post_result(
                 request_id=session.request_id,
-                effective_response_body=None,
+                effective_response_payload=None,
+                effective_native_response_body=None,
                 post_actions=list(post_start_result.actions) or ["stream"],
                 degraded=list(post_start_result.degraded),
                 findings=list(post_start_result.findings),

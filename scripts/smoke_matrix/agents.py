@@ -4,18 +4,31 @@ from pathlib import Path
 from typing import List
 
 
+def _render_prompt(*, token: str, prompt_text: str | None) -> str:
+    if prompt_text is None:
+        return f"Reply with exactly this token and nothing else: {token}"
+    if "{token}" in prompt_text:
+        return prompt_text.replace("{token}", token)
+    return (
+        prompt_text.rstrip()
+        + "\n\nWhen you are done, reply with exactly this token and nothing else: "
+        + token
+    )
+
+
 def build_agent_command(
     *,
     agent: str,
     token: str,
     model: str,
     claude_model: str,
-    repo_root: Path,
+    work_dir: Path,
     codex_output_path: Path,
     claude_settings_path: Path | None,
     timeout_seconds: int,
+    prompt_text: str | None = None,
 ) -> List[str]:
-    prompt = f"Reply with exactly this token and nothing else: {token}"
+    prompt = _render_prompt(token=token, prompt_text=prompt_text)
 
     if agent == "codex":
         return [
@@ -45,7 +58,7 @@ def build_agent_command(
             "--model",
             model,
             "--dir",
-            str(repo_root),
+            str(work_dir),
             prompt,
         ]
 

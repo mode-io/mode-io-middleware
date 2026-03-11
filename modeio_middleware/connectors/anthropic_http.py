@@ -18,6 +18,7 @@ from modeio_middleware.core.contracts import (
     validate_endpoint_payload,
 )
 from modeio_middleware.core.errors import MiddlewareError
+from modeio_middleware.core.payload_codec import normalize_request_payload
 from modeio_middleware.core.profiles import normalize_profile_name
 
 ANTHROPIC_CONNECTOR_PATHS = {
@@ -73,6 +74,12 @@ class AnthropicHttpConnector(ConnectorAdapter):
             "source_event": "http_request",
             "surface_capabilities": capabilities.as_dict(),
         }
+        normalized_payload = normalize_request_payload(
+            endpoint_kind=endpoint_kind,
+            source="anthropic_gateway",
+            request_body=request_body,
+            connector_context=connector_context,
+        )
         return CanonicalInvocation(
             source="anthropic_gateway",
             client_name=route_context.client_name,
@@ -84,6 +91,8 @@ class AnthropicHttpConnector(ConnectorAdapter):
             on_plugin_error=options.on_plugin_error,
             plugin_overrides=options.plugin_overrides,
             incoming_headers=dict(incoming_headers),
+            normalized_payload=normalized_payload.to_public_dict(),
+            native_payload=normalized_payload.native,
             request_body=request_body,
             response_body={},
             connector_context=connector_context,

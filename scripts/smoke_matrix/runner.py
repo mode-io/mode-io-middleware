@@ -337,12 +337,14 @@ def run_agent_check(
     model: str,
     claude_model: str,
     repo_root: Path,
+    work_dir: Path,
     run_dir: Path,
     env: Dict[str, str],
     timeout_seconds: int,
     claude_settings_path: Optional[Path],
     tap_jsonl_path: Path,
     expected_tap_path_fragment: str | None = None,
+    prompt_text: str | None = None,
 ) -> Dict[str, object]:
     token_label = _slug_token_part(report_name or agent)
     token = f"SMOKE_{token_label.upper()}_{index}_{run_id.upper()}"
@@ -353,10 +355,11 @@ def run_agent_check(
         token=token,
         model=model,
         claude_model=claude_model,
-        repo_root=repo_root,
+        work_dir=work_dir,
         codex_output_path=codex_message_path,
         claude_settings_path=claude_settings_path,
         timeout_seconds=timeout_seconds,
+        prompt_text=prompt_text,
     )
 
     before_count = len(_load_tap_events(tap_jsonl_path))
@@ -369,7 +372,7 @@ def run_agent_check(
         agent_env.pop("OPENAI_BASE_URL", None)
     result = _run_command_capture(
         command=command,
-        cwd=repo_root,
+        cwd=work_dir,
         env=agent_env,
         timeout_seconds=timeout_seconds,
     )
@@ -456,6 +459,7 @@ def run_openclaw_family_checks(
     *,
     controller_command: Sequence[str],
     repo_root: Path,
+    work_dir: Path,
     env: Dict[str, str],
     controller_config_path: Path,
     openclaw_config_path: Path,
@@ -469,6 +473,7 @@ def run_openclaw_family_checks(
     gateway_host: str,
     gateway_port: int,
     scenarios: Sequence[OpenClawFamilyScenario],
+    prompt_text: str | None = None,
 ) -> List[Dict[str, object]]:
     reports: List[Dict[str, object]] = []
     for index, scenario in enumerate(scenarios, start=1):
@@ -526,6 +531,7 @@ def run_openclaw_family_checks(
         family_slug = _slug_token_part(str(scenario.name or family))
         tap_jsonl_path = run_dir / f"{family_slug}-tap-exchanges.jsonl"
         tap_stdout_path = run_dir / f"{family_slug}-tap.log"
+        tap_body_dir = run_dir / f"{family_slug}-tap-bodies"
         tap_port = _free_port()
         family_tap_base_url = f"http://{gateway_host}:{tap_port}"
         tap_command = [
@@ -539,6 +545,8 @@ def run_openclaw_family_checks(
             real_base_url,
             "--log-jsonl",
             str(tap_jsonl_path),
+            "--body-dir",
+            str(tap_body_dir),
         ]
         tap_process: Optional[subprocess.Popen] = None
         tap_log_handle = None
@@ -599,6 +607,7 @@ def run_openclaw_family_checks(
                 model=str(scenario.model_ref or ""),
                 claude_model="",
                 repo_root=repo_root,
+                work_dir=work_dir,
                 run_dir=run_dir,
                 env=env,
                 timeout_seconds=timeout_seconds,
@@ -608,6 +617,7 @@ def run_openclaw_family_checks(
                     scenario.expected_tap_path_fragment or ""
                 )
                 or None,
+                prompt_text=prompt_text,
             )
             agent_report["family"] = family
             agent_report["providerKey"] = provider_key

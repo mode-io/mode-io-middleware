@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -14,6 +15,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 from urllib.parse import urlsplit, urlunsplit
+
+try:  # Python 3.14+
+    from compression import zstd as _zstd_codec
+except Exception:  # pragma: no cover
+    _zstd_codec = None
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -92,6 +98,7 @@ def _sanitize_headers_for_log(headers: Dict[str, str]) -> Dict[str, object]:
         "xApiKeyPresent": isinstance(x_api_key, str) and bool(x_api_key.strip()),
         "apiKeyPresent": isinstance(api_key, str) and bool(api_key.strip()),
         "contentType": headers.get("content-type"),
+        "contentEncoding": headers.get("content-encoding"),
         "accept": headers.get("accept"),
         "userAgent": headers.get("user-agent"),
     }
@@ -118,6 +125,85 @@ def _filtered_response_headers(
     return filtered
 
 
+def _body_file_stem(request_id: str, direction: str) -> str:
+    return f"{request_id}-{direction}-body"
+
+
+def _best_effort_decode_body(
+    body: bytes, *, content_encoding: str | None
+) -> tuple[bytes | None, str | None]:
+    if not body:
+        return None, None
+    encoding = (content_encoding or "").strip().lower()
+    try:
+        if encoding == "gzip":
+            return gzip.decompress(body), "gzip"
+        if encoding == "zstd" and _zstd_codec is not None:
+            return _zstd_codec.decompress(body), "zstd"
+    except Exception:  # pragma: no cover - best effort only
+        return None, encoding or None
+    return body, None
+
+
+def _write_body_artifacts(
+    *,
+    body_dir: Path | None,
+    request_id: str,
+    direction: str,
+    body: bytes,
+    content_type: str | None,
+    content_encoding: str | None,
+) -> Dict[str, object] | None:
+    if body_dir is None:
+        return None
+    body_dir.mkdir(parents=True, exist_ok=True)
+    stem = _body_file_stem(request_id, direction)
+    raw_path = body_dir / f"{stem}.bin"
+    raw_path.write_bytes(body)
+    result: Dict[str, object] = {"rawBodyPath": str(raw_path)}
+
+    decoded_body, decoded_from = _best_effort_decode_body(
+        body, content_encoding=content_encoding
+    )
+    if decoded_body is None:
+        return result
+
+    text: str | None
+    try:
+        text = decoded_body.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+
+    if text is None:
+        return result
+
+    json_path = None
+    text_path = None
+    try:
+        decoded_json = json.loads(text)
+    except json.JSONDecodeError:
+        decoded_json = None
+
+    if decoded_json is not None:
+        json_path = body_dir / f"{stem}.json"
+        json_path.write_text(json.dumps(decoded_json, ensure_ascii=False, indent=2))
+        result["decodedJsonPath"] = str(json_path)
+        result["decodedFormat"] = "json"
+    else:
+        text_path = body_dir / f"{stem}.txt"
+        text_path.write_text(text)
+        result["decodedTextPath"] = str(text_path)
+        result["decodedFormat"] = "text"
+
+    if decoded_from:
+        result["decodedFromEncoding"] = decoded_from
+    if content_type:
+        result["contentType"] = content_type
+    if content_encoding:
+        result["contentEncoding"] = content_encoding
+    return result
+
+
 def _build_handler(
     *,
     target_base_url: str,
@@ -125,6 +211,7 @@ def _build_handler(
     api_key_env: str,
     upstream_timeout_seconds: int,
     body_preview_limit: int,
+    body_dir: Path | None,
 ):
     class TapProxyHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -214,6 +301,25 @@ def _build_handler(
                     self.wfile.write(upstream_response_body)
 
             elapsed_ms = int((time.monotonic() - started) * 1000)
+            request_body_capture = _write_body_artifacts(
+                body_dir=body_dir,
+                request_id=request_id,
+                direction="request",
+                body=request_body,
+                content_type=request_headers.get("content-type"),
+                content_encoding=request_headers.get("content-encoding"),
+            )
+            response_headers_map = {
+                k.lower(): v for k, v in upstream_response_headers
+            }
+            response_body_capture = _write_body_artifacts(
+                body_dir=body_dir,
+                request_id=request_id,
+                direction="response",
+                body=upstream_response_body,
+                content_type=response_headers_map.get("content-type"),
+                content_encoding=response_headers_map.get("content-encoding"),
+            )
             logger.log(
                 {
                     "ts": _utc_now_iso(),
@@ -228,6 +334,7 @@ def _build_handler(
                         "bodyPreview": _body_preview(
                             request_body, limit=body_preview_limit
                         ),
+                        "bodyCapture": request_body_capture,
                     },
                     "response": {
                         "status": upstream_status,
@@ -240,6 +347,7 @@ def _build_handler(
                         "bodyPreview": _body_preview(
                             upstream_response_body, limit=body_preview_limit
                         ),
+                        "bodyCapture": response_body_capture,
                     },
                     "durationMs": elapsed_ms,
                 }
@@ -310,6 +418,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=4000,
         help="Max UTF-8 chars kept in JSONL bodyPreview fields",
     )
+    parser.add_argument(
+        "--body-dir",
+        default="",
+        help="Optional directory to store full raw request/response body sidecars",
+    )
     return parser.parse_args(argv)
 
 
@@ -322,6 +435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         api_key_env=args.api_key_env,
         upstream_timeout_seconds=args.upstream_timeout_seconds,
         body_preview_limit=args.body_preview_limit,
+        body_dir=Path(args.body_dir).expanduser() if args.body_dir else None,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
     host, port = server.server_address

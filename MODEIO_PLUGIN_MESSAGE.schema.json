@@ -28,15 +28,7 @@
             "type": "object"
           }
         },
-        "patch_target": {
-          "type": "string",
-          "enum": [
-            "request_body",
-            "response_body",
-            "event"
-          ]
-        },
-        "patches": {
+        "operations": {
           "type": "array",
           "items": {
             "type": "object"
