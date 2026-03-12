@@ -26,15 +26,6 @@ jobs:
         run: python -m unittest discover tests/unit -p 'test_*.py'
       - name: Run integration tests
         run: python -m unittest discover tests/integration -p 'test_*.py'
-      - name: Run offline smoke suite
-        run: bash ./scripts/smoke_e2e.sh --artifacts-dir ./.artifacts/offline-smoke
-      - name: Upload offline smoke artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: offline-smoke-py${{ matrix.python-version }}
-          path: ./.artifacts/offline-smoke
-          if-no-files-found: ignore
 
   release-check:
     runs-on: ubuntu-latest
@@ -57,5 +48,4 @@ jobs:
           name: release-build-artifacts
           path: |
             dist/
-            ./.artifacts/
           if-no-files-found: ignore

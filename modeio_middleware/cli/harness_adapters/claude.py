@@ -75,7 +75,7 @@ class ClaudeHarnessAdapter(HarnessAdapter):
             and resolved_path.parent.is_dir(),
             "authCheck": {
                 "supported": False,
-                "message": "Claude auth is verified by the live smoke command itself; the doctor only checks binary/config readiness.",
+                "message": "Claude auth is verified by external operator smoke coverage; the doctor only checks binary and config readiness.",
             },
         }
         if not resolved_path.exists():

@@ -33,7 +33,7 @@ def _run_cli_json(args):
     return code, json.loads(out.getvalue())
 
 
-class TestSmokeControllerFlows(unittest.TestCase):
+class TestControllerAttachmentFlows(unittest.TestCase):
     def test_openclaw_enable_and_disable_all(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

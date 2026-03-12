@@ -4,12 +4,11 @@ This suite is physically split by confidence layer:
 
 - `tests/unit/`
 - `tests/integration/`
-- `tests/smoke/`
 
 Additional validation layers live outside `unittest discover` entrypoints:
 
 - `./scripts/release_check.sh` for built-artifact and packaged-resource validation
-- `./scripts/smoke_e2e.sh --live`, `--live-openai-agents`, `--live-claude`, or `--live-agents` for manual or nightly live-routing validation (with native client auth preferred over middleware-owned upstream keys)
+- the external `middleware-api-smoke` workflow skill for manual or nightly operator smoke
 - `middleware inspect <harness> --json` for machine-readable local readiness checks before live acceptance
 
 ## Support Layer
@@ -47,17 +46,10 @@ These tests exercise multiple middleware layers together:
 
 - `integration/test_gateway_contract.py`
 - `integration/test_claude_hook_connector.py`
+- `integration/test_controller_attachment_flows.py`
+- `integration/test_opencode_gateway_flow.py`
+- `integration/test_protocol_example_plugin.py`
 - `integration/test_protocol_stdio_runtime.py`
-
-## Smoke Coverage
-
-These tests validate operator flows and repo tooling:
-
-- `smoke/test_protocol_example_plugin.py`
-- `smoke/test_smoke_agent_matrix_support.py`
-- `smoke/test_smoke_opencode_flow.py`
-
-The shell smoke entrypoint can also persist logs and JSON outputs with `--artifacts-dir`.
 
 ## Release Coverage
 
@@ -68,15 +60,11 @@ These checks validate the built wheel/sdist instead of only the repo checkout:
 - verify bundled config, schemas, and example plugin resources
 - run installed console entrypoints and plugin conformance against the bundled example
 
-## Live Coverage
+## Operator Smoke
 
-These checks are not required on every PR because they depend on external CLIs, local auth state, and a real upstream:
+These checks are not required on every PR because they depend on external CLIs, local auth state, and sometimes a real upstream:
 
-- `./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke`
-- `./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke`
-- `./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke`
-- `./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke`
-- `./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance`
+- the external `middleware-api-smoke` workflow skill
 
 ## Rules
 
