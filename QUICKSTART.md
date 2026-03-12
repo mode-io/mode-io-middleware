@@ -171,7 +171,7 @@ middleware disable --all
 ## 9) Contributor validation
 
 ```bash
-# Optional readiness check before live smoke
+# Optional readiness check before operator smoke
 middleware inspect opencode --json
 middleware inspect openclaw --json
 middleware inspect claude --json
@@ -179,30 +179,11 @@ middleware inspect claude --json
 # Full Python test suite
 python -m unittest discover tests -p 'test_*.py'
 
-# Offline smoke + saved artifacts
-./scripts/smoke_e2e.sh
-
-# Offline smoke with a fixed artifact directory
-./scripts/smoke_e2e.sh --artifacts-dir ./.artifacts/manual-smoke
-
-# Live upstream traversal check
-./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
-
-# Supported controller matrix for OpenCode/OpenClaw
-./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
-
-# Claude-only hook matrix (no separate OpenAI-compatible upstream required)
-./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
-
-# Full supported controller matrix
-./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
-
-# Fresh-install acceptance path for the middleware only (client CLIs stay host-installed)
-./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
-
 # Build artifact validation
 ./scripts/release_check.sh
 ```
+
+Live smoke orchestration now lives in the external `middleware-api-smoke` skill in the local workflow repo.
 
 OpenClaw setup preserves the active supported provider in place. Unsupported provider families fail clearly instead of switching to middleware-owned auth.
 

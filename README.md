@@ -222,29 +222,15 @@ Full repo validation:
 
 ```bash
 python -m unittest discover tests -p 'test_*.py'
-./scripts/smoke_e2e.sh --artifacts-dir ./.artifacts/manual-smoke
 ./scripts/release_check.sh
 ```
 
-Direct upstream live smoke using API-key auth:
+Live operator smoke is owned by the external `middleware-api-smoke` skill in the local workflow repo, not this repo.
+
+Use `middleware inspect <harness> --json` locally when you only need machine-readable readiness for a specific harness:
 
 ```bash
-./scripts/smoke_e2e.sh --live --artifacts-dir ./.artifacts/live-smoke
-```
-
-Supported controller-matrix live smoke:
-
-```bash
-./scripts/smoke_e2e.sh --live-openai-agents --artifacts-dir ./.artifacts/live-openai-agent-smoke
-./scripts/smoke_e2e.sh --live-claude --artifacts-dir ./.artifacts/live-claude-smoke
-./scripts/smoke_e2e.sh --live-agents --artifacts-dir ./.artifacts/live-agent-smoke
-```
-
-Fresh-install acceptance smoke uses the packaged middleware entrypoints from a temp virtualenv while keeping agent configs in a temp sandbox:
-
-- This path assumes `opencode`, `openclaw`, and `claude` are already installed and authenticated on the host.
-- Only the middleware under test is freshly installed for the run.
-
-```bash
-./scripts/smoke_e2e.sh --live-agents --install-mode wheel --artifacts-dir ./.artifacts/live-agent-acceptance
+middleware inspect opencode --json
+middleware inspect openclaw --json
+middleware inspect claude --json
 ```

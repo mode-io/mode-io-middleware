@@ -18,7 +18,6 @@ Core runtime remains generic and plugin-based.
 repo-root/
   .github/workflows/
     ci.yml
-    live-smoke.yml
   config/default.json
   CONTRIBUTING.md
   MODEIO_PLUGIN_PROTOCOL.md
@@ -31,12 +30,7 @@ repo-root/
     new_plugin.py
     release_check.sh
     run_plugin_conformance.py
-    smoke_agent_matrix.py
     validate_plugin_manifest.py
-    smoke_matrix/
-      agents.py
-      common.py
-      sandbox.py
   modeio_middleware/
     resources.py
     resources/
@@ -119,11 +113,11 @@ repo-root/
       test_upstream_client.py
     integration/
       test_claude_hook_connector.py
+      test_controller_attachment_flows.py
       test_gateway_contract.py
-      test_protocol_stdio_runtime.py
-    smoke/
+      test_opencode_gateway_flow.py
       test_protocol_example_plugin.py
-      test_smoke_opencode_flow.py
+      test_protocol_stdio_runtime.py
 ```
 
 ## Runtime data flow
@@ -176,3 +170,4 @@ Claude hook connector flow:
 - setup script supports safe OpenCode patch/unpatch with backup
 - Codex integration is environment-based (`OPENAI_BASE_URL`) and is not part of the controller-managed attach/detach lifecycle yet
 - Claude integration uses native hooks transport (`/connectors/claude/hooks`) while preserving the same plugin protocol and policy runtime
+- Live/operator smoke orchestration is intentionally external to this repo and owned by the external `middleware-api-smoke` workflow skill

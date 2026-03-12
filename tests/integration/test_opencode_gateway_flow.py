@@ -39,7 +39,7 @@ def _run_cli_json(args):
     return code, json.loads(out.getvalue())
 
 
-class TestSmokeOpenCodeFlow(unittest.TestCase):
+class TestOpenCodeGatewayFlow(unittest.TestCase):
     def test_opencode_enable_route_and_disable_all(self):
         def response_factory(path, payload):
             if path.endswith("/v1/chat/completions"):
